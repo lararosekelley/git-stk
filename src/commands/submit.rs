@@ -5,7 +5,7 @@ use clap_complete::engine::ArgValueCompleter;
 use crate::cli::PushMode;
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{ReviewProvider, detect_provider, review_provider};
+use crate::providers::{ReviewProvider, detect_review_provider};
 use crate::settings;
 use crate::style;
 use crate::{git, stack};
@@ -159,8 +159,7 @@ pub fn submit(
         }
     }
 
-    let provider = detect_provider()?;
-    let review_provider = review_provider(provider.kind);
+    let (_, review_provider) = detect_review_provider()?;
     let mut summary = SubmitSummary::default();
 
     for (branch, parent) in &branch_parents {

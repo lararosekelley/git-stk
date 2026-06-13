@@ -179,6 +179,27 @@ pub trait ReviewProvider {
     fn open_review(&self, review: &ReviewRequest) -> Result<String>;
 }
 
+/// Detect the provider and build its review client together - the pair nearly
+/// every provider-backed command opens with. The returned [`DetectedProvider`]
+/// still carries the kind and detection source for messages.
+pub fn detect_review_provider() -> Result<(DetectedProvider, Box<dyn ReviewProvider>)> {
+    let provider = detect_provider()?;
+    let client = review_provider(provider.kind);
+    Ok((provider, client))
+}
+
+/// The branch's review only when it actually heads that branch. A provider can
+/// return a review for a different head (a stale or look-alike match); a flow
+/// acting on "this branch's review" wants None there, not someone else's.
+pub fn owned_review_for_branch(
+    provider: &dyn ReviewProvider,
+    branch: &str,
+) -> Result<Option<ReviewRequest>> {
+    Ok(provider
+        .review_for_branch(branch)?
+        .filter(|review| review.branch == branch))
+}
+
 pub fn detect_provider() -> Result<DetectedProvider> {
     if let Some(value) = git::config_get(settings::PROVIDER_KEY)? {
         let Some(kind) = ProviderKind::parse(&value) else {

@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::ArgAction;
 
 use crate::commands::Run;
-use crate::providers::{detect_provider, review_provider};
+use crate::providers::{detect_review_provider, owned_review_for_branch};
 use crate::style;
 use crate::{git, settings, stack};
 
@@ -52,9 +52,9 @@ pub fn repair(dry_run: bool) -> Result<()> {
 
     // Provider lookup is best effort: repair must work without a remote or
     // an authenticated gh/glab.
-    let provider = detect_provider()
+    let provider = detect_review_provider()
         .ok()
-        .map(|provider| (provider.kind, review_provider(provider.kind)));
+        .map(|(detected, client)| (detected.kind, client));
 
     let mut repaired = 0;
     let mut verified = 0;
@@ -105,8 +105,7 @@ pub fn repair(dry_run: bool) -> Result<()> {
 
         let mut found: Option<(String, String)> = None;
         if let Some((kind, review_provider)) = &provider
-            && let Ok(Some(review)) = review_provider.review_for_branch(branch)
-            && review.branch == *branch
+            && let Ok(Some(review)) = owned_review_for_branch(&**review_provider, branch)
             && review.base != *branch
         {
             if branches.contains(&review.base) {

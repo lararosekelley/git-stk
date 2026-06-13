@@ -5,8 +5,9 @@ use crate::cli::PushMode;
 use crate::commands::Run;
 use crate::commands::sync::sync;
 use crate::prompt::confirm;
-use crate::providers::{MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState};
-use crate::providers::{detect_provider, review_provider};
+use crate::providers::{
+    MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState, detect_review_provider,
+};
 use crate::settings;
 use crate::stack;
 use crate::style;
@@ -59,8 +60,7 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
         bail!(nothing_to_merge_hint()?);
     };
 
-    let provider = detect_provider()?;
-    let review_provider = review_provider(provider.kind);
+    let (provider, review_provider) = detect_review_provider()?;
     let review = open_review_for(review_provider.as_ref(), provider.kind, &bottom)?;
 
     let strategy = settings::merge_strategy()?;
@@ -105,8 +105,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
         bail!(nothing_to_merge_hint()?);
     };
 
-    let provider = detect_provider()?;
-    let review_provider = review_provider(provider.kind);
+    let (provider, review_provider) = detect_review_provider()?;
     let strategy = settings::merge_strategy()?;
 
     // What is about to land, bottom-up, for the dry run and the prompt: the
