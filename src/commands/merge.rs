@@ -72,8 +72,8 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
     let label = review.label();
 
     if dry_run {
-        println!("would merge {label} into {} ({mode})", review.base);
-        println!("would sync afterwards");
+        anstream::println!("would merge {label} into {} ({mode})", review.base);
+        anstream::println!("would sync afterwards");
         return Ok(());
     }
 
@@ -83,7 +83,7 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
             review.base
         ))?
     {
-        println!("merge cancelled");
+        anstream::println!("merge cancelled");
         return Ok(());
     }
 
@@ -118,15 +118,15 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
         for branch in &branches {
             let review = open_review_for(review_provider.as_ref(), provider.kind, branch)?;
             if wait {
-                println!("would wait for checks on {}", review.id);
+                anstream::println!("would wait for checks on {}", review.id);
             }
-            println!(
+            anstream::println!(
                 "would merge {} into {} ({strategy})",
                 review.label(),
                 review.base
             );
         }
-        println!("would sync after each merge");
+        anstream::println!("would sync after each merge");
         return Ok(());
     }
 
@@ -137,7 +137,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
             if count == 1 { "" } else { "s" }
         ))?
     {
-        println!("merge cancelled");
+        anstream::println!("merge cancelled");
         return Ok(());
     }
 

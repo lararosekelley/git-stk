@@ -30,10 +30,10 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
     anstream::println!("branch: {}", style::paint(style::CURRENT, &branch));
     match parent.as_deref() {
         Some(parent) => anstream::println!("parent: {}", style::paint(style::BRANCH, parent)),
-        None => println!("parent: none"),
+        None => anstream::println!("parent: none"),
     }
     if children.is_empty() {
-        println!("children: none");
+        anstream::println!("children: none");
     } else {
         let children: Vec<String> = children
             .iter()
@@ -43,7 +43,7 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
     }
 
     let (provider, review_provider) = detect_review_provider()?;
-    println!("provider: {} ({})", provider.kind, provider.source);
+    anstream::println!("provider: {} ({})", provider.kind, provider.source);
 
     // Closed-inclusive: a review closed without merging is part of the
     // branch's story, not "no review".
@@ -69,7 +69,7 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                 );
             }
         }
-        None => println!("review: none"),
+        None => anstream::println!("review: none"),
     }
 
     // Teach the loop: the next command, derived from review states and

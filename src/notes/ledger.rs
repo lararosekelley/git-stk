@@ -93,7 +93,7 @@ pub fn update_stack_notes(
                 // Without every review the overview would be wrong for all of
                 // them (dry runs never created the missing ones).
                 if !dry_run {
-                    println!("skipped stack notes: no review found for {branch}");
+                    anstream::println!("skipped stack notes: no review found for {branch}");
                 }
                 return Ok(());
             }
@@ -104,7 +104,7 @@ pub fn update_stack_notes(
     // the bodies so it can report which drifted rows it would drop.
     if dry_run && !rebuild {
         for review in &live {
-            println!("would update stack note in {}", review.id);
+            anstream::println!("would update stack note in {}", review.id);
         }
         return Ok(());
     }
@@ -158,10 +158,10 @@ pub fn update_stack_notes(
 
     if dry_run {
         for review in &live {
-            println!("would update stack note in {}", review.id);
+            anstream::println!("would update stack note in {}", review.id);
         }
         for entry in &dropped {
-            println!(
+            anstream::println!(
                 "would drop drifted entry {} ({})",
                 if entry.id.is_empty() { "?" } else { &entry.id },
                 entry.state
@@ -183,7 +183,7 @@ pub fn update_stack_notes(
         }
 
         review_provider.update_review_body(review, &updated)?;
-        println!("updated stack note in {}", review.id);
+        anstream::println!("updated stack note in {}", review.id);
     }
 
     // Historical reviews get the refreshed ledger too, so a just-merged
@@ -195,7 +195,7 @@ pub fn update_stack_notes(
         }
         let review = entry.to_review();
         let Ok(body) = review_provider.review_body(&review) else {
-            println!("skipped stack note in {}: could not read body", review.id);
+            anstream::println!("skipped stack note in {}: could not read body", review.id);
             continue;
         };
 
@@ -209,10 +209,10 @@ pub fn update_stack_notes(
             .update_review_body(&review, &updated)
             .is_err()
         {
-            println!("skipped stack note in {}: could not update body", review.id);
+            anstream::println!("skipped stack note in {}: could not update body", review.id);
             continue;
         }
-        println!("updated stack note in {}", review.id);
+        anstream::println!("updated stack note in {}", review.id);
     }
 
     Ok(())

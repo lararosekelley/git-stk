@@ -35,9 +35,9 @@ pub fn update_closes_notes(
             // On a dry run the review was likely never created; for real the
             // submit just failed to produce one, which deserves a mention.
             if dry_run {
-                println!("would link issue #{issue} in the review for {branch}");
+                anstream::println!("would link issue #{issue} in the review for {branch}");
             } else {
-                println!("skipped issue link: no review found for {branch}");
+                anstream::println!("skipped issue link: no review found for {branch}");
             }
             continue;
         };
@@ -47,7 +47,7 @@ pub fn update_closes_notes(
         }
 
         if dry_run {
-            println!("would link issue #{issue} in {}", review.id);
+            anstream::println!("would link issue #{issue} in {}", review.id);
             continue;
         }
 
@@ -58,7 +58,7 @@ pub fn update_closes_notes(
         }
 
         review_provider.update_review_body(&review, &updated)?;
-        println!("linked issue #{issue} in {}", review.id);
+        anstream::println!("linked issue #{issue} in {}", review.id);
     }
 
     Ok(())
@@ -81,22 +81,23 @@ pub fn update_description_note(
 
     let Some(review) = review_provider.review_for_branch(branch)? else {
         if dry_run {
-            println!("would {verb} the description on the review for {branch}");
+            anstream::println!("would {verb} the description on the review for {branch}");
         } else {
-            println!("skipped description: no review found for {branch}");
+            anstream::println!("skipped description: no review found for {branch}");
         }
         return Ok(());
     };
     if review.branch != *branch {
-        println!(
+        anstream::println!(
             "skipped description: review {} belongs to {}",
-            review.id, review.branch
+            review.id,
+            review.branch
         );
         return Ok(());
     }
 
     if dry_run {
-        println!("would {verb} the description in {}", review.id);
+        anstream::println!("would {verb} the description in {}", review.id);
         return Ok(());
     }
 
@@ -116,7 +117,7 @@ pub fn update_description_note(
     }
 
     review_provider.update_review_body(&review, &updated)?;
-    println!(
+    anstream::println!(
         "{} description in {}",
         if description.is_empty() {
             "cleared"

@@ -134,7 +134,7 @@ pub fn continue_restack() -> Result<()> {
 pub fn abort_restack() -> Result<()> {
     git::rebase_abort()?;
     clear_state()?;
-    println!("restack aborted");
+    anstream::println!("restack aborted");
     Ok(())
 }
 
@@ -239,7 +239,7 @@ fn finish_restack(branches: &[String], push: bool) -> Result<()> {
         // Keep the shared parent map in step with the pushed branches.
         super::publish_metadata(&remote);
     } else {
-        println!("remote branches may be stale; push them with:");
+        anstream::println!("remote branches may be stale; push them with:");
         anstream::println!(
             "{}",
             style::dim(&format!(
