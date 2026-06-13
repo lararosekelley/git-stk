@@ -236,7 +236,7 @@ fn merge_all_stops_when_a_merge_only_schedules() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "merge scheduled for A work (#12); rerun `git stk sync` once checks pass",
+            "merge scheduled for A work (#12)",
         ))
         .stdout(predicates::str::contains(
             "merge complete: 0 of 2 reviews merged",
@@ -244,6 +244,103 @@ fn merge_all_stops_when_a_merge_only_schedules() {
 
     assert!(!repo.path().join("unexpected-merge.txt").exists());
     assert_eq!(repo.git(["branch", "--show-current"]), "feature/b");
+}
+
+#[test]
+fn merge_all_resumes_from_the_new_bottom_after_a_partial_landing() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    let _bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+
+    // Run 1: feature/a merges and syncs (so feature/b retargets onto main),
+    // but feature/b's merge only schedules - it stays open - so the loop stops
+    // with one of two landed.
+    let run1 = FakeProvider::new()
+        .record("pr merge 12", "merge-12.txt", "")
+        .record("pr edit 13 --base", "base-13.txt", "")
+        .record("pr merge 13", "merge-13-run1.txt", "")
+        .on_after("feature/a --state merged", "merge-12.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("feature/a --state merged", "[]")
+        .on_after("feature/a", "merge-12.txt", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        // feature/b stays open even after its merge (a scheduled merge); its
+        // base flips to main once the first sync retargets it.
+        .on_after("feature/b", "base-13.txt", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("pr edit", "edited")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&run1)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("merged A work (#12)"))
+        .stdout(predicates::str::contains(
+            "merge scheduled for B work (#13)",
+        ))
+        .stdout(predicates::str::contains(
+            "merge complete: 1 of 2 reviews merged",
+        ));
+
+    // feature/a is gone, feature/b survives on main as the new bottom.
+    assert_eq!(
+        repo.git_status(["branch", "--list", "feature/a"])
+            .stdout
+            .len(),
+        0
+    );
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "main"
+    );
+
+    // Run 2: rerun `merge --all`. It picks up from the new bottom (feature/b)
+    // and lands the remainder.
+    let run2 = FakeProvider::new()
+        .record("pr merge 13", "merge-13-run2.txt", "")
+        .on_after("feature/b --state merged", "merge-13-run2.txt", r##"[{"number":13,"state":"MERGED","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("feature/b --state merged", "[]")
+        .on_after("feature/b", "merge-13-run2.txt", "[]")
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("pr edit", "edited")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&run2)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("merged B work (#13)"))
+        .stdout(predicates::str::contains(
+            "stack complete: everything merged into main",
+        ));
+
+    // The whole stack is now landed: both feature branches are gone.
+    assert_eq!(
+        repo.git_status(["branch", "--list", "feature/a", "feature/b"])
+            .stdout
+            .len(),
+        0
+    );
+    // Each branch was squash-merged exactly once across the two runs.
+    assert_eq!(
+        fs::read_to_string(repo.path().join("merge-12.txt"))
+            .expect("merge 12")
+            .trim(),
+        "pr merge 12 --squash"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("merge-13-run2.txt"))
+            .expect("merge 13 run 2")
+            .trim(),
+        "pr merge 13 --squash"
+    );
 }
 
 #[test]
@@ -303,9 +400,7 @@ fn merge_all_wait_stops_when_checks_fail() {
         .args(["merge", "--all", "-y"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains(
-            "checks failed for #12; fix them and rerun `git stk merge --all`",
-        ));
+        .stderr(predicates::str::contains("checks failed for #12"));
     assert!(!repo.path().join("merged.txt").exists());
 }
 
@@ -399,7 +494,7 @@ fn merge_auto_schedules_and_skips_the_sync() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "merge scheduled for A work (#12); rerun `git stk sync` once checks pass",
+            "merge scheduled for A work (#12)",
         ));
 
     let recorded = fs::read_to_string(repo.path().join("merge-args.txt")).expect("merge args");
@@ -457,7 +552,7 @@ fn merge_reports_a_scheduled_gitlab_auto_merge() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "merge scheduled for A work (!34); rerun `git stk sync` once checks pass",
+            "merge scheduled for A work (!34)",
         ));
 
     assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");

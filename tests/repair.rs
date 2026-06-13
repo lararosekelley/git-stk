@@ -193,3 +193,31 @@ fn repair_from_remote_rebuilds_a_stack_from_the_pushed_metadata() {
         "feature/a"
     );
 }
+
+#[test]
+fn repair_from_remote_errors_clearly_when_no_metadata_was_published() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "add a");
+
+    // A remote exists, but nothing ever pushed the metadata ref to it.
+    let _origin = repo.add_bare_origin(&["main", "feature/a"]);
+
+    repo.stack()
+        .args(["repair", "--from-remote"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no stack metadata on the remote"));
+}
+
+#[test]
+fn repair_from_remote_conflicts_with_dry_run() {
+    let repo = TestRepo::new();
+
+    // The two modes are mutually exclusive; clap must reject the combination.
+    repo.stack()
+        .args(["repair", "--from-remote", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cannot be used with"));
+}

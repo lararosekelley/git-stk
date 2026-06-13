@@ -67,3 +67,22 @@ fn mutating_command_releases_the_lock_when_done() {
         "the lock file should be gone once the command finishes"
     );
 }
+
+#[test]
+fn mutating_command_releases_the_lock_on_failure() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/x"]).assert().success();
+
+    // A second `new` of the same branch acquires the lock, then errors. The
+    // lock is RAII, so it must still be cleaned up - otherwise a single failed
+    // command would wedge the repo for every later one.
+    repo.stack().args(["new", "feature/x"]).assert().failure();
+
+    assert!(
+        !repo.path().join(".git/stk-lock").exists(),
+        "the lock must be released even when the command errors"
+    );
+
+    // Proof it is actually free: the next mutating command succeeds.
+    repo.stack().args(["new", "feature/y"]).assert().success();
+}
