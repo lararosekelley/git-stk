@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use anyhow::{Context, Result, bail};
 
 use super::json::{
@@ -82,6 +84,8 @@ impl ReviewProvider for GitHubProvider {
         // have not registered yet (often queued, not running). Tolerate that
         // state for a grace window before concluding there are none, so we
         // neither merge early nor report a false failure.
+        let started = Instant::now();
+        let timeout = crate::settings::check_timeout()?;
         let mut no_checks = 0u32;
         let mut polls = 0u32;
         loop {
@@ -115,6 +119,12 @@ impl ReviewProvider for GitHubProvider {
                 ChecksState::NoneYet => no_checks += 1,
                 // A real pending state resets the grace count: checks exist.
                 ChecksState::Pending => no_checks = 0,
+            }
+
+            if let Some(timeout) = timeout
+                && started.elapsed() >= timeout
+            {
+                return Err(super::checks_timed_out(review, timeout));
             }
 
             polls += 1;
