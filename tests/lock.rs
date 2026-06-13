@@ -48,6 +48,23 @@ fn linked_worktrees_share_one_lock() {
 }
 
 #[test]
+fn run_is_lock_guarded() {
+    // `run` rewrites nothing, but it holds the lock for the whole window it
+    // walks the stack (see lock_name in main.rs). Pin that: it must refuse
+    // while another operation holds the lock, like any mutating command.
+    let repo = TestRepo::new();
+    hold_lock(&repo);
+
+    repo.stack()
+        .args(["run", "--", "true"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "another git stk operation is in progress",
+        ));
+}
+
+#[test]
 fn read_only_command_ignores_the_lock() {
     let repo = TestRepo::new();
     hold_lock(&repo);

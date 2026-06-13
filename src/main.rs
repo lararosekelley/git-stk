@@ -15,9 +15,13 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     git_stk::git::set_verbose(cli.verbose);
 
-    // Common, human-facing commands get the once-a-day update nudge after
-    // their work is done. Plumbing-ish output (completions, parent) and
-    // upgrade itself stay clean.
+    // The once-a-day "newer release available" nudge, printed after the work
+    // is done. Rule: the everyday workflow commands whose human-readable output
+    // a person actually reads. Excluded are plumbing/scriptable output (parent,
+    // children, config, completions) where a nudge would corrupt a pipe, quick
+    // navigation (up/down/top/bottom) that would over-nudge, one-off structural
+    // edits (new, adopt, rename, detach), rare recovery (repair, continue,
+    // abort, undo), and upgrade itself.
     let hint_update = matches!(
         &cli.command,
         Command::List(_)
@@ -26,6 +30,7 @@ fn main() -> ExitCode {
             | Command::Submit(_)
             | Command::Merge(_)
             | Command::Restack(_)
+            | Command::Cleanup(_)
     );
 
     // State-mutating commands take a coarse advisory lock so two git-stk runs
@@ -93,9 +98,13 @@ fn main() -> ExitCode {
     }
 }
 
-/// The lock label for a command that rewrites the stack, its metadata, or
-/// moves between branches over a long window; `None` for read-only commands
-/// and quick navigation, which are safe to run alongside anything else.
+/// The lock label for a command, or `None` to run unlocked.
+///
+/// Rule: a command takes the lock when it rewrites the stack's commits/refs or
+/// its `stkParent`/`stkBase` metadata, OR moves HEAD across the stack over a
+/// window long enough that a concurrent git-stk run could clash. `None` is for
+/// read-only inspection and single quick-checkout navigation, which are safe
+/// alongside anything else.
 fn lock_name(command: &Command) -> Option<&'static str> {
     match command {
         Command::New(_) => Some("new"),
@@ -112,7 +121,13 @@ fn lock_name(command: &Command) -> Option<&'static str> {
         Command::Submit(_) => Some("submit"),
         Command::Cleanup(_) => Some("cleanup"),
         Command::Absorb(_) => Some("absorb"),
+        // `run` rewrites nothing, but it checks out every branch in turn and
+        // runs a user command on each - a long window where a concurrent
+        // sync/restack moving those branches would derail it. The lock is held
+        // for that whole window by design.
         Command::Run(_) => Some("run"),
+        // Read-only, and navigation that is a single quick checkout (up/down/
+        // top/bottom) - no metadata rewrite, no long window.
         Command::Parent(_)
         | Command::Children(_)
         | Command::Up(_)

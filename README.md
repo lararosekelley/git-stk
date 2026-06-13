@@ -309,10 +309,10 @@ through cargo instead.
 leaves the receipt's version stale - the HEAD build did not come from a release, so the receipt keeps
 pointing at the last one. `git stk upgrade --force` is the way back onto releases afterwards.
 
-Once a day, the common commands (`list`, `status`, `sync`, `submit`, `merge`, `restack`) check for a newer
-release after their work is done - capped at two seconds, silent on any failure or when stderr is not a
-terminal - and print a one-line nudge when behind. The check stamps `update-check` next to the receipt;
-`git config stk.noUpdateCheck true` turns it off.
+Once a day, the everyday workflow commands (`list`, `status`, `sync`, `submit`, `merge`, `restack`,
+`cleanup`) check for a newer release after their work is done - capped at two seconds, silent on any
+failure or when stderr is not a terminal - and print a one-line nudge when behind. The check stamps
+`update-check` next to the receipt; `git config stk.noUpdateCheck true` turns it off.
 
 `git stk credits` lists the stacked-workflow tools that inspired git-stk, with a link to each.
 
