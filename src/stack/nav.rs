@@ -101,7 +101,7 @@ pub fn checkout_top() -> Result<()> {
         if children_of(&current)?.is_empty() && parent_of(&current)?.is_none() {
             bail!("{current} is not in a stack");
         }
-        println!("{current} is already at the top of the stack");
+        anstream::println!("{current} is already at the top of the stack");
         return Ok(());
     }
     git::checkout(&top)
@@ -143,7 +143,7 @@ pub fn checkout_bottom() -> Result<()> {
         if parent_of(&current)?.is_none() && children_of(&current)?.is_empty() {
             bail!("{current} is not in a stack");
         }
-        println!("{current} is already at the bottom of the stack");
+        anstream::println!("{current} is already at the bottom of the stack");
         return Ok(());
     }
     git::checkout(&bottom)
@@ -210,7 +210,7 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, String>) -> Result<()> {
     }
 
     if roots.is_empty() {
-        println!("no stacked branches");
+        anstream::println!("no stacked branches");
         return Ok(());
     }
 

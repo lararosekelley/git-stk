@@ -183,7 +183,7 @@ pub fn submit(
                 continue;
             }
             if dry_run {
-                println!("would mark {} ready", review.id);
+                anstream::println!("would mark {} ready", review.id);
                 continue;
             }
             let output = review_provider.mark_ready(&review)?;
@@ -271,14 +271,14 @@ fn close_superseded_review(
     }
 
     if dry_run {
-        println!("would close superseded review {} for {old}", review.id);
+        anstream::println!("would close superseded review {} for {old}", review.id);
         return Ok(());
     }
     if !crate::prompt::confirm_default_yes(&format!(
         "close the replaced review {} for {old} and delete its branch? [Y/n] ",
         review.id
     ))? {
-        println!("kept review {} for {old}", review.id);
+        anstream::println!("kept review {} for {old}", review.id);
         return Ok(());
     }
 
@@ -308,9 +308,11 @@ fn submit_branch(
     if let Some(review) = review_provider.review_for_branch(branch)? {
         if review.base == parent {
             if dry_run {
-                println!(
+                anstream::println!(
                     "would skip {} -> {} ({})",
-                    review.branch, review.base, review.id
+                    review.branch,
+                    review.base,
+                    review.id
                 );
             } else {
                 anstream::println!(

@@ -45,9 +45,9 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     let remote = settings::remote()?;
     if let Some(trunk) = &trunk {
         if git::remote_url(&remote)?.is_none() {
-            println!("no remote {remote}; skipped fetch");
+            anstream::println!("no remote {remote}; skipped fetch");
         } else if dry_run {
-            println!("would fetch {trunk} from {remote}");
+            anstream::println!("would fetch {trunk} from {remote}");
         } else if current == *trunk {
             git::pull_ff_only()?;
         } else {
@@ -183,7 +183,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
 
     // 7. Restack the remainder (and push, per flags/config).
     if dry_run {
-        println!("would restack the remaining stack");
+        anstream::println!("would restack the remaining stack");
     } else if !survivors.is_empty() {
         stack::restack(UpdateRefsMode::Config, push_mode, false)?;
     }

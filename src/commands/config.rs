@@ -20,22 +20,22 @@ impl Run for Config {
 pub fn print_config() -> Result<()> {
     for (key, default) in SETTINGS {
         match git::config_get(key)? {
-            Some(value) => println!("{key} = {value}"),
+            Some(value) => anstream::println!("{key} = {value}"),
             None => anstream::println!("{key} {}", style::dim(&format!("(default: {default})"))),
         }
     }
 
     let metadata = git::config_get_regexp(r"^branch\..*\.stk(parent|base)$")?;
     if metadata.is_empty() {
-        println!();
+        anstream::println!();
         anstream::println!("{}", style::dim("no branch metadata (no stacked branches)"));
         return Ok(());
     }
 
-    println!();
-    println!("branch metadata:");
+    anstream::println!();
+    anstream::println!("branch metadata:");
     for (key, value) in metadata {
-        println!("  {key} = {value}");
+        anstream::println!("  {key} = {value}");
     }
     Ok(())
 }

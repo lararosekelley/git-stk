@@ -98,11 +98,11 @@ pub fn upgrade(head: bool, force: bool, yes: bool) -> Result<()> {
 }
 
 fn upgrade_to_head(yes: bool) -> Result<()> {
-    println!("--head builds and installs the latest unreleased commit from {REPO_URL}");
-    println!("HEAD is a pre-release snapshot: it may be broken or untested");
+    anstream::println!("--head builds and installs the latest unreleased commit from {REPO_URL}");
+    anstream::println!("HEAD is a pre-release snapshot: it may be broken or untested");
 
     if !yes && !confirm("continue? [y/N] ")? {
-        println!("upgrade cancelled");
+        anstream::println!("upgrade cancelled");
         return Ok(());
     }
 
@@ -115,8 +115,8 @@ fn upgrade_to_head(yes: bool) -> Result<()> {
         bail!("cargo install exited with status {status}");
     }
 
-    println!("installed git-stk from HEAD");
-    println!("to return to the latest release, run: git stk upgrade --force");
+    anstream::println!("installed git-stk from HEAD");
+    anstream::println!("to return to the latest release, run: git stk upgrade --force");
     refresh_assets_with_new_binary();
     Ok(())
 }
@@ -166,7 +166,7 @@ fn upgrade_to_latest_release(force: bool) -> Result<()> {
             );
             refresh_assets_with_new_binary();
         }
-        None => println!(
+        None => anstream::println!(
             "git-stk {} is already the latest release",
             env!("CARGO_PKG_VERSION")
         ),

@@ -49,7 +49,7 @@ fn install_man_page() -> Result<()> {
 
     let path = dir.join("git-stk.1");
     fs::write(&path, buffer).with_context(|| format!("failed to write {}", path.display()))?;
-    println!("installed man page to {}", path.display());
+    anstream::println!("installed man page to {}", path.display());
     Ok(())
 }
 
@@ -64,8 +64,8 @@ fn man_dir() -> Result<PathBuf> {
 /// Append a completion-sourcing line to the detected shell's rc file, once.
 fn wire_completions(yes: bool) -> Result<()> {
     let Some((shell, rc_path, line)) = completion_target()? else {
-        println!("could not detect a supported shell");
-        println!("see the README for manual completion setup");
+        anstream::println!("could not detect a supported shell");
+        anstream::println!("see the README for manual completion setup");
         return Ok(());
     };
 
@@ -78,7 +78,7 @@ fn wire_completions(yes: bool) -> Result<()> {
     };
 
     if existing.contains(COMPLETION_MARKER) || existing.contains("git stk completions") {
-        println!(
+        anstream::println!(
             "{shell} completions already configured in {}",
             rc_path.display()
         );
@@ -91,9 +91,9 @@ fn wire_completions(yes: bool) -> Result<()> {
             rc_path.display()
         ))?
     {
-        println!("skipped completion setup");
-        println!("to configure manually, add this to {}:", rc_path.display());
-        println!("  {line}");
+        anstream::println!("skipped completion setup");
+        anstream::println!("to configure manually, add this to {}:", rc_path.display());
+        anstream::println!("  {line}");
         return Ok(());
     }
 
@@ -110,7 +110,7 @@ fn wire_completions(yes: bool) -> Result<()> {
     }
     fs::write(&rc_path, updated)
         .with_context(|| format!("failed to write {}", rc_path.display()))?;
-    println!("added {shell} completion setup to {}", rc_path.display());
+    anstream::println!("added {shell} completion setup to {}", rc_path.display());
     Ok(())
 }
 
@@ -128,12 +128,12 @@ fn print_completion_hint() -> Result<()> {
         return Ok(());
     }
 
-    println!(
+    anstream::println!(
         "{shell} completions are not configured; run `git stk setup`, \
          or add this to {}:",
         rc_path.display()
     );
-    println!("  {line}");
+    anstream::println!("  {line}");
     Ok(())
 }
 
