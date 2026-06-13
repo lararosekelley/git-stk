@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::json::{
     first_json_item, json_items, optional_bool, optional_string, parse_body_field, parse_state,
@@ -94,6 +94,15 @@ impl ReviewProvider for GitHubProvider {
             match interpret_checks(out.status.code(), &stdout, &stderr) {
                 ChecksState::Passed => return Ok(true),
                 ChecksState::Failed => return Ok(false),
+                // gh itself failed (network, auth, an API 5xx) - not a check
+                // verdict. Surface the real error instead of a false "checks
+                // failed"; `merge --all` is rerun-safe, so the user retries
+                // once gh recovers.
+                ChecksState::Errored => bail!(
+                    "could not read checks for {}: {}; rerun `git stk merge --all` once gh recovers",
+                    review.id,
+                    stderr.trim().lines().next().unwrap_or("gh failed").trim()
+                ),
                 ChecksState::NoneYet if no_checks >= super::CHECK_GRACE_POLLS => {
                     // Grace exhausted. If branch protection gates the merge the
                     // checks exist but have not registered - keep waiting.
@@ -162,11 +171,19 @@ enum ChecksState {
     Pending,
     /// No checks reported - either no CI, or not registered yet.
     NoneYet,
+    /// Checks ran and at least one did not pass.
     Failed,
+    /// gh itself errored (network, auth, an API failure) - not a verdict on
+    /// the checks.
+    Errored,
 }
 
-/// Classify a `gh pr checks` run. The "no checks reported" message can land
-/// on stdout or stderr, so both are inspected.
+/// Classify a `gh pr checks` run. Exit 0 = passed, 8 = pending. For any other
+/// code the streams disambiguate: "no checks reported" (on either stream)
+/// means none have registered; otherwise a non-empty stdout is the checks
+/// table, so a genuine failure - while an error reported only on stderr (with
+/// no table on stdout) is gh itself failing, which must not be mistaken for a
+/// failed check.
 fn interpret_checks(code: Option<i32>, stdout: &str, stderr: &str) -> ChecksState {
     match code {
         Some(0) => ChecksState::Passed,
@@ -175,8 +192,10 @@ fn interpret_checks(code: Option<i32>, stdout: &str, stderr: &str) -> ChecksStat
             let text = format!("{stdout}{stderr}").to_lowercase();
             if text.contains("no checks") {
                 ChecksState::NoneYet
-            } else {
+            } else if !stdout.trim().is_empty() {
                 ChecksState::Failed
+            } else {
+                ChecksState::Errored
             }
         }
     }
@@ -375,9 +394,29 @@ mod tests {
 
     #[test]
     fn interpret_checks_treats_a_reported_failure_as_failed() {
+        // A genuine failure prints the checks table to stdout.
         assert_eq!(
             interpret_checks(Some(1), "X  lint  1m  failing", ""),
             ChecksState::Failed
+        );
+    }
+
+    #[test]
+    fn interpret_checks_treats_a_gh_error_as_errored_not_failed() {
+        // gh failing operationally writes to stderr and leaves stdout empty;
+        // that must not read as a failed check.
+        assert_eq!(
+            interpret_checks(Some(1), "", "error connecting to api.github.com: timeout"),
+            ChecksState::Errored
+        );
+        assert_eq!(
+            interpret_checks(Some(4), "", "gh: authentication required"),
+            ChecksState::Errored
+        );
+        // A blank line on stdout is still no table.
+        assert_eq!(
+            interpret_checks(Some(1), "  \n", "HTTP 502"),
+            ChecksState::Errored
         );
     }
 

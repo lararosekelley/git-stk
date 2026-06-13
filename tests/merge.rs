@@ -291,8 +291,9 @@ fn merge_all_wait_stops_when_checks_fail() {
     repo.stack().args(["new", "feature/a"]).assert().success();
     repo.commit_file("a.txt", "a\n", "a work");
 
+    // A genuine failure prints the checks table to stdout and exits non-zero.
     let fake = FakeProvider::new()
-        .fail("pr checks 12", "X  lint  failing")
+        .fail_with_stdout("pr checks 12", "X  lint  1m  failing", "")
         .record("pr merge", "merged.txt", "")
         .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
         .fallback("[]")
@@ -306,6 +307,34 @@ fn merge_all_wait_stops_when_checks_fail() {
             "checks failed for #12; fix them and rerun `git stk merge --all`",
         ));
     assert!(!repo.path().join("merged.txt").exists());
+}
+
+#[test]
+fn merge_all_wait_surfaces_a_gh_error_instead_of_reporting_checks_failed() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.mergeWait", "true"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    // gh itself fails operationally: an error on stderr, no table on stdout.
+    // This must not be reported as a failed check, and must not merge.
+    let fake = FakeProvider::new()
+        .fail("pr checks 12", "error connecting to api.github.com: timeout")
+        .fail("pr merge", "merge should not run")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("could not read checks for #12"))
+        .stderr(predicates::str::contains(
+            "error connecting to api.github.com",
+        ));
 }
 
 #[test]

@@ -193,6 +193,16 @@ impl FakeProvider {
         self
     }
 
+    /// Fail (exit 1) with `stdout` as well as `stderr` - for a command like
+    /// `gh pr checks` that prints its result table to stdout even when it
+    /// exits non-zero on a failure.
+    pub fn fail_with_stdout(mut self, needle: &str, stdout: &str, stderr: &str) -> Self {
+        self.rules.push(serde_json::json!({
+            "contains": needle, "stdout": stdout, "stderr": stderr, "exit": 1,
+        }));
+        self
+    }
+
     /// The catch-all response (empty needle matches anything).
     pub fn fallback(mut self, stdout: &str) -> Self {
         self.rules
