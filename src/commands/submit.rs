@@ -16,7 +16,7 @@ pub struct Submit {
     #[arg(add = ArgValueCompleter::new(completions::branch_candidates))]
     branch: Option<String>,
     /// Print what would change without creating or updating reviews.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
     /// Submit the whole stack parent-first, from anywhere in it.
     #[arg(long, conflicts_with = "branch")]

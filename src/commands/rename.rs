@@ -20,7 +20,7 @@ pub struct Rename {
     )]
     names: Vec<String>,
     /// Print the rename and retargets without changing anything.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
 }
 

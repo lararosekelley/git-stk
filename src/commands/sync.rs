@@ -14,7 +14,7 @@ use crate::{git, stack};
 #[derive(Debug, clap::Args)]
 pub struct Sync {
     /// Print what would change without changing anything.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
     /// Force-push (with lease) rebased branches after the restack.
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_push")]

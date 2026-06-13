@@ -21,7 +21,7 @@ pub struct Restack {
     #[arg(long, action = ArgAction::SetTrue)]
     no_push: bool,
     /// Print the rebase plan without rebasing anything.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
 }
 
