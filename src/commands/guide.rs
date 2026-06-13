@@ -338,8 +338,8 @@ fn adopt(tour: &mut Tour) -> Result<()> {
 
 fn undo(tour: &mut Tour) -> Result<()> {
     tour.banner("1/2 - rewrite the stack");
-    tour.say("Stack-rewriting commands - restack, sync, merge, cleanup, rename -");
-    tour.say("snapshot the stack before they touch it. Start with two branches:");
+    tour.say("Stack-rewriting commands snapshot the stack before they touch it,");
+    tour.say("so git stk undo can put it back. Start with two branches:");
     tour.stk(&["new", "feature/api"])?;
     tour.commit("api.txt", "endpoints\n", "add api")?;
     tour.stk(&["new", "feature/web"])?;
