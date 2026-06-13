@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use super::{ReviewProvider, ReviewRequest, ReviewState, command_output};
+use super::{MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, command_output};
 use crate::git;
 
 pub(super) struct DemoProvider;
@@ -109,6 +109,11 @@ impl ReviewProvider for DemoProvider {
         })?;
         save(&state)?;
         Ok(format!("squashed {branch} into {base}"))
+    }
+
+    fn merge_blocker(&self, _review: &ReviewRequest) -> Result<MergeBlocker> {
+        // The demo merges locally and has no checks; nothing ever blocks.
+        Ok(MergeBlocker::None)
     }
 
     fn wait_for_checks(&self, _review: &ReviewRequest) -> Result<bool> {

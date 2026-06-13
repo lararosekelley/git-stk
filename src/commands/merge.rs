@@ -5,7 +5,7 @@ use crate::cli::PushMode;
 use crate::commands::Run;
 use crate::commands::sync::sync;
 use crate::prompt::confirm;
-use crate::providers::{ProviderKind, ReviewProvider, ReviewRequest, ReviewState};
+use crate::providers::{MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState};
 use crate::providers::{detect_provider, review_provider};
 use crate::settings;
 use crate::stack;
@@ -263,19 +263,7 @@ fn merge_and_check(
 
     let output = match review_provider.merge_review(review, strategy, auto) {
         Ok(output) => output,
-        Err(error) => {
-            // gh refuses outright when required checks are not green. Surface
-            // a clean, actionable message instead of the raw gh error.
-            let text = error.to_string().to_lowercase();
-            if text.contains("status check") || text.contains("not mergeable") {
-                bail!(
-                    "{}'s required checks are not green yet - wait and rerun \
-                     `git stk merge`, or schedule with `git stk merge --auto`",
-                    review.id
-                );
-            }
-            return Err(error);
-        }
+        Err(error) => return Err(explain_merge_failure(review_provider, review, error)),
     };
     if !output.is_empty() {
         println!("{output}");
@@ -296,4 +284,44 @@ fn merge_and_check(
             Ok(MergeOutcome::Scheduled)
         }
     }
+}
+
+/// Turn a rejected merge into an actionable error. Ask the platform why from
+/// its structured status first; only if that is inconclusive (or the query
+/// itself fails) fall back to matching the CLI's error text, then surface the
+/// raw error.
+fn explain_merge_failure(
+    review_provider: &dyn ReviewProvider,
+    review: &ReviewRequest,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    match review_provider
+        .merge_blocker(review)
+        .unwrap_or(MergeBlocker::None)
+    {
+        MergeBlocker::ChecksPending => checks_not_green_error(review),
+        MergeBlocker::Conflicts => anyhow::anyhow!(
+            "{} conflicts with {} - resolve the conflicts, push, and rerun `git stk merge`",
+            review.id,
+            review.base
+        ),
+        // The platform did not say (or the status query failed): fall back to
+        // the CLI's error wording before surfacing it raw.
+        MergeBlocker::None => {
+            let text = error.to_string().to_lowercase();
+            if text.contains("status check") || text.contains("not mergeable") {
+                checks_not_green_error(review)
+            } else {
+                error
+            }
+        }
+    }
+}
+
+fn checks_not_green_error(review: &ReviewRequest) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{}'s required checks are not green yet - wait and rerun `git stk merge`, \
+         or schedule with `git stk merge --auto`",
+        review.id
+    )
 }

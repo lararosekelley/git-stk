@@ -4,7 +4,7 @@ use super::json::{
     first_json_item, json_items, optional_bool, optional_string, parse_body_field, parse_state,
     required_string,
 };
-use super::{ReviewProvider, ReviewRequest, command_output, merge_with_retry};
+use super::{MergeBlocker, ReviewProvider, ReviewRequest, command_output, merge_with_retry};
 
 pub(super) struct GitHubProvider;
 
@@ -59,6 +59,20 @@ impl ReviewProvider for GitHubProvider {
             args.push("--auto");
         }
         merge_with_retry(|| command_output("gh", &args))
+    }
+
+    fn merge_blocker(&self, review: &ReviewRequest) -> Result<MergeBlocker> {
+        let output = command_output(
+            "gh",
+            &[
+                "pr",
+                "view",
+                review.id_value(),
+                "--json",
+                "mergeable,mergeStateStatus",
+            ],
+        )?;
+        Ok(classify_github_merge(&output))
     }
 
     fn wait_for_checks(&self, review: &ReviewRequest) -> Result<bool> {
@@ -196,6 +210,24 @@ fn merge_state_is_gated(json: &str) -> bool {
         .get("mergeStateStatus")
         .and_then(serde_json::Value::as_str)
         == Some("BLOCKED")
+}
+
+/// Map GitHub's `mergeable` + `mergeStateStatus` to a blocker. `CONFLICTING`
+/// or a `DIRTY` state means conflicts; `BLOCKED` means required checks or
+/// reviews are not satisfied. Anything else (or unparseable output) is
+/// treated as not-blocked, leaving the caller to fall back to the error text.
+fn classify_github_merge(json: &str) -> MergeBlocker {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return MergeBlocker::None;
+    };
+    let field = |name| value.get(name).and_then(serde_json::Value::as_str);
+    if field("mergeable") == Some("CONFLICTING") || field("mergeStateStatus") == Some("DIRTY") {
+        MergeBlocker::Conflicts
+    } else if field("mergeStateStatus") == Some("BLOCKED") {
+        MergeBlocker::ChecksPending
+    } else {
+        MergeBlocker::None
+    }
 }
 
 fn list_review(branch: &str, state: Option<&str>) -> Result<Option<ReviewRequest>> {
@@ -360,5 +392,37 @@ mod tests {
         assert!(!merge_state_is_gated(r#"{"mergeStateStatus":"UNSTABLE"}"#));
         assert!(!merge_state_is_gated("{}"));
         assert!(!merge_state_is_gated("not json"));
+    }
+
+    #[test]
+    fn classify_github_merge_reads_structured_status() {
+        assert_eq!(
+            classify_github_merge(r#"{"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY"}"#),
+            MergeBlocker::Conflicts
+        );
+        // A clean mergeable with a DIRTY state is still a conflict.
+        assert_eq!(
+            classify_github_merge(r#"{"mergeable":"UNKNOWN","mergeStateStatus":"DIRTY"}"#),
+            MergeBlocker::Conflicts
+        );
+        assert_eq!(
+            classify_github_merge(r#"{"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}"#),
+            MergeBlocker::ChecksPending
+        );
+        assert_eq!(
+            classify_github_merge(r#"{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}"#),
+            MergeBlocker::None
+        );
+        // Conflicts take precedence over a blocked state.
+        assert_eq!(
+            classify_github_merge(r#"{"mergeable":"CONFLICTING","mergeStateStatus":"BLOCKED"}"#),
+            MergeBlocker::Conflicts
+        );
+    }
+
+    #[test]
+    fn classify_github_merge_unparseable_is_not_blocked() {
+        assert_eq!(classify_github_merge("{}"), MergeBlocker::None);
+        assert_eq!(classify_github_merge("not json"), MergeBlocker::None);
     }
 }

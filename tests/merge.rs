@@ -452,3 +452,64 @@ fn merge_requires_an_open_review_at_the_bottom() {
             "no github review found for feature/a; submit the stack first",
         ));
 }
+
+#[test]
+fn merge_reports_pending_checks_from_structured_status() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    // The merge is rejected with an error whose text matches neither substring
+    // fallback ("status check"/"not mergeable"); only the structured status
+    // (mergeStateStatus=BLOCKED) explains why.
+    let fake = FakeProvider::new()
+        .fail("pr merge 12", "GraphQL: something went wrong")
+        .on(
+            "mergeStateStatus",
+            r#"{"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}"#,
+        )
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "#12's required checks are not green yet",
+        ));
+}
+
+#[test]
+fn merge_reports_conflicts_from_structured_status() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .fail("pr merge 12", "GraphQL: something went wrong")
+        .on(
+            "mergeStateStatus",
+            r#"{"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY"}"#,
+        )
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("#12 conflicts with main"));
+}

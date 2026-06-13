@@ -4,7 +4,7 @@ use super::json::{
     first_json_item, json_items, optional_bool, optional_string, parse_body_field, parse_state,
     required_string,
 };
-use super::{ReviewProvider, ReviewRequest, command_output, merge_with_retry};
+use super::{MergeBlocker, ReviewProvider, ReviewRequest, command_output, merge_with_retry};
 
 pub(super) struct GitLabProvider;
 
@@ -78,6 +78,14 @@ impl ReviewProvider for GitLabProvider {
             args.push("--auto-merge");
         }
         merge_with_retry(|| command_output("glab", &args))
+    }
+
+    fn merge_blocker(&self, review: &ReviewRequest) -> Result<MergeBlocker> {
+        let output = command_output(
+            "glab",
+            &["mr", "view", review.id_value(), "--output", "json"],
+        )?;
+        Ok(classify_gitlab_merge(&output))
     }
 
     fn wait_for_checks(&self, review: &ReviewRequest) -> Result<bool> {
@@ -175,6 +183,24 @@ fn gitlab_review_from(review: &serde_json::Value) -> Result<ReviewRequest> {
     })
 }
 
+/// Map GitLab's `detailed_merge_status` to a blocker. Only the precise
+/// detailed status is trusted: the older coarse `merge_status` can't tell a
+/// conflict from a failing pipeline, so it (and anything unrecognized) is
+/// treated as not-blocked, leaving the caller to fall back to the error text.
+fn classify_gitlab_merge(json: &str) -> MergeBlocker {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return MergeBlocker::None;
+    };
+    match value
+        .get("detailed_merge_status")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("conflict") => MergeBlocker::Conflicts,
+        Some("ci_must_pass" | "ci_still_running") => MergeBlocker::ChecksPending,
+        _ => MergeBlocker::None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +249,37 @@ mod tests {
     #[test]
     fn parse_gitlab_review_empty_array_returns_none() {
         assert_eq!(parse_gitlab_review("[]").expect("parse review"), None);
+    }
+
+    #[test]
+    fn classify_gitlab_merge_reads_detailed_status() {
+        assert_eq!(
+            classify_gitlab_merge(r#"{"detailed_merge_status":"conflict"}"#),
+            MergeBlocker::Conflicts
+        );
+        assert_eq!(
+            classify_gitlab_merge(r#"{"detailed_merge_status":"ci_must_pass"}"#),
+            MergeBlocker::ChecksPending
+        );
+        assert_eq!(
+            classify_gitlab_merge(r#"{"detailed_merge_status":"ci_still_running"}"#),
+            MergeBlocker::ChecksPending
+        );
+        assert_eq!(
+            classify_gitlab_merge(r#"{"detailed_merge_status":"mergeable"}"#),
+            MergeBlocker::None
+        );
+    }
+
+    #[test]
+    fn classify_gitlab_merge_ignores_coarse_or_missing_status() {
+        // The coarse merge_status can't distinguish conflict from CI, so it's
+        // left to the caller's fallback.
+        assert_eq!(
+            classify_gitlab_merge(r#"{"merge_status":"cannot_be_merged"}"#),
+            MergeBlocker::None
+        );
+        assert_eq!(classify_gitlab_merge("{}"), MergeBlocker::None);
+        assert_eq!(classify_gitlab_merge("not json"), MergeBlocker::None);
     }
 }

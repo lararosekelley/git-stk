@@ -85,6 +85,20 @@ pub enum ReviewState {
     Unknown(String),
 }
 
+/// A structural reason the platform won't merge a review, read from its API
+/// rather than its error text - so a wording change can't silently reclassify
+/// a real failure. `None` means nothing structural blocks the merge, or the
+/// platform did not say (the caller falls back to matching the error text).
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum MergeBlocker {
+    /// Required checks or reviews have not passed yet.
+    ChecksPending,
+    /// The review conflicts with its base branch.
+    Conflicts,
+    /// Nothing structural blocks the merge, or the platform did not say.
+    None,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct ReviewRequest {
     pub id: String,
@@ -118,6 +132,11 @@ pub trait ReviewProvider {
     /// With `auto`, schedule the merge for when required checks pass
     /// instead of merging now.
     fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String>;
+
+    /// Why the platform won't merge the review right now, read from its
+    /// structured status. Consulted after a merge is rejected to explain it
+    /// without parsing the CLI's error text.
+    fn merge_blocker(&self, review: &ReviewRequest) -> Result<MergeBlocker>;
 
     /// Block until the review's checks settle. Ok(true) when they pass (or
     /// there are none), Ok(false) when something failed.
