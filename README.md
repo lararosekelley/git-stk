@@ -237,9 +237,9 @@ that only got scheduled - on GitLab that is the default - skips the sync (and st
 to rerun `git stk sync` once checks pass. `merge --all --wait` (or `git config stk.mergeWait true`) polls
 each review's checks until they settle before merging it - turning the landing into genuinely one command;
 a failing check stops the loop, and `--no-wait` overrides the config. A freshly pushed branch whose checks
-are still queued (not yet registered) is waited out, not mistaken for "no checks." There is no artificial
-timeout: the wait runs as long as the platform reports checks in progress, and ctrl-c is always safe
-(rerun to resume from the new bottom).
+are still queued (not yet registered) is waited out, not mistaken for "no checks." The wait gives up after
+`stk.checkTimeout` (default 30m; `0` waits indefinitely) so a pipeline that never settles can't block the
+landing forever, and ctrl-c is always safe (rerun to resume from the new bottom).
 
 `submit --stack` (and `merge --all`) operate on the stack containing the current branch - its line from
 the bottom up through the current branch and out to its descendants - so it never matters where in that
@@ -339,6 +339,9 @@ Everything is optional; defaults shown below:
     mergeStrategy = squash
     ; `merge --all` waits for each review's checks before merging it. Default: false.
     mergeWait = true
+    ; Seconds `merge --wait` polls a review's checks before giving up. 0 waits
+    ; indefinitely. Default: 1800 (30m).
+    checkTimeout = 1800
     ; Open new reviews as drafts. Default: false.
     submitDraft = true
     ; `absorb` also folds unstaged tracked edits, not just staged ones. Default: false.

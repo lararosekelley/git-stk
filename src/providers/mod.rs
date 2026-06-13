@@ -17,6 +17,28 @@ pub(super) fn check_poll_interval() -> Duration {
     Duration::from_secs(5)
 }
 
+/// The error a `wait_for_checks` loop returns when its `stk.checkTimeout`
+/// ceiling elapses with the checks still unsettled - so a pipeline that never
+/// reports does not block `merge --wait` forever.
+pub(super) fn checks_timed_out(review: &ReviewRequest, timeout: Duration) -> anyhow::Error {
+    anyhow!(
+        "{}'s checks have not settled within {}; rerun `git stk merge` once they pass, \
+         or raise stk.checkTimeout",
+        review.id,
+        humanize(timeout),
+    )
+}
+
+/// A whole-minute duration as "30m"; otherwise plain seconds.
+fn humanize(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds >= 60 && seconds.is_multiple_of(60) {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 mod demo;
 mod github;
 mod gitlab;

@@ -92,6 +92,8 @@ impl ReviewProvider for GitLabProvider {
         // A just-pushed MR has no pipeline attached for a moment; tolerate
         // that for a grace window before concluding there is none, so we do
         // not merge before the pipeline even starts.
+        let started = std::time::Instant::now();
+        let timeout = crate::settings::check_timeout()?;
         let mut no_pipeline = 0u32;
         loop {
             let output = command_output(
@@ -113,6 +115,12 @@ impl ReviewProvider for GitLabProvider {
                 Some("failed") | Some("canceled") => return Ok(false),
                 // Pipeline exists and is running: it registered, so reset.
                 _ => no_pipeline = 0,
+            }
+
+            if let Some(timeout) = timeout
+                && started.elapsed() >= timeout
+            {
+                return Err(super::checks_timed_out(review, timeout));
             }
             std::thread::sleep(super::check_poll_interval());
         }

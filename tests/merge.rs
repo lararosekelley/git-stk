@@ -542,3 +542,33 @@ fn merge_reports_conflicts_from_structured_status() {
         .failure()
         .stderr(predicates::str::contains("#12 conflicts with main"));
 }
+
+#[test]
+fn merge_all_wait_gives_up_when_checks_never_settle() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.mergeWait", "true"]);
+    // A 1s ceiling so the test gives up after one poll instead of the 30m default.
+    repo.git(["config", "stk.checkTimeout", "1"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    // Checks never register: without a ceiling this would poll forever. The
+    // merge must never run.
+    let fake = FakeProvider::new()
+        .fail("pr checks 12", "no checks reported on the 'feature/a' branch")
+        .fail("pr merge", "merge should not run")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "#12's checks have not settled within 1s",
+        ))
+        .stderr(predicates::str::contains("raise stk.checkTimeout"));
+}
