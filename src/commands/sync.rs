@@ -58,10 +58,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     // 2. The stack containing the current branch (the trunk itself has no
     //    review and is never synced).
     let root = stack::stack_root(&current)?;
-    let branches: Vec<String> = stack::branch_and_descendants(&root)?
-        .into_iter()
-        .filter(|branch| Some(branch) != trunk.as_ref())
-        .collect();
+    let branches = stack::current_stack_branches(&current)?;
 
     let (provider, review_provider) = detect_review_provider()?;
 
@@ -128,7 +125,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         }
 
         if !dry_run {
-            stack::set_parent_for_branch(branch, &review.base)?;
+            stack::set_parent(branch, &review.base)?;
             stack::record_base(branch, &review.base);
         }
         anstream::println!(

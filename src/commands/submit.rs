@@ -130,7 +130,7 @@ pub fn submit(
     if submit_stack || downstack {
         let trunk = stack::trunk_branch(&git::local_branches()?);
         if Some(&branch) == trunk.as_ref() {
-            if stack::children_for_branch(&branch)?.is_empty() {
+            if stack::children_of(&branch)?.is_empty() {
                 bail!("no stacked branches to submit");
             }
             bail!("you are on the trunk ({branch}); check out a stacked branch first");
@@ -290,7 +290,7 @@ fn close_superseded_review(
 fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {
     let mut branch_parents = Vec::new();
     for branch in branches {
-        let Some(parent) = stack::parent_for_branch(branch)? else {
+        let Some(parent) = stack::parent_of(branch)? else {
             bail!("{branch} has no stack parent; run `git stk adopt` or `git stk sync` first");
         };
         branch_parents.push((branch.to_owned(), parent));

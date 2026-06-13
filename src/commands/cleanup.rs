@@ -112,7 +112,7 @@ fn recover_deleted_parent(
     local_branches: &[String],
     dry_run: bool,
 ) -> Result<usize> {
-    let Some(parent) = stack::parent_for_branch(branch)? else {
+    let Some(parent) = stack::parent_of(branch)? else {
         return Ok(0);
     };
     if local_branches.contains(&parent) {
@@ -146,7 +146,7 @@ fn recover_deleted_parent(
     );
     update_child_review_base(review_provider, branch, &review.base, dry_run)?;
     if !dry_run {
-        stack::set_parent_for_branch(branch, &review.base)?;
+        stack::set_parent(branch, &review.base)?;
     }
     Ok(1)
 }
@@ -156,12 +156,12 @@ pub(crate) fn cleanup_merged_branch(
     branch: &str,
     dry_run: bool,
 ) -> Result<()> {
-    let parent = stack::parent_for_branch(branch)?;
+    let parent = stack::parent_of(branch)?;
     let descendants = stack::branch_and_descendants(branch)?;
     let direct_children: Vec<_> = descendants
         .into_iter()
         .skip(1)
-        .filter_map(|child| match stack::parent_for_branch(&child) {
+        .filter_map(|child| match stack::parent_of(&child) {
             Ok(Some(child_parent)) if child_parent == branch => Some(Ok(child)),
             Ok(_) => None,
             Err(error) => Some(Err(error)),
@@ -183,9 +183,9 @@ pub(crate) fn cleanup_merged_branch(
                     // retargeting, so the next restack replays only the
                     // child's own commits even after a squash merge.
                     if let Ok(base) = git::merge_base(branch, &child) {
-                        stack::set_base_for_branch(&child, &base)?;
+                        stack::set_base(&child, &base)?;
                     }
-                    stack::set_parent_for_branch(&child, parent)?;
+                    stack::set_parent(&child, parent)?;
                 }
             }
             None => {
@@ -195,8 +195,8 @@ pub(crate) fn cleanup_merged_branch(
                     style::branch(&child)
                 );
                 if !dry_run {
-                    stack::unset_parent_for_branch(&child)?;
-                    stack::unset_base_for_branch(&child)?;
+                    stack::unset_parent(&child)?;
+                    stack::unset_base(&child)?;
                 }
             }
         }
@@ -208,8 +208,8 @@ pub(crate) fn cleanup_merged_branch(
         style::branch(branch)
     );
     if !dry_run {
-        stack::unset_parent_for_branch(branch)?;
-        stack::unset_base_for_branch(branch)?;
+        stack::unset_parent(branch)?;
+        stack::unset_base(branch)?;
     }
 
     Ok(())

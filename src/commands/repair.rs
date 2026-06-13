@@ -65,7 +65,7 @@ pub fn repair(dry_run: bool) -> Result<()> {
             continue;
         }
 
-        if let Some(parent) = stack::parent_for_branch(branch)? {
+        if let Some(parent) = stack::parent_of(branch)? {
             if !branches.contains(&parent) {
                 anstream::println!(
                     "{}",
@@ -79,7 +79,7 @@ pub fn repair(dry_run: bool) -> Result<()> {
             }
 
             let base_valid = matches!(
-                stack::base_for_branch(branch)?,
+                stack::base_of(branch)?,
                 Some(base) if git::is_ancestor(&base, branch).unwrap_or(false)
             );
             if base_valid {
@@ -156,7 +156,7 @@ pub fn repair(dry_run: bool) -> Result<()> {
                     style::dim(&format!("(from {source})"))
                 );
                 if !dry_run {
-                    stack::set_parent_for_branch(branch, &parent)?;
+                    stack::set_parent(branch, &parent)?;
                     stack::record_base(branch, &parent);
                 }
                 repaired += 1;

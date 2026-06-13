@@ -62,7 +62,7 @@ fn apply(current: &str, routes: Vec<Route>) -> Result<()> {
     // pass is needed.
     let mut forked = false;
     for branch in &path {
-        for child in stack::children_for_branch(branch)? {
+        for child in stack::children_of(branch)? {
             if !path.contains(&child) {
                 forked = true;
             }
@@ -117,7 +117,7 @@ fn apply(current: &str, routes: Vec<Route>) -> Result<()> {
     }
     for (index, branch) in path.iter().enumerate() {
         let parent = if index == 0 {
-            stack::parent_for_branch(branch)?
+            stack::parent_of(branch)?
         } else {
             Some(path[index - 1].clone())
         };
@@ -210,10 +210,10 @@ fn absorb_base(path: &[String]) -> Result<String> {
     let Some(bottom) = path.first() else {
         bail!("current branch is not in a stack");
     };
-    if let Some(parent) = stack::parent_for_branch(bottom)? {
+    if let Some(parent) = stack::parent_of(bottom)? {
         return Ok(parent);
     }
-    if let Some(base) = stack::base_for_branch(bottom)? {
+    if let Some(base) = stack::base_of(bottom)? {
         return Ok(base);
     }
     bail!("could not determine the stack base for {bottom}")
@@ -228,13 +228,13 @@ fn commit_owners(current: &str) -> Result<BTreeMap<String, String>> {
 
     for (index, branch) in path.iter().enumerate() {
         let parent = if index == 0 {
-            stack::parent_for_branch(branch)?
+            stack::parent_of(branch)?
         } else {
             Some(path[index - 1].clone())
         };
         let range = match parent {
             Some(parent) => format!("{parent}..{branch}"),
-            None => match stack::base_for_branch(branch)? {
+            None => match stack::base_of(branch)? {
                 Some(base) => format!("{base}..{branch}"),
                 None => continue,
             },

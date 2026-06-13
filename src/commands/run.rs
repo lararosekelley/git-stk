@@ -34,12 +34,7 @@ impl crate::commands::Run for Run {
         }
 
         let original = crate::git::current_branch()?;
-        let root = stack::stack_root(&original)?;
-        let trunk = stack::trunk_branch(&crate::git::local_branches()?);
-        let branches: Vec<String> = stack::branch_and_descendants(&root)?
-            .into_iter()
-            .filter(|branch| Some(branch) != trunk.as_ref())
-            .collect();
+        let branches = stack::current_stack_branches(&original)?;
 
         if branches.is_empty() {
             bail!("no stacked branches to run on");

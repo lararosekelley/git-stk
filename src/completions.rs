@@ -93,7 +93,7 @@ pub fn child_branch_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
         return Vec::new();
     };
 
-    stack::children_for_branch(&branch)
+    stack::children_of(&branch)
         .unwrap_or_default()
         .into_iter()
         .filter(|child| child.starts_with(prefix))

@@ -130,7 +130,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
         return Ok(());
     }
 
-    let base = stack::parent_for_branch(&bottom)?.unwrap_or_else(|| "its base".to_owned());
+    let base = stack::parent_of(&bottom)?.unwrap_or_else(|| "its base".to_owned());
     if !yes
         && !confirm(&format!(
             "merge {count} review{} into {base}, bottom-up ({strategy})? [y/N] ",
@@ -203,7 +203,7 @@ fn nothing_to_merge_hint() -> Result<String> {
     // Only blame the trunk when it actually carries stacks: then standing on it
     // is the footgun. An empty repo on the trunk just has nothing to merge.
     let on_trunk_with_stacks =
-        Some(&current) == trunk.as_ref() && !stack::children_for_branch(&current)?.is_empty();
+        Some(&current) == trunk.as_ref() && !stack::children_of(&current)?.is_empty();
     Ok(if on_trunk_with_stacks {
         format!("you are on the trunk ({current}); check out a stacked branch first")
     } else {
@@ -229,7 +229,7 @@ fn open_review_for(
         );
     }
 
-    let expected_base = stack::parent_for_branch(branch)?;
+    let expected_base = stack::parent_of(branch)?;
     if let Some(expected) = &expected_base
         && *expected != review.base
     {
