@@ -12,12 +12,17 @@ use crate::{git, stack};
 
 /// Clean up local metadata for merged review requests and delete their
 /// branches.
+///
+/// Unlike `merge`, this does not prompt: it only ever deletes branches whose
+/// review is *merged*, so the work is already in the trunk and the ref is
+/// recoverable from the reflog - the same reason `sync` deletes merged
+/// branches unprompted. `--dry-run` previews and `--keep-branch` retains them.
 #[derive(Debug, clap::Args)]
 pub struct Cleanup {
     #[arg(add = ArgValueCompleter::new(completions::branch_candidates))]
     branch: Option<String>,
     /// Print what would change without updating local metadata.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
     /// Keep cleaned merged branches instead of deleting them.
     #[arg(long, action = ArgAction::SetTrue)]

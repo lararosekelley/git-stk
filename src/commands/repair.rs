@@ -10,7 +10,7 @@ use crate::{git, settings, stack};
 #[derive(Debug, clap::Args)]
 pub struct Repair {
     /// Print what would change without updating local metadata.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
     /// Rebuild the stack from the metadata another machine pushed, fetching
     /// any of its branches that are missing locally.

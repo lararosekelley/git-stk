@@ -13,7 +13,7 @@ use crate::{git, settings, stack, style};
 #[derive(Debug, clap::Args)]
 pub struct Absorb {
     /// Show the hunk -> commit routing without changing anything.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
     /// Also absorb unstaged tracked changes, not just staged ones
     /// (overrides stk.absorbIncludeUnstaged).

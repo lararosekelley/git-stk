@@ -16,7 +16,7 @@ use crate::style;
 #[derive(Debug, clap::Args)]
 pub struct Merge {
     /// Print what would happen without merging anything.
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
     /// Skip the confirmation prompt.
     #[arg(long, short = 'y', action = ArgAction::SetTrue)]

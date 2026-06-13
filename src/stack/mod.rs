@@ -33,7 +33,7 @@ const BASE_KEY: &str = "stkBase";
 /// the next submit can replace and close that review.
 const RENAMED_FROM_KEY: &str = "stkRenamedFrom";
 
-pub fn create_branch(branch: &str) -> Result<()> {
+pub fn create_branch(branch: &str, dry_run: bool) -> Result<()> {
     let parent = git::current_branch()?;
     // `new` creates the branch; an existing one is an adopt, not a create.
     if git::local_branches()?
@@ -45,11 +45,14 @@ pub fn create_branch(branch: &str) -> Result<()> {
              with `git stk adopt {branch} --parent {parent}`"
         );
     }
-    git::create_branch(branch)?;
-    set_parent(branch, &parent)?;
-    record_base(branch, &parent);
+    if !dry_run {
+        git::create_branch(branch)?;
+        set_parent(branch, &parent)?;
+        record_base(branch, &parent);
+    }
     anstream::println!(
-        "created {} with parent {}",
+        "{} {} with parent {}",
+        if dry_run { "would create" } else { "created" },
         style::branch(branch),
         style::branch(&parent)
     );
@@ -60,28 +63,36 @@ pub fn create_branch(branch: &str) -> Result<()> {
 /// current branch's children onto it. The new branch shares the current tip,
 /// so descendants stay correctly based; commit to it, then `restack` to
 /// replay them. Any uncommitted changes ride onto the new branch, like `new`.
-pub fn insert_branch(branch: &str) -> Result<()> {
+pub fn insert_branch(branch: &str, dry_run: bool) -> Result<()> {
     ensure_absent(branch)?;
     let current = git::current_branch()?;
     let children = children_of(&current)?;
 
-    snapshot::take("new --insert");
-    git::create_branch(branch)?; // off current; leaves us on the new branch
-    set_parent(branch, &current)?;
-    record_base(branch, &current);
-    for child in &children {
-        set_parent(child, branch)?;
-        record_base(child, branch);
+    if !dry_run {
+        snapshot::take("new --insert");
+        git::create_branch(branch)?; // off current; leaves us on the new branch
+        set_parent(branch, &current)?;
+        record_base(branch, &current);
+        for child in &children {
+            set_parent(child, branch)?;
+            record_base(child, branch);
+        }
     }
 
     anstream::println!(
-        "inserted {} above {}",
+        "{} {} above {}",
+        if dry_run { "would insert" } else { "inserted" },
         style::branch(branch),
         style::branch(&current)
     );
     for child in &children {
         anstream::println!(
-            "retargeted {} -> {}",
+            "{} {} -> {}",
+            if dry_run {
+                "would retarget"
+            } else {
+                "retargeted"
+            },
             style::branch(child),
             style::branch(branch)
         );
@@ -92,7 +103,7 @@ pub fn insert_branch(branch: &str) -> Result<()> {
 /// Insert a new empty branch directly below the current one, moving the
 /// current branch onto it. Branches from the current branch's parent, so it
 /// requires a clean worktree. Commit to it, then `restack`.
-pub fn prepend_branch(branch: &str) -> Result<()> {
+pub fn prepend_branch(branch: &str, dry_run: bool) -> Result<()> {
     ensure_absent(branch)?;
     let current = git::current_branch()?;
     let parent =
@@ -103,22 +114,30 @@ pub fn prepend_branch(branch: &str) -> Result<()> {
         );
     }
 
-    snapshot::take("new --prepend");
-    git::checkout(&parent)?;
-    git::create_branch(branch)?; // off the parent; leaves us on the new branch
-    set_parent(branch, &parent)?;
-    record_base(branch, &parent);
-    set_parent(&current, branch)?;
-    record_base(&current, branch);
+    if !dry_run {
+        snapshot::take("new --prepend");
+        git::checkout(&parent)?;
+        git::create_branch(branch)?; // off the parent; leaves us on the new branch
+        set_parent(branch, &parent)?;
+        record_base(branch, &parent);
+        set_parent(&current, branch)?;
+        record_base(&current, branch);
+    }
 
     anstream::println!(
-        "inserted {} between {} and {}",
+        "{} {} between {} and {}",
+        if dry_run { "would insert" } else { "inserted" },
         style::branch(branch),
         style::branch(&parent),
         style::branch(&current)
     );
     anstream::println!(
-        "retargeted {} -> {}",
+        "{} {} -> {}",
+        if dry_run {
+            "would retarget"
+        } else {
+            "retargeted"
+        },
         style::branch(&current),
         style::branch(branch)
     );
@@ -149,7 +168,7 @@ pub fn trunk_branch(branches: &[String]) -> Option<String> {
         .map(|name| (*name).to_owned())
 }
 
-pub fn adopt_branch(branch: &str, parent: &str) -> Result<()> {
+pub fn adopt_branch(branch: &str, parent: &str, dry_run: bool) -> Result<()> {
     if branch == parent {
         bail!("a branch cannot be its own stack parent");
     }
@@ -168,10 +187,13 @@ pub fn adopt_branch(branch: &str, parent: &str) -> Result<()> {
         bail!("{parent} is already below {branch} in the stack; that would form a cycle");
     }
 
-    set_parent(branch, parent)?;
-    record_base(branch, parent);
+    if !dry_run {
+        set_parent(branch, parent)?;
+        record_base(branch, parent);
+    }
     anstream::println!(
-        "attached {} to {}",
+        "{} {} to {}",
+        if dry_run { "would attach" } else { "attached" },
         style::branch(branch),
         style::branch(parent)
     );

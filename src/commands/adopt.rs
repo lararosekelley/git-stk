@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use clap::ArgAction;
 use clap_complete::engine::ArgValueCompleter;
 
 use crate::commands::Run;
@@ -14,6 +15,9 @@ pub struct Adopt {
     /// The stack parent (defaults to the trunk).
     #[arg(long, add = ArgValueCompleter::new(completions::branch_candidates))]
     parent: Option<String>,
+    /// Print what would change without writing any metadata.
+    #[arg(long, short = 'n', action = ArgAction::SetTrue)]
+    dry_run: bool,
 }
 
 impl Run for Adopt {
@@ -27,6 +31,6 @@ impl Run for Adopt {
             None => crate::stack::trunk_branch(&crate::git::local_branches()?)
                 .context("could not detect the trunk branch; pass --parent")?,
         };
-        crate::stack::adopt_branch(&branch, &parent)
+        crate::stack::adopt_branch(&branch, &parent, self.dry_run)
     }
 }

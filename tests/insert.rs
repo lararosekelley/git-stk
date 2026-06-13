@@ -140,3 +140,82 @@ fn new_prepend_refuses_a_dirty_worktree() {
         .failure()
         .stderr(predicates::str::contains("uncommitted changes"));
 }
+
+#[test]
+fn new_dry_run_previews_without_creating_the_branch() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    repo.stack()
+        .args(["new", "feature/b", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would create feature/b with parent feature/a",
+        ));
+
+    // Nothing was created and we did not move.
+    assert_eq!(
+        repo.git_status(["branch", "--list", "feature/b"])
+            .stdout
+            .len(),
+        0
+    );
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
+}
+
+#[test]
+fn new_insert_dry_run_previews_retargeting_without_moving_anything() {
+    let repo = linear_stack();
+    repo.git(["switch", "feature/a"]);
+
+    // `-n` is the short alias for `--dry-run`.
+    repo.stack()
+        .args(["new", "feature/mid", "--insert", "-n"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would insert feature/mid above feature/a",
+        ))
+        .stdout(predicates::str::contains(
+            "would retarget feature/b -> feature/mid",
+        ));
+
+    // No branch created, and feature/b's parent is untouched.
+    assert_eq!(
+        repo.git_status(["branch", "--list", "feature/mid"])
+            .stdout
+            .len(),
+        0
+    );
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "feature/a"
+    );
+}
+
+#[test]
+fn adopt_dry_run_previews_without_writing_metadata() {
+    let repo = TestRepo::new();
+    // A hand-made branch with no stack metadata yet.
+    repo.git(["checkout", "-b", "feature/loose"]);
+    repo.commit_file("x.txt", "x\n", "loose work");
+    repo.git(["switch", "main"]);
+
+    repo.stack()
+        .args(["adopt", "feature/loose", "-n"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would attach feature/loose to main",
+        ));
+
+    // No parent metadata was written.
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.feature/loose.stkParent"])
+            .stdout
+            .len(),
+        0
+    );
+}

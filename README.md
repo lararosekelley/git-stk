@@ -104,16 +104,17 @@ git stk list
 
 Git's own narration (rebase progress, switch advice, push chatter) is captured and shown only when a
 git command fails; pass `-v`/`--verbose` to any command to stream it through instead. Output is colored
-when the terminal supports it; pipes and [`NO_COLOR`](https://no-color.org/) turn it off.
+when the terminal supports it; pipes and [`NO_COLOR`](https://no-color.org/) turn it off. Every command
+that takes `--dry-run` also accepts `-n` as a short alias.
 
 Local stack metadata:
 
 ```sh
-git stk new <branch> [--insert | --prepend]
+git stk new <branch> [--insert | --prepend] [--dry-run]
 git stk parent [branch]
 git stk children [branch]
 git stk list [--all | --format <markdown|plain>]
-git stk adopt [branch] [--parent <parent>]   # defaults: current branch, trunk
+git stk adopt [branch] [--parent <parent>] [--dry-run]   # defaults: current branch, trunk
 git stk detach [branch]
 git stk rename [branch] <new-name> [--dry-run]
 ```
@@ -227,6 +228,11 @@ metadata from open reviews, cleans up merged branches (retargeting children and 
 any branch it deletes, restacks and pushes the remainder, and ends by printing the next PR to merge -
 or `stack complete` when the loop is done. After squash-merging a PR, `git stk sync` is the only command
 you need.
+
+`cleanup` does the branch-deletion half on demand: it removes the local branches whose reviews have
+merged (retargeting any children first). It deletes without a prompt - unlike `merge` - because it only
+touches *merged* branches, whose work is already in the trunk and whose ref the reflog still holds (and
+`git stk undo` recreates them); `--dry-run` previews and `--keep-branch` retains them.
 
 `merge` merges the review at the bottom of the stack via the provider CLI (strategy from
 `stk.mergeStrategy`; squash by default), confirming first unless `-y` is passed, then runs the full `sync`
