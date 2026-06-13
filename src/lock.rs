@@ -30,35 +30,87 @@ impl Lock {
         };
         let path = PathBuf::from(path);
 
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                // Best effort: the holder line only feeds the error message.
-                let _ = writeln!(file, "{} {command}", std::process::id());
-                Ok(Self { path: Some(path) })
-            }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                let holder = fs::read_to_string(&path).unwrap_or_default();
-                let holder = holder.trim();
-                let by = if holder.is_empty() {
-                    String::new()
-                } else {
-                    format!(" ({holder})")
-                };
-                bail!(
-                    "another git stk operation is in progress{by}; wait for it to \
-                     finish, or remove {} if it is stale",
-                    path.display()
-                );
-            }
-            Err(error) => {
-                Err(error).with_context(|| format!("failed to take the lock at {}", path.display()))
+        // Two passes: if the first finds a lock whose holder process has died
+        // (a `kill -9`, a crash, a power loss mid-command), reclaim it and try
+        // once more. A second failure means it is genuinely held, or another
+        // run reclaimed it first.
+        for reclaim in [true, false] {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    // Best effort: the holder line feeds the error message and
+                    // the staleness check.
+                    let _ = writeln!(file, "{} {command}", std::process::id());
+                    return Ok(Self { path: Some(path) });
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    let holder = fs::read_to_string(&path).unwrap_or_default();
+                    let holder = holder.trim().to_owned();
+                    if reclaim && holder_is_stale(&holder) {
+                        anstream::eprintln!(
+                            "{}",
+                            crate::style::dim(&format!(
+                                "reclaiming a stale git-stk lock; its holder ({holder}) is gone"
+                            ))
+                        );
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
+                    let by = if holder.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({holder})")
+                    };
+                    bail!(
+                        "another git stk operation is in progress{by}; wait for it to \
+                         finish, or remove {} if it is stale",
+                        path.display()
+                    );
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to take the lock at {}", path.display()));
+                }
             }
         }
+        unreachable!("the second pass always returns or bails");
     }
+}
+
+/// Whether the lock's recorded holder process is gone, so the lock is stale
+/// and safe to reclaim. Conservative: an unparseable holder, a live process,
+/// a process owned by another user, or a platform we cannot probe all read as
+/// "not stale" - keep the lock and let the contention message stand.
+fn holder_is_stale(holder: &str) -> bool {
+    holder
+        .split_whitespace()
+        .next()
+        .and_then(|token| token.parse::<i32>().ok())
+        .is_some_and(process_is_dead)
+}
+
+#[cfg(unix)]
+fn process_is_dead(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    // kill(pid, 0) sends no signal; it just probes existence. 0 means alive,
+    // ESRCH means no such process (dead), and EPERM means it exists but is
+    // owned by another user (alive, and not ours to reclaim).
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return false;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+fn process_is_dead(_pid: i32) -> bool {
+    // No portable existence probe without a platform crate; never auto-reclaim
+    // here - the contention message tells the user how to clear a stale lock.
+    false
 }
 
 impl Drop for Lock {

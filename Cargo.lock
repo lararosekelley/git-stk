@@ -560,6 +560,7 @@ dependencies = [
  "clap_mangen",
  "console",
  "dialoguer",
+ "libc",
  "predicates",
  "serde_json",
  "tempfile",
