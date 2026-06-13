@@ -192,7 +192,7 @@ pub fn detach_branch(branch: Option<&str>) -> Result<()> {
 /// metadata with the rename; children pointing at the old name are
 /// retargeted here.
 pub fn rename_branch(old: &str, new: &str, dry_run: bool) -> Result<()> {
-    let children = children_for_branch(old)?;
+    let children = children_of(old)?;
 
     if !dry_run {
         snapshot::take("rename");
@@ -207,7 +207,7 @@ pub fn rename_branch(old: &str, new: &str, dry_run: bool) -> Result<()> {
 
     for child in &children {
         if !dry_run {
-            set_parent_for_branch(child, new)?;
+            set_parent(child, new)?;
         }
         anstream::println!(
             "{} {} -> {}",
@@ -221,34 +221,6 @@ pub fn rename_branch(old: &str, new: &str, dry_run: bool) -> Result<()> {
         );
     }
     Ok(())
-}
-
-pub fn parent_for_branch(branch: &str) -> Result<Option<String>> {
-    parent_of(branch)
-}
-
-pub fn children_for_branch(branch: &str) -> Result<Vec<String>> {
-    children_of(branch)
-}
-
-pub fn set_parent_for_branch(branch: &str, parent: &str) -> Result<()> {
-    set_parent(branch, parent)
-}
-
-pub fn unset_parent_for_branch(branch: &str) -> Result<()> {
-    unset_parent(branch)
-}
-
-pub fn base_for_branch(branch: &str) -> Result<Option<String>> {
-    base_of(branch)
-}
-
-pub fn set_base_for_branch(branch: &str, base: &str) -> Result<()> {
-    git::config_set(&base_key(branch), base)
-}
-
-pub fn unset_base_for_branch(branch: &str) -> Result<()> {
-    unset_base(branch)
 }
 
 /// Record that `branch` is the rename of `old`, whose open review the next
@@ -314,6 +286,20 @@ pub fn stack_line(branch: &str) -> Result<Vec<String>> {
     Ok(line)
 }
 
+/// Every branch in the stack `branch` belongs to, trunk excluded: the whole
+/// subtree under the stack's root (so fork siblings are included too), unlike
+/// [`stack_line`] which is only `branch`'s own line. The root is the trunk for
+/// an anchored stack - dropped here - or an unanchored base branch, which is a
+/// real stacked branch and stays in.
+pub fn current_stack_branches(branch: &str) -> Result<Vec<String>> {
+    let root = stack_root(branch)?;
+    let trunk = trunk_branch(&git::local_branches()?);
+    Ok(branch_and_descendants(&root)?
+        .into_iter()
+        .filter(|candidate| Some(candidate) != trunk.as_ref())
+        .collect())
+}
+
 /// Publish the current stack's parent map to the shared metadata ref so
 /// another clone can rebuild it. Best effort: a failure warns but never aborts
 /// the push that triggered it.
@@ -328,14 +314,10 @@ pub fn publish_metadata(remote: &str) {
 
 fn try_publish_metadata(remote: &str) -> Result<()> {
     let current = git::current_branch()?;
-    let root = stack_root(&current)?;
     let trunk = trunk_branch(&git::local_branches()?);
 
     let mut parents = serde_json::Map::new();
-    for branch in branch_and_descendants(&root)? {
-        if Some(&branch) == trunk.as_ref() {
-            continue;
-        }
+    for branch in current_stack_branches(&current)? {
         if let Some(parent) = parent_of(&branch)? {
             parents.insert(branch, Value::String(parent));
         }
@@ -451,7 +433,7 @@ fn collect_descendants(
     }
 }
 
-fn children_of(parent: &str) -> Result<Vec<String>> {
+pub(crate) fn children_of(parent: &str) -> Result<Vec<String>> {
     Ok(parent_map()?
         .into_iter()
         .filter_map(|(branch, branch_parent)| (branch_parent == parent).then_some(branch))
@@ -483,23 +465,27 @@ fn root_for(branch: &str, parents: &BTreeMap<String, String>) -> String {
     root
 }
 
-fn parent_of(branch: &str) -> Result<Option<String>> {
+pub(crate) fn parent_of(branch: &str) -> Result<Option<String>> {
     git::config_get(&parent_key(branch))
 }
 
-fn base_of(branch: &str) -> Result<Option<String>> {
+pub(crate) fn base_of(branch: &str) -> Result<Option<String>> {
     git::config_get(&base_key(branch))
 }
 
-fn set_parent(branch: &str, parent: &str) -> Result<()> {
+pub(crate) fn set_parent(branch: &str, parent: &str) -> Result<()> {
     git::config_set(&parent_key(branch), parent)
 }
 
-fn unset_parent(branch: &str) -> Result<()> {
+pub(crate) fn unset_parent(branch: &str) -> Result<()> {
     git::config_unset(&parent_key(branch))
 }
 
-fn unset_base(branch: &str) -> Result<()> {
+pub(crate) fn set_base(branch: &str, base: &str) -> Result<()> {
+    git::config_set(&base_key(branch), base)
+}
+
+pub(crate) fn unset_base(branch: &str) -> Result<()> {
     git::config_unset(&base_key(branch))
 }
 

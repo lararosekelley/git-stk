@@ -24,8 +24,8 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
     let branch = branch
         .map(str::to_owned)
         .map_or_else(git::current_branch, Ok)?;
-    let parent = stack::parent_for_branch(&branch)?;
-    let children = stack::children_for_branch(&branch)?;
+    let parent = stack::parent_of(&branch)?;
+    let children = stack::children_of(&branch)?;
 
     anstream::println!("branch: {}", style::paint(style::CURRENT, &branch));
     match parent.as_deref() {
