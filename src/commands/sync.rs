@@ -4,7 +4,7 @@ use clap::ArgAction;
 use crate::cli::{PushMode, UpdateRefsMode};
 use crate::commands::Run;
 use crate::commands::cleanup::{cleanup_branch_deletion, cleanup_merged_branch};
-use crate::providers::{ReviewState, detect_provider, review_provider};
+use crate::providers::{ReviewState, detect_review_provider};
 use crate::settings;
 use crate::style;
 use crate::{git, stack};
@@ -63,8 +63,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         .filter(|branch| Some(branch) != trunk.as_ref())
         .collect();
 
-    let provider = detect_provider()?;
-    let review_provider = review_provider(provider.kind);
+    let (provider, review_provider) = detect_review_provider()?;
 
     // 3. Classify every branch: refresh metadata from open reviews, collect
     //    merged ones for cleanup.

@@ -3,7 +3,7 @@ use clap_complete::engine::ArgValueCompleter;
 
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{ReviewState, detect_provider, review_provider};
+use crate::providers::{ReviewState, detect_review_provider};
 use crate::style;
 use crate::{git, stack};
 
@@ -42,9 +42,8 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
         anstream::println!("children: {}", children.join(", "));
     }
 
-    let provider = detect_provider()?;
+    let (provider, review_provider) = detect_review_provider()?;
     println!("provider: {} ({})", provider.kind, provider.source);
-    let review_provider = review_provider(provider.kind);
 
     // Closed-inclusive: a review closed without merging is part of the
     // branch's story, not "no review".

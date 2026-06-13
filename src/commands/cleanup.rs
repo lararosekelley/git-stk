@@ -4,7 +4,9 @@ use clap_complete::engine::ArgValueCompleter;
 
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{ReviewProvider, ReviewState, detect_provider, review_provider};
+use crate::providers::{
+    ReviewProvider, ReviewState, detect_review_provider, owned_review_for_branch,
+};
 use crate::style;
 use crate::{git, stack};
 
@@ -35,8 +37,7 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
     let branches = stack::branch_and_descendants(&branch)?;
     let current_branch = git::current_branch()?;
     let local_branches = git::local_branches()?;
-    let provider = detect_provider()?;
-    let review_provider = review_provider(provider.kind);
+    let (provider, review_provider) = detect_review_provider()?;
     let mut cleaned = 0;
     let mut skipped = 0;
     let mut retargeted = 0;
@@ -120,11 +121,10 @@ fn recover_deleted_parent(
 
     // Provider lookups go by ref name, so the review outlives the branch.
     // Best effort: anything unresolved stays for `git stk repair`.
-    let Ok(Some(review)) = review_provider.review_for_branch(&parent) else {
+    let Ok(Some(review)) = owned_review_for_branch(review_provider, &parent) else {
         return Ok(0);
     };
-    if review.branch != parent
-        || review.state != ReviewState::Merged
+    if review.state != ReviewState::Merged
         || review.base == *branch
         || !local_branches.contains(&review.base)
     {

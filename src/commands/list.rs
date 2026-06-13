@@ -4,14 +4,16 @@ use anyhow::Result;
 use clap::ValueEnum;
 
 use crate::commands::Run;
-use crate::providers::{ReviewRequest, ReviewState, detect_provider, review_provider};
+use crate::providers::{
+    ReviewRequest, ReviewState, detect_review_provider, owned_review_for_branch,
+};
 use crate::{git, stack};
 
 /// Branch -> open-review id (e.g. `#12`), in one provider call. Best effort:
 /// an absent or failing provider (offline, no gh/glab) yields an empty map, so
 /// the tree still prints, just without numbers.
 fn review_numbers() -> BTreeMap<String, String> {
-    let Some(provider) = detect_provider().ok().map(|p| review_provider(p.kind)) else {
+    let Some((_, provider)) = detect_review_provider().ok() else {
         return BTreeMap::new();
     };
     let Ok(reviews) = provider.open_reviews() else {
@@ -71,14 +73,13 @@ pub fn list_formatted(format: Format) -> Result<()> {
         return Ok(());
     }
 
-    let review_provider = detect_provider().ok().map(|p| review_provider(p.kind));
+    let review_provider = detect_review_provider().ok().map(|(_, client)| client);
     let entries: Vec<(String, Option<ReviewRequest>)> = branches
         .iter()
         .map(|branch| {
             let review = review_provider
                 .as_ref()
-                .and_then(|rp| rp.review_for_branch(branch).ok().flatten())
-                .filter(|review| review.branch == *branch);
+                .and_then(|rp| owned_review_for_branch(&**rp, branch).ok().flatten());
             (branch.clone(), review)
         })
         .collect();

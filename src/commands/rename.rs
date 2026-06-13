@@ -4,7 +4,7 @@ use clap_complete::engine::ArgValueCompleter;
 
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{detect_provider, review_provider};
+use crate::providers::{detect_review_provider, owned_review_for_branch};
 use crate::style;
 use crate::{git, stack};
 
@@ -41,22 +41,19 @@ fn rename(old: &str, new: &str, dry_run: bool) -> Result<()> {
     // Best effort: an existing review still heads the old branch name, and
     // the platform does not follow local renames. Mark the rename so the next
     // submit opens a fresh review for `new` and closes the stale one.
-    if let Ok(provider) = detect_provider() {
-        let review_provider = review_provider(provider.kind);
-        if let Ok(Some(review)) = review_provider.review_for_branch(old)
-            && review.branch == *old
-        {
-            if !dry_run {
-                stack::set_renamed_from(new, old)?;
-            }
-            anstream::println!(
-                "{} review {} still heads {old}; your next submit opens a fresh \
-                 review for {new} and closes {}",
-                style::paint(style::WARN, "warning:"),
-                review.id,
-                review.id
-            );
+    if let Ok((_, review_provider)) = detect_review_provider()
+        && let Ok(Some(review)) = owned_review_for_branch(review_provider.as_ref(), old)
+    {
+        if !dry_run {
+            stack::set_renamed_from(new, old)?;
         }
+        anstream::println!(
+            "{} review {} still heads {old}; your next submit opens a fresh \
+                 review for {new} and closes {}",
+            style::paint(style::WARN, "warning:"),
+            review.id,
+            review.id
+        );
     }
 
     Ok(())
