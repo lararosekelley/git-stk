@@ -156,11 +156,14 @@ pub fn print_stack(reviews: &BTreeMap<String, String>) -> Result<()> {
     let children = children_map(&parents);
     let trunk = trunk_branch(&git::local_branches()?);
 
+    let descendants = branch_and_descendants(&root)?;
+    let sizes = diff_sizes(descendants.iter().cloned(), &parents);
     let ctx = TreeCtx {
         current: &current,
         trunk: trunk.as_deref(),
         children: &children,
         reviews,
+        sizes: &sizes,
     };
     let mut lines = Vec::new();
     collect_tree_lines(&ctx, &root, 0, &mut BTreeSet::new(), &mut lines);
@@ -171,9 +174,9 @@ pub fn print_stack(reviews: &BTreeMap<String, String>) -> Result<()> {
         anstream::println!("{line}");
     }
 
-    for branch in branch_and_descendants(&root)? {
-        if let Some(parent) = parents.get(&branch)
-            && let Some(hint) = behind_parent_hint(&branch, parent)
+    for branch in &descendants {
+        if let Some(parent) = parents.get(branch)
+            && let Some(hint) = behind_parent_hint(branch, parent)
         {
             anstream::println!("{} {hint}", style::paint(style::HINT, "hint:"));
         }
@@ -215,11 +218,13 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, String>) -> Result<()> {
     // bottom; rootless fragments stack above it.
     roots.sort_by_key(|root| Some(root.as_str()) == trunk.as_deref());
 
+    let sizes = diff_sizes(parents.keys().cloned(), &parents);
     let ctx = TreeCtx {
         current: &current,
         trunk: trunk.as_deref(),
         children: &children,
         reviews,
+        sizes: &sizes,
     };
     for (index, root) in roots.iter().enumerate() {
         if index > 0 {
@@ -260,6 +265,25 @@ struct TreeCtx<'a> {
     trunk: Option<&'a str>,
     children: &'a BTreeMap<String, Vec<String>>,
     reviews: &'a BTreeMap<String, String>,
+    sizes: &'a BTreeMap<String, (usize, usize)>,
+}
+
+/// Per-branch diff size (added, deleted lines) against its stack parent, for
+/// each branch that has one. Best effort: a branch with no parent, or whose
+/// diff cannot be read, is left out of the map and simply shows no size.
+fn diff_sizes(
+    branches: impl IntoIterator<Item = String>,
+    parents: &BTreeMap<String, String>,
+) -> BTreeMap<String, (usize, usize)> {
+    let mut sizes = BTreeMap::new();
+    for branch in branches {
+        if let Some(parent) = parents.get(&branch)
+            && let Ok(size) = git::diff_numstat(parent, &branch)
+        {
+            sizes.insert(branch, size);
+        }
+    }
+    sizes
 }
 
 fn collect_tree_lines(
@@ -280,9 +304,29 @@ fn collect_tree_lines(
     if Some(branch) == ctx.trunk {
         line.push_str(&style::paint(style::DIM, " (trunk)"));
     }
-    // The branch's open review number, when one is known.
+    // Optional annotations in one paren group: the dimmed open review number,
+    // then the diff size against the parent in faded green/red, like a diff.
+    let mut tags: Vec<String> = Vec::new();
     if let Some(id) = ctx.reviews.get(branch) {
-        line.push_str(&style::paint(style::DIM, &format!(" ({id})")));
+        tags.push(style::paint(style::DIM, id));
+    }
+    // An empty branch (same tip as its parent) shows no size rather than a
+    // noisy "+0/-0".
+    if let Some((added, deleted)) = ctx.sizes.get(branch)
+        && (*added > 0 || *deleted > 0)
+    {
+        tags.push(format!(
+            "{}{}{}",
+            style::paint(style::ADDED, &format!("+{added}")),
+            style::paint(style::DIM, "/"),
+            style::paint(style::REMOVED, &format!("-{deleted}")),
+        ));
+    }
+    if !tags.is_empty() {
+        let separator = style::paint(style::DIM, ", ");
+        line.push_str(&style::paint(style::DIM, " ("));
+        line.push_str(&tags.join(&separator));
+        line.push_str(&style::paint(style::DIM, ")"));
     }
     lines.push(line);
 

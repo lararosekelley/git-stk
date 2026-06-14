@@ -25,6 +25,10 @@ pub const OPEN: Style = AnsiColor::Green.on_default();
 pub const MERGED: Style = AnsiColor::Magenta.on_default();
 pub const CLOSED: Style = AnsiColor::Red.on_default();
 
+/// Faded green/red for a branch's added/removed line counts, like a diff.
+pub const ADDED: Style = AnsiColor::Green.on_default().dimmed();
+pub const REMOVED: Style = AnsiColor::Red.on_default().dimmed();
+
 pub fn paint(style: Style, text: &str) -> String {
     format!("{style}{text}{style:#}")
 }

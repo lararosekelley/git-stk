@@ -129,13 +129,17 @@ open review still heads the old branch (platforms do not follow local renames), 
 your next `submit` opens a fresh review for the new name, then offers to close the stale one and delete its
 branch - leaving no orphaned PR, and the stack overview in every review drops the superseded entry.
 
-`list` prints the stack leaf-first, like a pile sitting on its base, with the trunk labeled:
+`list` prints the stack leaf-first, like a pile sitting on its base, with the trunk labeled. Each branch
+also shows, dimmed, its open review number (once submitted) and its diff size against its parent:
 
 ```text
-    ◉ feature/b
-  ○ feature/a
+    ◉ feature/b (#13, +42/-7)
+  ○ feature/a (#12, +9/-0)
 ○ main (trunk)
 ```
+
+The size is computed locally (no provider call), so it shows even before you submit; an empty branch and
+the trunk show none.
 
 `list --all` shows every stack at once instead of just the one you are on - the trunk once at the bottom,
 each stack's tree above it, and any rootless fragments as their own trees - for an overview when several

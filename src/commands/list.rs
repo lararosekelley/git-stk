@@ -5,7 +5,7 @@ use clap::ValueEnum;
 
 use crate::commands::Run;
 use crate::providers::{
-    ReviewRequest, ReviewState, detect_review_provider, owned_review_for_branch,
+    ReviewRequest, ReviewState, detect_review_provider, label, owned_review_for_branch,
 };
 use crate::{git, stack};
 
@@ -92,7 +92,7 @@ pub fn list_formatted(format: Format) -> Result<()> {
             (Format::Markdown, Some(review)) => {
                 println!(
                     "{number}. [{}]({}) - {}",
-                    review.label(),
+                    labeled_with_size(review, branch),
                     review.url,
                     review.state
                 );
@@ -100,7 +100,11 @@ pub fn list_formatted(format: Format) -> Result<()> {
             (Format::Markdown, None) => println!("{number}. `{branch}` (no review)"),
             // The bare URL on its own line is what chat apps auto-link.
             (Format::Plain, Some(review)) => {
-                println!("{number}. {} - {}", review.label(), review.state);
+                println!(
+                    "{number}. {} - {}",
+                    labeled_with_size(review, branch),
+                    review.state
+                );
                 println!("   {}", review.url);
             }
             (Format::Plain, None) => println!("{number}. {branch} (no review)"),
@@ -108,6 +112,25 @@ pub fn list_formatted(format: Format) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The review label with the branch's diff size folded into the id's
+/// parentheses after a comma - e.g. `Title (#12, +9/-0)` - mirroring the tree.
+/// The size is dropped when zero or unavailable, leaving the plain label.
+fn labeled_with_size(review: &ReviewRequest, branch: &str) -> String {
+    let id = match branch_diff_size(branch) {
+        Some((added, deleted)) => format!("{}, +{added}/-{deleted}", review.id),
+        None => review.id.clone(),
+    };
+    label(&review.title, &id)
+}
+
+/// A branch's diff size against its stack parent, dropped when zero or
+/// unavailable - the same count the `git stk list` tree shows.
+fn branch_diff_size(branch: &str) -> Option<(usize, usize)> {
+    let parent = stack::parent_of(branch).ok().flatten()?;
+    let (added, deleted) = git::diff_numstat(&parent, branch).ok()?;
+    (added > 0 || deleted > 0).then_some((added, deleted))
 }
 
 /// One-line stack summary, e.g. "3 PRs, base `main`, 2 open / 1 merged"
