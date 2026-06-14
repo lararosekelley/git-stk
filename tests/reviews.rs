@@ -621,3 +621,26 @@ fn view_opens_the_review_in_the_browser() {
     let recorded = std::fs::read_to_string(repo.path().join("view-args.txt")).expect("view args");
     assert_eq!(recorded.trim(), "pr view 12 --web");
 }
+
+#[test]
+fn provider_command_points_at_auth_login_when_the_cli_is_not_signed_in() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+
+    // gh is installed but not authenticated: keep its message, add the hint.
+    let fake = FakeProvider::new()
+        .fail("pr list", "error: not logged into any GitHub hosts")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["review", "feature/a"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "not logged into any GitHub hosts",
+        ))
+        .stderr(predicates::str::contains(
+            "if you are not signed in, run `gh auth login`",
+        ));
+}

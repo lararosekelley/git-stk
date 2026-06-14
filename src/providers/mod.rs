@@ -286,21 +286,65 @@ pub(crate) fn review_provider(kind: ProviderKind) -> Box<dyn ReviewProvider> {
     }
 }
 
+/// A provider CLI's (full name, install URL, auth command), or None for a
+/// program that isn't one (e.g. `git`).
+fn provider_cli(program: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match program {
+        "gh" => Some(("GitHub CLI", "https://cli.github.com", "gh auth login")),
+        "glab" => Some((
+            "GitLab CLI",
+            "https://gitlab.com/gitlab-org/cli",
+            "glab auth login",
+        )),
+        _ => None,
+    }
+}
+
+/// Whether a provider CLI's stderr reads like a not-signed-in failure, so we
+/// can point the user at `... auth login` rather than just echoing it.
+fn looks_unauthenticated(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    [
+        "auth login",
+        "not logged",
+        "401",
+        "unauthorized",
+        "authentication required",
+    ]
+    .iter()
+    .any(|needle| stderr.contains(needle))
+}
+
 fn command_output(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run {program}"))?;
+    let output = match Command::new(program).args(args).output() {
+        Ok(output) => output,
+        // The most common newcomer failure: the provider CLI isn't installed.
+        // Turn the raw "No such file or directory (os error 2)" into guidance.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some((name, url, auth)) = provider_cli(program) {
+                bail!("{program} ({name}) is not installed - get it from {url}, then run `{auth}`");
+            }
+            return Err(error).with_context(|| format!("failed to run {program}"));
+        }
+        Err(error) => return Err(error).with_context(|| format!("failed to run {program}")),
+    };
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    // Installed but (probably) not signed in: keep the CLI's own message and
+    // add the actionable hint.
+    if let Some((_, _, auth)) = provider_cli(program)
+        && looks_unauthenticated(&stderr)
+    {
+        bail!("{program} failed: {stderr}\n(if you are not signed in, run `{auth}`)");
+    }
+    if stderr.is_empty() {
+        Err(anyhow!("{program} exited with status {}", output.status))
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        if stderr.is_empty() {
-            Err(anyhow!("{program} exited with status {}", output.status))
-        } else {
-            Err(anyhow!("{program} failed: {stderr}"))
-        }
+        Err(anyhow!("{program} failed: {stderr}"))
     }
 }
 
@@ -385,6 +429,27 @@ pub(crate) fn label(title: &str, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_cli_maps_only_the_provider_clis() {
+        assert!(provider_cli("gh").is_some());
+        assert!(provider_cli("glab").is_some());
+        assert!(provider_cli("git").is_none());
+    }
+
+    #[test]
+    fn looks_unauthenticated_matches_signin_failures_only() {
+        assert!(looks_unauthenticated(
+            "error: not logged into any GitHub hosts"
+        ));
+        assert!(looks_unauthenticated(
+            "To get started, please run: gh auth login"
+        ));
+        assert!(looks_unauthenticated("GET ...: 401 Unauthorized"));
+        // A normal failure must not be misread as an auth problem.
+        assert!(!looks_unauthenticated("pull request not found"));
+        assert!(!looks_unauthenticated("merge conflict in src/lib.rs"));
+    }
 
     #[test]
     fn transient_error_is_retried_then_succeeds() {
