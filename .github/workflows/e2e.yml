@@ -8,13 +8,12 @@
 #     custom job, so a failing live run blocks the release before anything is
 #     built or published (see dist-workspace.toml).
 #
-# Matrix: one cell per OS (GitHub only for now; the gitlab cell, which needs
-# glab and a token, is the next fan-out). The macOS cell runs the harness under
-# zsh, linux under bash, windows under pwsh - three shells. Matrix expressions
-# aren't allowed in `shell:`, so the zsh run is split out with a literal shell
-# gated by `if:`; the env is shared via a YAML anchor. (The shell is mostly
-# cosmetic until the setup/completions sub-check exists, since the harness
-# itself shells out to git-stk/gh directly.)
+# Matrix: GitHub on each OS (macOS=zsh, linux=bash, windows=pwsh - three shells),
+# plus a GitLab cell on ubuntu. Only ubuntu+github exercises `merge --all --wait`
+# (the grace-window path); the rest use `--no-wait` to keep runs fast - the wait
+# path only needs proving once. Matrix expressions aren't allowed in `shell:`, so
+# the zsh run is split out with a literal shell gated by `if:`, sharing env via a
+# YAML anchor.
 name: E2E
 
 on:
@@ -35,10 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, provider: github }
+          - { os: ubuntu-latest, provider: github, wait: true }
           - { os: macos-latest, provider: github }
           - { os: windows-latest, provider: github }
-          # - { os: ubuntu-latest, provider: gitlab }  # needs glab + token
+          - { os: ubuntu-latest, provider: gitlab }
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -61,6 +60,33 @@ jobs:
           GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
         run: gh auth setup-git
 
+      # glab isn't preinstalled (and Homebrew isn't on the runner PATH). Install
+      # the official .deb from the latest GitLab CLI release - it lands on
+      # /usr/bin, already on PATH for later steps. Then store a git credential
+      # for HTTPS pushes to gitlab.com (the token is written to a file, never
+      # echoed).
+      - name: Install glab + configure git auth (GitLab)
+        if: matrix.provider == 'gitlab'
+        env:
+          GITLAB_TOKEN: ${{ secrets.E2E_GITLAB_TOKEN }}
+        run: |
+          api="https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases/permalink/latest"
+          url=$(curl -fsSL "$api" \
+            | jq -r '.assets.links[] | select(.name | test("linux.*(amd64|x86_64).*\\.deb$"; "i")) | .url' \
+            | head -1)
+          if [ -z "$url" ]; then
+            echo "no matching glab .deb asset; available assets:"
+            curl -fsSL "$api" | jq -r '.assets.links[].name'
+            exit 1
+          fi
+          echo "installing glab from: $url"
+          curl -fsSL -o /tmp/glab.deb "$url"
+          sudo dpkg -i /tmp/glab.deb
+          glab --version
+          git config --global credential.helper store
+          printf 'https://oauth2:%s@gitlab.com\n' "$GITLAB_TOKEN" > "$HOME/.git-credentials"
+          chmod 600 "$HOME/.git-credentials"
+
       # linux=bash, windows=pwsh (runner defaults).
       - name: Run e2e
         if: runner.os != 'macOS'
@@ -69,9 +95,12 @@ jobs:
           # Owner for the ephemeral repo; override with an E2E_OWNER repo
           # variable to point at a dedicated test org.
           STK_E2E_OWNER: ${{ vars.E2E_OWNER || github.repository_owner }}
+          # Only the cell with matrix.wait set uses `merge --all --wait`.
+          STK_E2E_WAIT: ${{ matrix.wait }}
           # The harness under test needs the .exe suffix on Windows.
           GIT_STK_BIN: ${{ github.workspace }}/target/debug/git-stk${{ runner.os == 'Windows' && '.exe' || '' }}
           GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
+          GITLAB_TOKEN: ${{ secrets.E2E_GITLAB_TOKEN }}
         run: cargo run --features e2e --bin git-stk-e2e
 
       # macOS runs the harness under zsh; env reused from the anchor above.
