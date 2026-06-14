@@ -512,3 +512,41 @@ fn list_all_conflicts_with_format() {
         .assert()
         .failure();
 }
+
+#[test]
+fn list_reports_no_stacked_branches_on_a_fresh_repo() {
+    let repo = TestRepo::new();
+    // Just the trunk: not a stack. Must not draw a one-node "stack".
+    repo.stack()
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("no stacked branches"))
+        .stdout(predicates::str::contains("git stk new"))
+        .stdout(predicates::str::contains("(trunk)").not());
+}
+
+#[test]
+fn commands_outside_a_git_repo_give_a_clean_error() {
+    let outside = tempfile::tempdir().expect("temp dir");
+    // A repo-requiring command run outside any repo: clean message, no raw
+    // git "Stopping at filesystem boundary" noise.
+    assert_cmd::Command::cargo_bin("git-stk")
+        .expect("git-stk binary")
+        .arg("status")
+        .current_dir(outside.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not a git repository"))
+        .stderr(predicates::str::contains("Stopping at filesystem boundary").not());
+}
+
+#[test]
+fn help_points_newcomers_at_the_guide() {
+    let repo = TestRepo::new();
+    repo.stack()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("git stk guide"));
+}

@@ -644,3 +644,35 @@ fn provider_command_points_at_auth_login_when_the_cli_is_not_signed_in() {
             "if you are not signed in, run `gh auth login`",
         ));
 }
+
+#[test]
+fn status_degrades_without_a_provider() {
+    let repo = TestRepo::new();
+    // No remote, no stk.provider: status still shows the local stack.
+    repo.stack().args(["new", "feature/a"]).assert().success();
+
+    repo.stack()
+        .args(["status", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("branch: feature/a"))
+        .stdout(predicates::str::contains("parent: main"))
+        .stdout(predicates::str::contains("provider: not detected"));
+}
+
+#[test]
+fn sync_degrades_without_a_remote() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    // No remote: nothing to sync against, but no hard error either.
+    repo.stack()
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "no remote configured - nothing to sync",
+        ))
+        .stdout(predicates::str::contains("could not detect provider").not());
+}

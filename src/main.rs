@@ -15,6 +15,17 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     git_stk::git::set_verbose(cli.verbose);
 
+    // Most commands need a repo; surface a clean message instead of letting
+    // git's raw "not a git repository ... Stopping at filesystem boundary"
+    // leak from the first command that reaches for one.
+    if needs_repo(&cli.command) && !git_stk::git::is_in_repo() {
+        anstream::eprintln!(
+            "{} not a git repository - run this inside a git repo",
+            style::error_prefix()
+        );
+        return ExitCode::FAILURE;
+    }
+
     // The once-a-day "newer release available" nudge, printed after the work
     // is done. Rule: the everyday workflow commands whose human-readable output
     // a person actually reads. Excluded are plumbing/scriptable output (parent,
@@ -97,6 +108,21 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether a command operates on the current repository. The handful that set
+/// up, tear down, or stand outside any repo (and the disposable-sandbox guide)
+/// run anywhere, so they skip the repo preflight.
+fn needs_repo(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Setup(_)
+            | Command::Uninstall(_)
+            | Command::Upgrade(_)
+            | Command::Completions(_)
+            | Command::Guide(_)
+            | Command::Credits(_)
+    )
 }
 
 /// The lock label for a command, or `None` to run unlocked.

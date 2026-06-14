@@ -43,8 +43,9 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
 
     // 1. Fetch the trunk so merged work is visible locally.
     let remote = settings::remote()?;
+    let has_remote = git::remote_url(&remote)?.is_some();
     if let Some(trunk) = &trunk {
-        if git::remote_url(&remote)?.is_none() {
+        if !has_remote {
             anstream::println!("no remote {remote}; skipped fetch");
         } else if dry_run {
             anstream::println!("would fetch {trunk} from {remote}");
@@ -60,7 +61,27 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     let root = stack::stack_root(&current)?;
     let branches = stack::current_stack_branches(&current)?;
 
-    let (provider, review_provider) = detect_review_provider()?;
+    let (provider, review_provider) = match detect_review_provider() {
+        Ok(pair) => pair,
+        // A bare local repo - no remote and no provider configured (the demo
+        // provider sets one, so it isn't this case) - has no review state to
+        // sync against, so there is nothing to do rather than an error. A
+        // remote that exists but isn't recognized is a real config error and
+        // still surfaces.
+        Err(_) if !has_remote => {
+            if branches.is_empty() {
+                anstream::println!("no stacked branches to sync");
+            } else {
+                anstream::println!("no remote configured - nothing to sync");
+                anstream::println!(
+                    "{}",
+                    style::dim("run `git stk restack` to refresh local branches")
+                );
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
 
     // 3. Classify every branch: refresh metadata from open reviews, collect
     //    merged ones for cleanup.
