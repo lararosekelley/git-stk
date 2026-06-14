@@ -52,13 +52,14 @@ jobs:
       - name: Build git-stk and the e2e harness
         run: cargo build --features e2e --bin git-stk --bin git-stk-e2e
 
-      # Per-shell completions + setup: generate the completion script for the
-      # cell's native shell and confirm that shell parses it, then run
-      # `git stk setup -y` and confirm it wired the right rc - the real payoff of
+      # Per-shell completions + setup + uninstall: generate the completion
+      # script for the cell's native shell and confirm that shell parses it,
+      # then run `git stk setup -y` (confirm it wired the right rc) and
+      # `git stk uninstall -y` (confirm it un-wired it) - the real payoff of
       # running each cell on bash/zsh/pwsh. `$SHELL` steers setup's shell
       # detection. Matrix expressions aren't allowed in `shell:`, so one
       # literal-shell step per OS, gated by `if:`.
-      - name: Completions + setup (bash)
+      - name: Completions, setup, uninstall (bash)
         if: runner.os == 'Linux'
         shell: bash
         env:
@@ -69,20 +70,29 @@ jobs:
           bash -n comp.bash
           ./target/debug/git-stk setup -y
           grep -q "git stk completions bash" "$HOME/.bashrc"
+          ./target/debug/git-stk uninstall -y
+          if grep -q "git stk completions bash" "$HOME/.bashrc"; then
+            echo "uninstall left the bash rc wired"; exit 1
+          fi
 
-      - name: Completions + setup (zsh)
+      - name: Completions, setup, uninstall (zsh)
         if: runner.os == 'macOS'
         shell: zsh {0}
         env:
           SHELL: /bin/zsh
         run: |
+          set -e
           ./target/debug/git-stk completions zsh > comp.zsh
           test -s comp.zsh
           zsh -n comp.zsh
           ./target/debug/git-stk setup -y
           grep -q "git stk completions zsh" "$HOME/.zshrc"
+          ./target/debug/git-stk uninstall -y
+          if grep -q "git stk completions zsh" "$HOME/.zshrc"; then
+            echo "uninstall left the zsh rc wired"; exit 1
+          fi
 
-      - name: Completions + setup (pwsh)
+      - name: Completions, setup, uninstall (pwsh)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -90,8 +100,14 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($script)) { throw 'empty completion script' }
           $script | Invoke-Expression
           & ./target/debug/git-stk.exe setup -y
+          if ($LASTEXITCODE -ne 0) { throw 'setup failed' }
           if (-not (Select-String -Path $PROFILE -Pattern 'git stk completions powershell' -Quiet)) {
             throw 'setup did not wire the PowerShell profile'
+          }
+          & ./target/debug/git-stk.exe uninstall -y
+          if ($LASTEXITCODE -ne 0) { throw 'uninstall failed' }
+          if (Select-String -Path $PROFILE -Pattern 'git stk completions powershell' -Quiet) {
+            throw 'uninstall left the PowerShell profile wired'
           }
 
       # gh is preinstalled on GitHub runners; wire it to git so pushes over

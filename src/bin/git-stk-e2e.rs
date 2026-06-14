@@ -103,6 +103,7 @@ fn run() -> Result<(), String> {
     issue_autoclose(provider, &slug, work)?;
     metadata_surgery(work)?;
     conflict_recovery(work)?;
+    undo_check(work)?;
 
     Ok(())
 }
@@ -229,6 +230,37 @@ fn conflict_recovery(work: &Path) -> Result<(), String> {
     if child_parent != base {
         return Err(format!(
             "conflict/b not rebased onto conflict/a after continue ({child_parent} vs {base})"
+        ));
+    }
+    Ok(())
+}
+
+/// `undo` reverses the last stack-rewriting command, restoring branch tips and
+/// metadata. Here: a restack moves the child's tip, and undo restores it.
+/// Local-only.
+fn undo_check(work: &Path) -> Result<(), String> {
+    git(work, &["switch", "main"])?;
+    stk(work, &["new", "undo/a"])?;
+    commit(work, "undo-a.txt", "a\n", "undo a")?;
+    stk(work, &["new", "undo/b"])?;
+    commit(work, "undo-b.txt", "b\n", "undo b")?;
+    let before = git(work, &["rev-parse", "undo/b"])?;
+
+    // A rewrite that moves undo/b's tip: commit on the parent, then restack.
+    stk(work, &["bottom"])?;
+    write(work, "undo-a.txt", "a\nmore\n")?;
+    git(work, &["commit", "-am", "more a"])?;
+    stk(work, &["restack", "--no-push"])?;
+    let after = git(work, &["rev-parse", "undo/b"])?;
+    if after == before {
+        return Err("restack did not move undo/b, so there is nothing to undo".to_owned());
+    }
+
+    stk(work, &["undo"])?;
+    let restored = git(work, &["rev-parse", "undo/b"])?;
+    if restored != before {
+        return Err(format!(
+            "undo did not restore undo/b ({restored} vs {before})"
         ));
     }
     Ok(())
