@@ -39,9 +39,16 @@ Or the one-line installer, which downloads the prebuilt binary:
 curl https://larakelley.com/sh/git-stk | bash
 ```
 
-That runs [`install.sh`](./install.sh) - a thin wrapper around the
-[`cargo-dist`](https://github.com/axodotdev/cargo-dist)-generated `git-stk-installer.sh`. Every release
-attaches the prebuilt binaries, that installer, and per-file `.sha256` checksums to
+On native Windows, use the PowerShell installer instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/lararosekelley/git-stk/releases/latest/download/git-stk-installer.ps1 | iex"
+```
+
+The shell command runs [`install.sh`](./install.sh) - a thin wrapper around the
+[`cargo-dist`](https://github.com/axodotdev/cargo-dist)-generated `git-stk-installer.sh`; PowerShell
+fetches the matching `git-stk-installer.ps1`. Every release attaches the prebuilt binaries, both
+installers, and per-file `.sha256` checksums to
 [GitHub Releases](https://github.com/lararosekelley/git-stk/releases), so you can download and verify a
 binary directly instead of piping to a shell:
 
