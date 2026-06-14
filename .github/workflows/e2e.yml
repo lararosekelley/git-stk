@@ -8,11 +8,12 @@
 #     custom job, so a failing live run blocks the release before anything is
 #     built or published (see dist-workspace.toml).
 #
-# Matrix: one cell per OS, each on its native shell (linux=bash, macos=zsh,
-# windows=pwsh) so we also cover three shells. The harness is shell-agnostic, so
-# the shell only matters for the (future) setup/completions sub-check; the run
-# commands here (cargo, gh) are portable across all three. GitHub only for now;
-# the gitlab cell (needs glab + a token) is the next fan-out.
+# Matrix: one cell per OS (GitHub only for now; the gitlab cell, which needs
+# glab and a token, is the next fan-out). The harness is shell-agnostic and the
+# run commands here (cargo, gh) are portable, so each cell uses the runner's
+# default shell. Per-shell coverage (zsh on macOS, etc.) belongs to the future
+# setup/completions sub-check - it will use literal `shell:` steps gated by OS,
+# because matrix expressions are not allowed in the `shell:` key.
 name: E2E
 
 on:
@@ -33,10 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, provider: github, shell: bash }
-          - { os: macos-latest, provider: github, shell: "zsh {0}" }
-          - { os: windows-latest, provider: github, shell: pwsh }
-          # - { os: ubuntu-latest, provider: gitlab, shell: bash }  # needs glab + token
+          - { os: ubuntu-latest, provider: github }
+          - { os: macos-latest, provider: github }
+          - { os: windows-latest, provider: github }
+          # - { os: ubuntu-latest, provider: gitlab }  # needs glab + token
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -48,24 +49,18 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
-      # The cell's native shell (linux=bash, macos=zsh, windows=pwsh). The
-      # cargo/gh commands are portable across all three; this is to cover the
-      # shells and pre-position for the setup/completions sub-check.
       - name: Build git-stk and the e2e harness
-        shell: ${{ matrix.shell }}
         run: cargo build --features e2e --bin git-stk --bin git-stk-e2e
 
       # gh is preinstalled on GitHub runners; wire it to git so pushes over
       # HTTPS authenticate with the PAT.
       - name: Configure gh auth
         if: matrix.provider == 'github'
-        shell: ${{ matrix.shell }}
         env:
           GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
         run: gh auth setup-git
 
       - name: Run e2e
-        shell: ${{ matrix.shell }}
         env:
           STK_E2E_PROVIDER: ${{ matrix.provider }}
           # Owner for the ephemeral repo; override with an E2E_OWNER repo
