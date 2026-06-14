@@ -46,6 +46,9 @@ dev-tools = []
 # Gate for the cross-platform provider fake used by the test suite. Gated so
 # it never ships; `just test` enables it.
 test-fakes = []
+# Gate for the live end-to-end harness that drives a real provider. Gated so it
+# never ships; only the e2e workflow builds it.
+e2e = []
 
 [[bin]]
 name = "git-stk-generate"
@@ -61,6 +64,11 @@ required-features = ["dev-tools"]
 name = "git-stk-fake-provider"
 path = "src/bin/git-stk-fake-provider.rs"
 required-features = ["test-fakes"]
+
+[[bin]]
+name = "git-stk-e2e"
+path = "src/bin/git-stk-e2e.rs"
+required-features = ["e2e"]
 
 [dev-dependencies]
 assert_cmd = "2.1.1"
