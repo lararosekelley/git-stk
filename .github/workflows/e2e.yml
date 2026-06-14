@@ -1,0 +1,70 @@
+# Live end-to-end test against a real provider. Creates an ephemeral repo, runs
+# the core stacked-branch lifecycle with the freshly built git-stk, and deletes
+# the repo afterwards.
+#
+# Triggers:
+#   - workflow_dispatch: run by hand on main.
+#   - workflow_call: invoked by the dist-generated release.yml as a `plan-jobs`
+#     custom job, so a failing live run blocks the release before anything is
+#     built or published (see dist-workspace.toml).
+#
+# Proof-of-concept: one cell (ubuntu x github). To fan out, add cells to the
+# matrix (macos/windows, gitlab) - the harness is shell-agnostic, so each OS
+# differs only in installing the provider CLI and, eventually, running the
+# setup/completions sub-check under the cell's native shell.
+name: E2E
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    # cargo-dist passes the release plan to every custom job; unused here.
+    inputs:
+      plan:
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            provider: github
+          # - { os: macos-latest, provider: github }    # zsh cell, TODO
+          # - { os: windows-latest, provider: github }  # pwsh cell, TODO
+          # - { os: ubuntu-latest, provider: gitlab }    # needs glab install
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build git-stk and the e2e harness
+        run: cargo build --features e2e --bin git-stk --bin git-stk-e2e
+
+      # gh is preinstalled on GitHub runners; wire it to git so pushes over
+      # HTTPS authenticate with the PAT.
+      - name: Configure gh auth
+        if: matrix.provider == 'github'
+        env:
+          GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
+        run: gh auth setup-git
+
+      - name: Run e2e
+        env:
+          STK_E2E_PROVIDER: ${{ matrix.provider }}
+          # Owner for the ephemeral repo; override with an E2E_OWNER repo
+          # variable to point at a dedicated test org.
+          STK_E2E_OWNER: ${{ vars.E2E_OWNER || github.repository_owner }}
+          GIT_STK_BIN: ${{ github.workspace }}/target/debug/git-stk
+          GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
+        run: ./target/debug/git-stk-e2e
