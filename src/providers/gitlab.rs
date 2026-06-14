@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use super::json::{
-    first_json_item, json_items, optional_bool, optional_string, parse_body_field, parse_state,
+    all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_state,
     required_string,
 };
 use super::{MergeBlocker, ReviewProvider, ReviewRequest, command_output, merge_with_retry};
@@ -169,14 +169,11 @@ fn list_review(branch: &str, state_flag: Option<&str>) -> Result<Option<ReviewRe
 }
 
 fn parse_gitlab_review(output: &str) -> Result<Option<ReviewRequest>> {
-    first_json_item(output)?
-        .as_ref()
-        .map(gitlab_review_from)
-        .transpose()
+    first_review(output, gitlab_review_from)
 }
 
 fn parse_gitlab_reviews(output: &str) -> Result<Vec<ReviewRequest>> {
-    json_items(output)?.iter().map(gitlab_review_from).collect()
+    all_reviews(output, gitlab_review_from)
 }
 
 fn gitlab_review_from(review: &serde_json::Value) -> Result<ReviewRequest> {

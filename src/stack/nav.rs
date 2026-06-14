@@ -156,17 +156,14 @@ pub fn print_stack(reviews: &BTreeMap<String, String>) -> Result<()> {
     let children = children_map(&parents);
     let trunk = trunk_branch(&git::local_branches()?);
 
-    let mut lines = Vec::new();
-    collect_tree_lines(
-        &root,
-        &current,
-        trunk.as_deref(),
-        &children,
+    let ctx = TreeCtx {
+        current: &current,
+        trunk: trunk.as_deref(),
+        children: &children,
         reviews,
-        0,
-        &mut BTreeSet::new(),
-        &mut lines,
-    );
+    };
+    let mut lines = Vec::new();
+    collect_tree_lines(&ctx, &root, 0, &mut BTreeSet::new(), &mut lines);
 
     // Leaf-first, trunk last: the stack reads like a pile sitting on its
     // base, matching the up/down direction of navigation.
@@ -218,21 +215,18 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, String>) -> Result<()> {
     // bottom; rootless fragments stack above it.
     roots.sort_by_key(|root| Some(root.as_str()) == trunk.as_deref());
 
+    let ctx = TreeCtx {
+        current: &current,
+        trunk: trunk.as_deref(),
+        children: &children,
+        reviews,
+    };
     for (index, root) in roots.iter().enumerate() {
         if index > 0 {
             anstream::println!();
         }
         let mut lines = Vec::new();
-        collect_tree_lines(
-            root,
-            &current,
-            trunk.as_deref(),
-            &children,
-            reviews,
-            0,
-            &mut BTreeSet::new(),
-            &mut lines,
-        );
+        collect_tree_lines(&ctx, root, 0, &mut BTreeSet::new(), &mut lines);
         for line in lines.iter().rev() {
             anstream::println!("{line}");
         }
@@ -259,30 +253,35 @@ pub fn behind_parent_hint(branch: &str, parent: &str) -> Option<String> {
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The read-only context for rendering a stack tree, threaded through the
+/// recursion so each call only varies `branch`/`depth` and the accumulators.
+struct TreeCtx<'a> {
+    current: &'a str,
+    trunk: Option<&'a str>,
+    children: &'a BTreeMap<String, Vec<String>>,
+    reviews: &'a BTreeMap<String, String>,
+}
+
 fn collect_tree_lines(
+    ctx: &TreeCtx,
     branch: &str,
-    current: &str,
-    trunk: Option<&str>,
-    children: &BTreeMap<String, Vec<String>>,
-    reviews: &BTreeMap<String, String>,
     depth: usize,
     seen: &mut BTreeSet<String>,
     lines: &mut Vec<String>,
 ) {
     // A graphite-style rail: a filled marker on the branch you are on.
     let mut line = "  ".repeat(depth);
-    if branch == current {
+    if branch == ctx.current {
         line.push_str(&style::paint(style::CURRENT, &format!("\u{25c9} {branch}")));
     } else {
         line.push_str("\u{25cb} ");
         line.push_str(&style::paint(style::BRANCH, branch));
     }
-    if Some(branch) == trunk {
+    if Some(branch) == ctx.trunk {
         line.push_str(&style::paint(style::DIM, " (trunk)"));
     }
     // The branch's open review number, when one is known.
-    if let Some(id) = reviews.get(branch) {
+    if let Some(id) = ctx.reviews.get(branch) {
         line.push_str(&style::paint(style::DIM, &format!(" ({id})")));
     }
     lines.push(line);
@@ -292,18 +291,9 @@ fn collect_tree_lines(
         return;
     }
 
-    if let Some(branch_children) = children.get(branch) {
+    if let Some(branch_children) = ctx.children.get(branch) {
         for child in branch_children {
-            collect_tree_lines(
-                child,
-                current,
-                trunk,
-                children,
-                reviews,
-                depth + 1,
-                seen,
-                lines,
-            );
+            collect_tree_lines(ctx, child, depth + 1, seen, lines);
         }
     }
 }
