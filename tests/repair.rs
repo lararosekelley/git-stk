@@ -2,6 +2,38 @@ mod common;
 
 use common::{FakeProvider, TestRepo};
 
+/// Run a git plumbing command in `dir`, feeding `stdin`, returning trimmed
+/// stdout. For crafting refs the TestRepo helper can't (it has no stdin).
+fn git_in(dir: &std::path::Path, args: &[&str], stdin: &str) -> String {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t.t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t.t")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn git");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("git plumbing");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
 #[test]
 fn repair_reconstructs_wiped_stack_from_ancestry() {
     let repo = TestRepo::new();
@@ -220,4 +252,49 @@ fn repair_from_remote_conflicts_with_dry_run() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("cannot be used with"));
+}
+
+#[test]
+fn repair_from_remote_skips_unsafe_metadata_names() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "add a");
+    let origin = repo.add_bare_origin(&["main", "feature/a"]);
+    let bare = origin.path();
+
+    // Craft a metadata ref on the origin: a malicious name git would parse as
+    // an option (`--upload-pack=...`) alongside a legitimate one.
+    let json =
+        r#"{"trunk":"main","parents":{"--upload-pack=touch PWNED":"main","feature/a":"main"}}"#;
+    let blob = git_in(bare, &["hash-object", "-w", "--stdin"], json);
+    let tree = git_in(
+        bare,
+        &["mktree"],
+        &format!("100644 blob {blob}\tstack.json\n"),
+    );
+    let commit = git_in(bare, &["commit-tree", &tree, "-m", "metadata"], "");
+    git_in(bare, &["update-ref", "refs/stk/metadata", &commit], "");
+
+    // Fresh-clone state: drop the local metadata so repair rebuilds it.
+    repo.git(["config", "--unset", "branch.feature/a.stkParent"]);
+
+    repo.stack()
+        .args(["repair", "--from-remote"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("attached feature/a to main"))
+        .stderr(predicates::str::contains(
+            "skipping unsafe stack metadata entry",
+        ));
+
+    // The legit branch was attached; the malicious entry did nothing - it was
+    // never fetched and no command ran.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
+    );
+    assert!(
+        !repo.path().join("PWNED").exists(),
+        "the malicious metadata name must not have executed anything"
+    );
 }
