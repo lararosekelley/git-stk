@@ -2,9 +2,15 @@ mod common;
 
 use common::TestRepo;
 
-/// Stand in for another git-stk process holding the operation lock.
+/// Stand in for another git-stk process holding the operation lock. Uses this
+/// test process's own (live) PID so the lock reads as genuinely held, not as a
+/// stale lock left by a dead process.
 fn hold_lock(repo: &TestRepo) {
-    std::fs::write(repo.path().join(".git/stk-lock"), "99999 merge\n").expect("write lock");
+    std::fs::write(
+        repo.path().join(".git/stk-lock"),
+        format!("{} merge\n", std::process::id()),
+    )
+    .expect("write lock");
 }
 
 #[test]
@@ -20,7 +26,37 @@ fn mutating_command_refuses_while_locked() {
             "another git stk operation is in progress",
         ))
         // The holder line is surfaced so the message is actionable.
-        .stderr(predicates::str::contains("99999 merge"));
+        .stderr(predicates::str::contains(format!(
+            "{} merge",
+            std::process::id()
+        )));
+}
+
+// Auto-reclaim relies on a PID-liveness probe (kill(pid, 0)), which git-stk
+// only does on Unix; on Windows a stale lock is removed by hand.
+#[cfg(unix)]
+#[test]
+fn a_stale_lock_from_a_dead_process_is_reclaimed() {
+    let repo = TestRepo::new();
+    // A lock left by a process that no longer exists - a huge PID that the
+    // kernel will report as no-such-process.
+    std::fs::write(repo.path().join(".git/stk-lock"), "2000000000 merge\n")
+        .expect("write stale lock");
+
+    repo.stack()
+        .args(["new", "feature/x"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("reclaiming a stale git-stk lock"));
+
+    // The command reclaimed the lock, did its work, and released it on the way
+    // out, so nothing lingers.
+    assert!(!repo.path().join(".git/stk-lock").exists());
+    // And the work actually happened.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/x.stkParent"]),
+        "main"
+    );
 }
 
 #[test]

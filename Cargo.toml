@@ -33,6 +33,10 @@ console = "0.15.11"
 dialoguer = "0.11.0"
 serde_json = "1.0.150"
 
+# Probe whether a stale lock's holder process is still alive (kill(pid, 0)).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 # Gate for the asset-generation helper binary.
 generate = []

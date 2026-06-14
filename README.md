@@ -373,8 +373,9 @@ still can't transfer, of course.)
 
 While a stack-rewriting command runs (`submit`, `merge`, `sync`, `restack`, `absorb`, and friends) it holds
 a lock at `.git/stk-lock` so a second git-stk run cannot rewrite the stack at the same time; read-only
-commands are never blocked. If a run is killed mid-operation the lock can linger - remove `.git/stk-lock`
-to clear it.
+commands are never blocked. If a run is killed mid-operation the lock can linger, but the next git-stk
+command reclaims it automatically once it sees the holding process is gone (on Windows, remove
+`.git/stk-lock` by hand).
 
 Inspect everything stk reads or wrote with:
 
