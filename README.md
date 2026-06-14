@@ -199,10 +199,11 @@ that fork off below you are then restacked onto the rewritten commits; if one of
 stops in the usual resumable state (`git stk continue`/`abort`, or `git stk undo` to reverse the whole
 absorb).
 
-`undo` reverses the last stack-rewriting command - `restack`, `sync`, `merge`, `cleanup`, or `rename` -
-restoring local branch tips and stack metadata (it even recreates a branch `cleanup` deleted). It is local
-only: pushes and platform merges are not reverted. One level deep, it refuses on a dirty worktree (it
-resets the current branch) or mid-conflict (finish with `continue`/`abort` first).
+`undo` reverses the last stack-rewriting command - `restack`, `sync`, `merge`, `cleanup`, `rename`,
+`absorb`, or `new --insert`/`--prepend` - restoring local branch tips and stack metadata (it even
+recreates a branch `cleanup` deleted). It is local only: pushes and platform merges are not reverted.
+One level deep, it refuses on a dirty worktree (it resets the current branch) or mid-conflict (finish
+with `continue`/`abort` first).
 
 Provider-backed workflows:
 

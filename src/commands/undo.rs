@@ -2,8 +2,8 @@ use anyhow::Result;
 
 use crate::commands::Run;
 
-/// Undo the last stack-rewriting command (restack, sync, merge, cleanup,
-/// rename), restoring local branch tips and metadata.
+/// Undo the last stack-rewriting command - any command that snapshots the
+/// stack before touching it - restoring local branch tips and metadata.
 #[derive(Debug, clap::Args)]
 pub struct Undo {}
 
