@@ -57,9 +57,13 @@ fn install_man_page() -> Result<()> {
 fn man_dir() -> Result<PathBuf> {
     let data_home = env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .context("cannot locate a data directory; set HOME or XDG_DATA_HOME")?;
-    Ok(data_home.join("man/man1"))
+        .or_else(|| {
+            env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
+        })
+        // Windows has no HOME; %LOCALAPPDATA% is the app-state home there.
+        .or_else(|| env::var_os("LOCALAPPDATA").map(PathBuf::from))
+        .context("cannot locate a data directory; set HOME, XDG_DATA_HOME, or LOCALAPPDATA")?;
+    Ok(data_home.join("man").join("man1"))
 }
 
 /// Append a completion-sourcing line to the detected shell's rc file, once.
@@ -295,7 +299,11 @@ fn print_binary_note() {
     match env::current_exe() {
         Ok(path) => {
             anstream::println!("the git-stk binary is left in place; remove it with:");
-            anstream::println!("  rm {}", path.display());
+            if cfg!(windows) {
+                anstream::println!("  Remove-Item \"{}\"", path.display());
+            } else {
+                anstream::println!("  rm {}", path.display());
+            }
         }
         Err(_) => anstream::println!("remove the git-stk binary from your PATH to finish."),
     }
