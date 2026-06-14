@@ -24,20 +24,20 @@ there; just be polite 😉
 
 ## Install
 
-With [Homebrew](https://brew.sh):
+Install using the official install script (except for PowerShell), which downloads the pre-built binary:
+
+```sh
+curl https://larakelley.com/sh/git-stk | bash
+```
+
+Or, with [Homebrew](https://brew.sh) on macOS:
 
 ```sh
 brew install lararosekelley/tap/git-stk
 ```
 
 With a Rust toolchain, `cargo install git-stk --locked` builds from source, or `cargo binstall git-stk`
-fetches the prebuilt binary without compiling.
-
-Or the one-line installer, which downloads the prebuilt binary:
-
-```sh
-curl https://larakelley.com/sh/git-stk | bash
-```
+fetches the pre-built binary without compiling.
 
 On native Windows, use the PowerShell installer instead:
 
@@ -47,7 +47,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/lararosekelley/git
 
 The shell command runs [`install.sh`](./install.sh) - a thin wrapper around the
 [`cargo-dist`](https://github.com/axodotdev/cargo-dist)-generated `git-stk-installer.sh`; PowerShell
-fetches the matching `git-stk-installer.ps1`. Every release attaches the prebuilt binaries, both
+fetches the matching `git-stk-installer.ps1`. Every release attaches the pre-built binaries, both
 installers, and per-file `.sha256` checksums to
 [GitHub Releases](https://github.com/lararosekelley/git-stk/releases), so you can download and verify a
 binary directly instead of piping to a shell:
@@ -160,8 +160,8 @@ git stk detach [branch]
 git stk rename [branch] <new-name> [--dry-run]
 ```
 
-`new` normally stacks a fresh branch on top of where you stand. `--insert` splices it in *above* the
-current branch instead, moving the current branch's children onto it; `--prepend` splices it in *below*,
+`new` normally stacks a fresh branch on top of where you stand. `--insert` splices it in _above_ the
+current branch instead, moving the current branch's children onto it; `--prepend` splices it in _below_,
 moving the current branch onto it. The new branch is empty and shares its base's tip, so descendants stay
 correctly based - commit to it, then `restack` to replay them. `--prepend` needs a clean worktree.
 
@@ -277,7 +277,7 @@ you need.
 
 `cleanup` does the branch-deletion half on demand: it removes the local branches whose reviews have
 merged (retargeting any children first). It deletes without a prompt - unlike `merge` - because it only
-touches *merged* branches, whose work is already in the trunk and whose ref the reflog still holds (and
+touches _merged_ branches, whose work is already in the trunk and whose ref the reflog still holds (and
 `git stk undo` recreates them); `--dry-run` previews and `--keep-branch` retains them.
 
 `merge` merges the review at the bottom of the stack via the provider CLI (strategy from

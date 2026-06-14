@@ -290,16 +290,13 @@ fn create_issue(provider: Provider, slug: &str, title: &str) -> Result<u64, Stri
             None,
         )?,
     };
-    // Both providers print the issue URL (.../issues/N) on creation.
-    let index = output
-        .find("/issues/")
-        .ok_or_else(|| format!("no issue number in create output: {output}"))?;
-    output[index + "/issues/".len()..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
+    // Both providers print the issue URL; the number is the last path segment.
+    // (GitHub uses .../issues/N; GitLab now uses .../-/work_items/N.)
+    let segment = output.rsplit('/').next().unwrap_or_default();
+    let digits: String = segment.chars().take_while(char::is_ascii_digit).collect();
+    digits
         .parse()
-        .map_err(|_| format!("could not parse issue number from: {output}"))
+        .map_err(|_| format!("no issue number in create output: {output}"))
 }
 
 /// The issue's state via the provider API: `closed` on both (GitLab open is
