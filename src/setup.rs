@@ -313,12 +313,19 @@ fn strip_completion_block(contents: &str) -> Option<String> {
     let marker = lines
         .iter()
         .position(|line| line.trim() == COMPLETION_MARKER)?;
-    // The block is "<blank>\n<marker>\n<completion line>"; drop a preceding
-    // blank line if setup inserted one, and the completion line after.
+
+    // The block is "<blank>\n<marker>\n<completion line>". Only remove the line
+    // after the marker when it is actually ours - every completion line setup
+    // writes mentions `git stk completions`. If the user hand-deleted it and
+    // left the marker, the line below is their own content; keep it.
+    let removes_completion_line = lines
+        .get(marker + 1)
+        .is_some_and(|line| line.contains("git stk completions"));
+    let end = (marker + 1 + usize::from(removes_completion_line)).min(lines.len());
+    // Also drop the single blank line setup inserted before the marker.
     let start = marker.saturating_sub(usize::from(
         marker > 0 && lines[marker - 1].trim().is_empty(),
     ));
-    let end = (marker + 2).min(lines.len());
 
     let mut kept = lines[..start].to_vec();
     kept.extend_from_slice(&lines[end..]);
@@ -342,9 +349,17 @@ mod tests {
     }
 
     #[test]
-    fn strip_leaves_other_content_intact() {
-        // Lines after the block are preserved.
-        let rc = "# added by git-stk setup\ncommand -v git-stk\nalias g=git\n";
+    fn strip_leaves_content_after_the_block_intact() {
+        // The full block, with the user's own lines below it, all preserved.
+        let rc = "# added by git-stk setup\ncommand -v git-stk >/dev/null && source <(git stk completions zsh)\nalias g=git\n";
+        assert_eq!(strip_completion_block(rc).unwrap(), "alias g=git\n");
+    }
+
+    #[test]
+    fn strip_keeps_a_hand_edited_line_after_an_orphaned_marker() {
+        // The user deleted setup's completion line but left the marker; the
+        // line below is now their own and must not be removed with the marker.
+        let rc = "# added by git-stk setup\nalias g=git\n";
         assert_eq!(strip_completion_block(rc).unwrap(), "alias g=git\n");
     }
 
