@@ -186,6 +186,17 @@ impl FakeProvider {
         self
     }
 
+    /// A pending `gh pr checks` result: gh's exit code 8 with a table on
+    /// stdout, recording the call so a later `on_after` rule can flip the
+    /// review to merged on the same poll - modelling an out-of-band merge
+    /// mid-wait.
+    pub fn record_pending(mut self, needle: &str, record_file: &str, stdout: &str) -> Self {
+        self.rules.push(serde_json::json!({
+            "contains": needle, "stdout": stdout, "record": record_file, "exit": 8,
+        }));
+        self
+    }
+
     /// Fail (exit 1) with `stderr` when the joined args contain `needle`.
     pub fn fail(mut self, needle: &str, stderr: &str) -> Self {
         self.rules

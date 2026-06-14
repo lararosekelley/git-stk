@@ -667,3 +667,48 @@ fn merge_all_wait_gives_up_when_checks_never_settle() {
         ))
         .stderr(predicates::str::contains("raise stk.checkTimeout"));
 }
+
+#[test]
+fn merge_all_wait_stops_when_the_review_is_merged_out_of_band() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    let _bare = repo.add_bare_origin(&["main", "feature/a"]);
+
+    // The checks never settle (exit 8, pending), but the first poll records
+    // `checks-ran.txt`, after which the PR reads as merged - someone landed it
+    // on the web while we waited. The wait must notice and sync instead of
+    // re-merging or hanging until checkTimeout. `pr merge` must never run.
+    let fake = FakeProvider::new()
+        .fail("pr merge", "merge should not run")
+        .record_pending("pr checks 12", "checks-ran.txt", "*  ci  pending  0s")
+        .on_after("feature/a --state merged", "checks-ran.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("feature/a --state merged", "[]")
+        .on_after("feature/a", "checks-ran.txt", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("pr edit", "edited")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "--wait", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("waiting for checks on #12"))
+        .stdout(predicates::str::contains(
+            "#12 was merged outside git-stk; syncing instead",
+        ))
+        .stdout(predicates::str::contains(
+            "merge complete: 1 of 1 review merged",
+        ));
+
+    // The sync swept up the branch the out-of-band merge landed.
+    assert_eq!(
+        repo.git_status(["branch", "--list", "feature/a"])
+            .stdout
+            .len(),
+        0
+    );
+}
