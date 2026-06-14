@@ -1,0 +1,78 @@
+name: Bug report
+description: Something in git-stk isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: A few details make a bug much faster to track down. Please redact any tokens or credentials.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        1. ...
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: git-stk config
+      description: "Output of `git config --get-regexp \"^stk\\.\"` (or paste the [stk] section of your .gitconfig)"
+      placeholder: |
+        stk.updaterefs true
+        stk.pushonrestack true
+        stk.pushonsubmit true
+        ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: git-stk version
+      description: Output of `git stk --version`.
+      placeholder: git-stk 0.9.7
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 14.5 / Ubuntu 24.04 / Windows 11
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install git-stk?
+      options:
+        - Homebrew
+        - One-line installer (curl | bash)
+        - cargo install
+        - cargo binstall
+        - Prebuilt release binary
+        - Built from source
+        - Other / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Review provider
+      options:
+        - GitHub (gh)
+        - GitLab (glab)
+        - demo / none (local only)
+        - Not sure
+    validations:
+      required: false
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Command output or errors. Re-running with `-v`/`--verbose` includes the raw git output.
+      render: text
+    validations:
+      required: false
