@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use super::{MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, command_output};
+use super::{
+    MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome, command_output,
+};
 use crate::git;
 
 pub(super) struct DemoProvider;
@@ -116,9 +118,9 @@ impl ReviewProvider for DemoProvider {
         Ok(MergeBlocker::None)
     }
 
-    fn wait_for_checks(&self, _review: &ReviewRequest) -> Result<bool> {
+    fn wait_for_checks(&self, _review: &ReviewRequest) -> Result<WaitOutcome> {
         // The demo has no CI; checks are always green.
-        Ok(true)
+        Ok(WaitOutcome::Passed)
     }
 
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {

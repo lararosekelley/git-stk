@@ -134,6 +134,17 @@ pub struct ReviewRequest {
     pub draft: bool,
 }
 
+/// The result of waiting on a review's checks before merging it.
+pub enum WaitOutcome {
+    /// Checks passed, or there are none - go ahead and merge.
+    Passed,
+    /// A required check failed - stop the run.
+    Failed,
+    /// The review merged out-of-band while we waited (an admin merge on the
+    /// web, say). Skip the redundant merge and let `sync` reconcile it.
+    Landed,
+}
+
 pub trait ReviewProvider {
     fn review_for_branch(&self, branch: &str) -> Result<Option<ReviewRequest>>;
 
@@ -162,9 +173,10 @@ pub trait ReviewProvider {
     /// without parsing the CLI's error text.
     fn merge_blocker(&self, review: &ReviewRequest) -> Result<MergeBlocker>;
 
-    /// Block until the review's checks settle. Ok(true) when they pass (or
-    /// there are none), Ok(false) when something failed.
-    fn wait_for_checks(&self, review: &ReviewRequest) -> Result<bool>;
+    /// Block until the review's checks settle, returning how the wait ended:
+    /// checks passed (or there are none), one failed, or the review merged
+    /// out-of-band while we waited.
+    fn wait_for_checks(&self, review: &ReviewRequest) -> Result<WaitOutcome>;
 
     /// Every open review, in one call - for annotating the stack with review
     /// numbers without a lookup per branch.
@@ -200,6 +212,19 @@ pub fn owned_review_for_branch(
     Ok(provider
         .review_for_branch(branch)?
         .filter(|review| review.branch == branch))
+}
+
+/// Whether the review has merged out-of-band since a `wait_for_checks` loop
+/// began. Only a definite Merged stops the wait; anything else (still open, or
+/// no longer listed) keeps polling, leaving stk.checkTimeout as the backstop.
+pub(super) fn review_merged_out_of_band(
+    provider: &dyn ReviewProvider,
+    review: &ReviewRequest,
+) -> Result<bool> {
+    Ok(matches!(
+        provider.review_for_branch(&review.branch)?,
+        Some(current) if current.state == ReviewState::Merged
+    ))
 }
 
 pub fn detect_provider() -> Result<DetectedProvider> {

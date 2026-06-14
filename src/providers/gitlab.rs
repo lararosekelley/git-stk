@@ -4,7 +4,9 @@ use super::json::{
     all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_state,
     required_string,
 };
-use super::{MergeBlocker, ReviewProvider, ReviewRequest, command_output, merge_with_retry};
+use super::{
+    MergeBlocker, ReviewProvider, ReviewRequest, WaitOutcome, command_output, merge_with_retry,
+};
 
 pub(super) struct GitLabProvider;
 
@@ -88,7 +90,7 @@ impl ReviewProvider for GitLabProvider {
         Ok(classify_gitlab_merge(&output))
     }
 
-    fn wait_for_checks(&self, review: &ReviewRequest) -> Result<bool> {
+    fn wait_for_checks(&self, review: &ReviewRequest) -> Result<WaitOutcome> {
         // A just-pushed MR has no pipeline attached for a moment; tolerate
         // that for a grace window before concluding there is none, so we do
         // not merge before the pipeline even starts.
@@ -109,10 +111,14 @@ impl ReviewProvider for GitLabProvider {
                 .and_then(serde_json::Value::as_str);
 
             match status {
-                None if no_pipeline >= super::CHECK_GRACE_POLLS => return Ok(true),
+                None if no_pipeline >= super::CHECK_GRACE_POLLS => {
+                    return Ok(WaitOutcome::Passed);
+                }
                 None => no_pipeline += 1,
-                Some("success") | Some("skipped") | Some("manual") => return Ok(true),
-                Some("failed") | Some("canceled") => return Ok(false),
+                Some("success") | Some("skipped") | Some("manual") => {
+                    return Ok(WaitOutcome::Passed);
+                }
+                Some("failed") | Some("canceled") => return Ok(WaitOutcome::Failed),
                 // Pipeline exists and is running: it registered, so reset.
                 _ => no_pipeline = 0,
             }
@@ -121,6 +127,14 @@ impl ReviewProvider for GitLabProvider {
                 && started.elapsed() >= timeout
             {
                 return Err(super::checks_timed_out(review, timeout));
+            }
+
+            // Some repos leave a merged MR's pipeline running instead of
+            // cancelling it, so an out-of-band merge would otherwise hang here
+            // until checkTimeout. Before sleeping for another poll, stop if the
+            // review has already landed and let `sync` reconcile it.
+            if super::review_merged_out_of_band(self, review)? {
+                return Ok(WaitOutcome::Landed);
             }
             std::thread::sleep(super::check_poll_interval());
         }

@@ -6,7 +6,8 @@ use crate::commands::Run;
 use crate::commands::sync::sync;
 use crate::prompt::confirm;
 use crate::providers::{
-    MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState, detect_review_provider,
+    MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
+    detect_review_provider,
 };
 use crate::settings;
 use crate::stack;
@@ -160,11 +161,26 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
                 review.id,
                 style::dim("(ctrl-c is safe; rerun `git stk merge --all` to resume)")
             );
-            if !review_provider.wait_for_checks(&review)? {
-                bail!(
+            match review_provider.wait_for_checks(&review)? {
+                WaitOutcome::Passed => {}
+                WaitOutcome::Failed => bail!(
                     "checks failed for {}; fix them and rerun `git stk merge --all`",
                     review.id
-                );
+                ),
+                // Merged out-of-band while we waited: skip the redundant merge,
+                // let sync reconcile it, and carry on with the next review.
+                WaitOutcome::Landed => {
+                    anstream::println!(
+                        "{}",
+                        style::warn(&format!(
+                            "{} was merged outside git-stk; syncing instead",
+                            review.id
+                        ))
+                    );
+                    sync(false, PushMode::Config)?;
+                    landed += 1;
+                    continue;
+                }
             }
         }
 

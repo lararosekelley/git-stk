@@ -6,7 +6,9 @@ use super::json::{
     all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_state,
     required_string,
 };
-use super::{MergeBlocker, ReviewProvider, ReviewRequest, command_output, merge_with_retry};
+use super::{
+    MergeBlocker, ReviewProvider, ReviewRequest, WaitOutcome, command_output, merge_with_retry,
+};
 
 pub(super) struct GitHubProvider;
 
@@ -77,7 +79,7 @@ impl ReviewProvider for GitHubProvider {
         Ok(classify_github_merge(&output))
     }
 
-    fn wait_for_checks(&self, review: &ReviewRequest) -> Result<bool> {
+    fn wait_for_checks(&self, review: &ReviewRequest) -> Result<WaitOutcome> {
         // Poll until the checks settle. `gh pr checks` exits 0 when green, 8
         // while pending, and 1 otherwise - but "1 + no checks reported" is
         // ambiguous: a repo with no CI, or a just-pushed branch whose checks
@@ -96,8 +98,8 @@ impl ReviewProvider for GitHubProvider {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
             match interpret_checks(out.status.code(), &stdout, &stderr) {
-                ChecksState::Passed => return Ok(true),
-                ChecksState::Failed => return Ok(false),
+                ChecksState::Passed => return Ok(WaitOutcome::Passed),
+                ChecksState::Failed => return Ok(WaitOutcome::Failed),
                 // gh itself failed (network, auth, an API 5xx) - not a check
                 // verdict. Surface the real error instead of a false "checks
                 // failed"; `merge --all` is rerun-safe, so the user retries
@@ -113,7 +115,7 @@ impl ReviewProvider for GitHubProvider {
                     if merge_is_gated(review)? {
                         no_checks = 0;
                     } else {
-                        return Ok(true);
+                        return Ok(WaitOutcome::Passed);
                     }
                 }
                 ChecksState::NoneYet => no_checks += 1,
@@ -125,6 +127,14 @@ impl ReviewProvider for GitHubProvider {
                 && started.elapsed() >= timeout
             {
                 return Err(super::checks_timed_out(review, timeout));
+            }
+
+            // Some repos leave a merged PR's checks pending instead of
+            // cancelling them, so an out-of-band merge would otherwise hang
+            // here until checkTimeout. Before sleeping for another poll, stop
+            // if the review has already landed and let `sync` reconcile it.
+            if super::review_merged_out_of_band(self, review)? {
+                return Ok(WaitOutcome::Landed);
             }
 
             polls += 1;
