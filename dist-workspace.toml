@@ -24,6 +24,11 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-apple-d
 install-path = "~/.local/bin"
 # Where to host releases
 hosting = "github"
+# Pre-release gate: run the live e2e suite (.github/workflows/e2e.yml) right
+# after `plan`, so a failing live run against GitHub/GitLab blocks the release
+# before anything is built or published. Needs the E2E_GH_TOKEN / E2E_GITLAB_TOKEN
+# repo secrets.
+plan-jobs = ["./e2e"]
 # Publish to crates.io after the release builds succeed, via the custom
 # reusable workflow in .github/workflows/publish-crates.yml (needs the
 # CARGO_REGISTRY_TOKEN repo secret)
