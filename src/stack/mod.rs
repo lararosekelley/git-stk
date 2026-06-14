@@ -369,10 +369,31 @@ pub fn apply_remote_metadata(remote: &str) -> Result<usize> {
         .and_then(Value::as_object)
         .context("remote stack metadata is malformed")?;
 
+    // The metadata comes from a remote, so the names are untrusted. Drop any
+    // that aren't safe to hand to git as an argument before they reach
+    // `fetch`/`rebase`: a name like `--upload-pack=...` would be read as a git
+    // option, not a branch.
+    let mut pairs = Vec::new();
+    for (branch, parent) in parents {
+        let Some(parent) = parent.as_str() else {
+            continue;
+        };
+        if !is_safe_ref_name(branch) || !is_safe_ref_name(parent) {
+            anstream::eprintln!(
+                "{}",
+                style::warn(&format!(
+                    "skipping unsafe stack metadata entry: {branch:?} -> {parent:?}"
+                ))
+            );
+            continue;
+        }
+        pairs.push((branch.clone(), parent.to_owned()));
+    }
+
     // Fetch every listed branch first, so each parent resolves locally before
     // we record it.
     let local: BTreeSet<String> = git::local_branches()?.into_iter().collect();
-    for branch in parents.keys() {
+    for (branch, _) in &pairs {
         if !local.contains(branch) {
             git::fetch_branch(remote, branch)
                 .with_context(|| format!("failed to fetch {branch} from {remote}"))?;
@@ -380,10 +401,7 @@ pub fn apply_remote_metadata(remote: &str) -> Result<usize> {
     }
 
     let mut attached = 0;
-    for (branch, parent) in parents {
-        let Some(parent) = parent.as_str() else {
-            continue;
-        };
+    for (branch, parent) in &pairs {
         set_parent(branch, parent)?;
         record_base(branch, parent);
         attached += 1;
@@ -394,6 +412,16 @@ pub fn apply_remote_metadata(remote: &str) -> Result<usize> {
         );
     }
     Ok(attached)
+}
+
+/// Whether a branch name from untrusted remote metadata is safe to hand to git
+/// as an argument: non-empty, not an option (`-...`), and free of whitespace
+/// and control characters. git rejects other invalid refs itself; this guards
+/// the one thing it would not - a name it would parse as a flag.
+fn is_safe_ref_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 /// The stack path from the bottom up to (and including) `branch`,
@@ -521,4 +549,28 @@ fn base_key(branch: &str) -> String {
 
 fn renamed_from_key(branch: &str) -> String {
     format!("branch.{branch}.{RENAMED_FROM_KEY}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_safe_ref_name;
+
+    #[test]
+    fn safe_ref_names_pass() {
+        assert!(is_safe_ref_name("main"));
+        assert!(is_safe_ref_name("feature/a"));
+        assert!(is_safe_ref_name("user/fix-123"));
+    }
+
+    #[test]
+    fn unsafe_ref_names_are_rejected() {
+        // The injection vector: a name git would parse as an option.
+        assert!(!is_safe_ref_name("--upload-pack=touch /tmp/pwned"));
+        assert!(!is_safe_ref_name("-x"));
+        // Whitespace / control chars (newline-bearing refspecs, etc.).
+        assert!(!is_safe_ref_name("a branch"));
+        assert!(!is_safe_ref_name("a\nb"));
+        assert!(!is_safe_ref_name("a\tb"));
+        assert!(!is_safe_ref_name(""));
+    }
 }
