@@ -4,8 +4,9 @@ A live end-to-end pass against a real provider - the thing the test suite (which
 uses fakes) can't cover. Run it once per **platform and provider**: Linux, macOS,
 Windows, against a throwaway GitHub repo and a throwaway GitLab repo.
 
-Budget ~10 min per run. A green run means `submit` -> `restack` -> `merge` → `sync` all
-work against the live CLI.
+Budget ~15 min per run. A green run means `submit` → `restack` → `merge` → `sync`,
+plus issue auto-close and the metadata-surgery paths (`adopt`, `repair`, `rename`),
+all work against the live CLI.
 
 ## 0. Prerequisites (once per machine)
 
@@ -14,6 +15,9 @@ work against the live CLI.
   - GitLab: `glab auth status`
 - A throwaway repo on each provider with a `main` branch and at least one commit.
   Reuse it across runs; the steps below clean up after themselves.
+  - I have test repos already configured for
+    [GitHub](https://github.com/lararosekelley/git-stk-test-gh) and
+    [GitLab](https://gitlab.com/lararosekelley/git-stk-test-gl)
 
 ## 1. Install and verify
 
@@ -53,7 +57,7 @@ git stk provider       # detects github/gitlab from the remote
 ```sh
 git stk submit --stack --push     # creates a PR/MR per branch, b targeting a
 git stk status                    # local + remote state, review numbers
-git stk view                      # opens the bottom review in a browser
+git stk view                      # opens the top review in a browser
 ```
 
 Check on the provider: two reviews exist, **b's base is a** (not `main`).
@@ -81,17 +85,81 @@ If a check stalls, `ctrl-c` is safe and rerunning resumes.
 (Optional: merge one PR manually on the web mid-wait to confirm
 `git-stk` notices the out-of-band merge and syncs instead of hanging.)
 
-## 6. Sanity: undo and uninstall
+## 6. Issue auto-close
+
+`git-stk` adds a `Closes #N` line to a review when the branch name references
+issue N (`123-fix`, `fix/issue-123`), so merging the review closes the issue on
+the provider. This exercises issue creation, body editing, and the close-on-merge.
+
+```sh
+# Create an issue; note the number it prints (call it N):
+gh   issue create --title "smoke $S" --body "tracking"                # GitHub
+glab issue create --title "smoke $S" --description "tracking" --yes   # GitLab
+
+git stk new $N-fix-$S
+printf x > x-$S.txt && git add . && git commit -m "fix #$N"
+git stk submit --push
+```
+
+Confirm the review body now shows `Closes #$N` (on the web, or
+`gh pr view $N-fix-$S --json body` / `glab mr view $N-fix-$S`). Then:
+
+```sh
+git stk merge -y      # merge the single review
+```
+
+Confirm issue N is now **closed**: `gh issue view $N` / `glab issue view $N`.
+
+## 7. Metadata surgery: adopt, repair, rename
+
+The nastier local-metadata paths. Run on a fresh mini-stack:
+
+```sh
+# adopt: attach a branch created outside git-stk
+git switch -c loose-$S main
+printf y > y-$S.txt && git add . && git commit -m "loose work"
+git stk adopt                              # attaches the current branch onto the trunk
+git stk list                               # loose-$S now under main
+git stk submit --push                      # give it a review (repair reads the review base)
+
+# repair: rebuild metadata after it's lost
+git config --unset branch.loose-$S.stkParent
+git stk list                               # loose-$S no longer attached
+git stk repair                             # restores the parent from the review base + ancestry
+git stk list                               # attached again
+
+# rename: renames the branch and retargets children locally; the review
+# reconciliation is deferred to the next submit (rename only warns)
+git stk new child-$S
+printf z > z-$S.txt && git add . && git commit -m "child work"
+git stk submit --stack --push
+git stk rename loose-$S relabeled-$S       # renames + retargets child-$S, then warns that the
+                                           # next submit reconciles the review
+git stk list                               # main -> relabeled-$S -> child-$S; relabeled-$S has
+                                           # no review number yet (!7 still heads the old name)
+
+# the reconciling submit: closes the stale review on the old name (and deletes
+# that remote branch), opens a fresh review for relabeled-$S, retargets child-$S
+git stk submit --stack --push
+git stk list                               # relabeled-$S now shows its own review number
+```
+
+Optional, conflict mid-`restack`: make a parent and child edit the same line, then
+`git stk restack`. Resolve and `git stk continue`, or `git stk abort` to bail out
+cleanly — confirm either path leaves a consistent stack.
+
+## 8. Sanity: undo and uninstall
 
 ```sh
 git stk new feat/c-$S && git stk undo   # undo restores the prior state
 git stk uninstall                       # removes completions, man page, config
 ```
 
-`uninstall` reports the binary path instead of than deleting it; remove it by hand
+`uninstall` reports the binary path instead of deleting it; remove it by hand
 if you installed manually.
 
-Then delete `stk-smoke/` and any leftover remote branches.
+Then clean up: delete `stk-smoke/`, any leftover remote branches, and close any
+open reviews/issues left by steps 6–7.
 
 ## Platform notes
 

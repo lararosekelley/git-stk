@@ -59,6 +59,65 @@ fn merge_merges_bottom_review_then_syncs() {
 }
 
 #[test]
+fn merge_drops_squashed_parent_commits_when_provider_retargets_the_child() {
+    // Regression: feature/a is squash-merged (a new commit on main), and the
+    // provider auto-retargets feature/b's review to main (GitLab does this when
+    // the parent branch is deleted). sync must pin feature/b's fork point to
+    // feature/a's tip so the restack drops the squashed commit instead of
+    // replaying it into an add/add conflict.
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.pushOnRestack", "true"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    let _bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+
+    // Squash-merge feature/a by hand: main gains a commit adding a.txt with
+    // different content, so replaying feature/a's own commit add/add-conflicts.
+    repo.git(["switch", "main"]);
+    repo.write("a.txt", "a-squashed\n");
+    repo.git(["add", "a.txt"]);
+    repo.git(["commit", "-m", "squash merge feature/a"]);
+    repo.git(["push", "origin", "main"]);
+
+    // feature/a reads merged; feature/b is OPEN and already retargeted to main.
+    let fake = FakeProvider::new()
+        .record("pr merge 12", "merge-args.txt", "")
+        .on_after("feature/a --state merged", "merge-args.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##)
+        .on("feature/a --state merged", "[]")
+        .on_after("feature/a", "merge-args.txt", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/13","title":"B work"}]"##)
+        .on("pr edit", "updated review")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.git(["switch", "feature/a"]);
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("merged A work (#12)"));
+
+    // feature/b rebased onto main with only its own commit replayed: exactly one
+    // commit above main, adding b.txt, while a.txt is main's squashed content -
+    // feature/a's original commit was dropped, with no conflict.
+    assert_eq!(
+        repo.git(["rev-parse", "feature/b~1"]),
+        repo.git(["rev-parse", "main"])
+    );
+    assert_eq!(repo.git(["show", "feature/b:a.txt"]), "a-squashed");
+    assert_eq!(repo.git(["show", "feature/b:b.txt"]), "b");
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "main"
+    );
+}
+
+#[test]
 fn merge_respects_strategy_config() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);

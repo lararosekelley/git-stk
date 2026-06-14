@@ -96,6 +96,44 @@ fn submit_updates_gitlab_mr_target_when_parent_changed() {
 }
 
 #[test]
+fn submit_creates_gitlab_mr_without_fill() {
+    // glab's --fill re-pushes the current checkout onto the source ref (gh
+    // never pushes on create), which clobbers a sibling branch when submitting
+    // a stack from its leaf. git-stk pushes branches itself, so it must create
+    // the MR non-interactively without --fill.
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "the subject line");
+
+    let fake = FakeProvider::new()
+        .record("mr create", "create-args.txt", "created mr")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("created feature/a -> main"));
+
+    let args = fs::read_to_string(repo.path().join("create-args.txt")).expect("create args");
+    assert!(
+        !args.contains("--fill"),
+        "glab create must not use --fill: {args}"
+    );
+    assert!(
+        args.contains("--title the subject line"),
+        "missing title: {args}"
+    );
+    assert!(
+        args.contains("--description"),
+        "missing description: {args}"
+    );
+    assert!(args.contains("--yes"), "missing --yes: {args}");
+}
+
+#[test]
 fn submit_dry_run_reports_update_without_calling_update() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "gitlab"]);

@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 
+use crate::git;
+
 use super::json::{
     all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_state,
     required_string,
@@ -30,6 +32,19 @@ impl ReviewProvider for GitLabProvider {
     }
 
     fn create_review(&self, branch: &str, base: &str, draft: bool) -> Result<String> {
+        // git-stk has already pushed the branch with the correct per-branch
+        // refspec. glab's --fill would re-push the *current* checkout onto the
+        // source ref (gh never pushes on create), clobbering a sibling branch
+        // when submitting a stack from its leaf. So skip --fill and stay
+        // non-interactive with an explicit title and description instead -
+        // git-stk overwrites the body with the stack overview afterwards.
+        let title = git::commit_subject(branch)?;
+        let body = git::commit_body(branch)?;
+        let description = if body.trim().is_empty() {
+            title.as_str()
+        } else {
+            body.as_str()
+        };
         let mut args = vec![
             "mr",
             "create",
@@ -37,7 +52,11 @@ impl ReviewProvider for GitLabProvider {
             branch,
             "--target-branch",
             base,
-            "--fill",
+            "--title",
+            title.as_str(),
+            "--description",
+            description,
+            "--yes",
         ];
         if draft {
             args.push("--draft");
@@ -48,7 +67,14 @@ impl ReviewProvider for GitLabProvider {
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String> {
         command_output(
             "glab",
-            &["mr", "update", review.id_value(), "--target-branch", base],
+            &[
+                "mr",
+                "update",
+                review.id_value(),
+                "--target-branch",
+                base,
+                "--yes",
+            ],
         )
     }
 
@@ -63,12 +89,21 @@ impl ReviewProvider for GitLabProvider {
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {
         command_output(
             "glab",
-            &["mr", "update", review.id_value(), "--description", body],
+            &[
+                "mr",
+                "update",
+                review.id_value(),
+                "--description",
+                body,
+                "--yes",
+            ],
         )
     }
 
     fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {
-        let mut args = vec!["mr", "merge", review.id_value()];
+        // --yes: glab confirms a merge interactively, but git-stk captures its
+        // output, so the prompt would error instead of showing.
+        let mut args = vec!["mr", "merge", review.id_value(), "--yes"];
         match strategy {
             "rebase" => args.push("--rebase"),
             "merge" => {}
@@ -141,23 +176,21 @@ impl ReviewProvider for GitLabProvider {
     }
 
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {
+        // No --opened: it is deprecated, and glab prints the deprecation notice
+        // to stdout, which corrupts the JSON we parse. Listing without a state
+        // flag already defaults to open merge requests.
         let output = command_output(
             "glab",
-            &[
-                "mr",
-                "list",
-                "--opened",
-                "--output",
-                "json",
-                "--per-page",
-                "200",
-            ],
+            &["mr", "list", "--output", "json", "--per-page", "200"],
         )?;
         parse_gitlab_reviews(&output)
     }
 
     fn mark_ready(&self, review: &ReviewRequest) -> Result<String> {
-        command_output("glab", &["mr", "update", review.id_value(), "--ready"])
+        command_output(
+            "glab",
+            &["mr", "update", review.id_value(), "--ready", "--yes"],
+        )
     }
 
     fn close_review(&self, review: &ReviewRequest, _delete_branch: bool) -> Result<String> {

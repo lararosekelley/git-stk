@@ -296,6 +296,12 @@ pub fn commit_subject(sha: &str) -> Result<String> {
         .with_context(|| format!("failed to read subject of {sha}"))
 }
 
+/// A commit's body - everything after the subject line; empty when there is none.
+pub fn commit_body(sha: &str) -> Result<String> {
+    output(&["show", "--no-patch", "--format=%b", sha])
+        .with_context(|| format!("failed to read body of {sha}"))
+}
+
 /// Stage a unified-0 patch into the index. `--unidiff-zero` is required for
 /// git to accept the zero-context hunks absorb works with.
 pub fn apply_cached(patch: &str) -> Result<()> {
