@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -85,13 +86,30 @@ fn wire_completions(yes: bool) -> Result<()> {
         return Ok(());
     }
 
-    if !yes
-        && !confirm(&format!(
+    // Only prompt at a real terminal. Piped in (e.g. `curl ... | bash` running
+    // the installer), there is no one to answer, so prompting would just print
+    // a question and immediately read EOF as "no" - skip cleanly instead. Pass
+    // `--yes` (or run `git stk setup` later) to wire it up non-interactively.
+    let interactive = std::io::stdin().is_terminal();
+    let proceed = if yes {
+        true
+    } else if interactive {
+        confirm(&format!(
             "append completion setup to {}? [y/N] ",
             rc_path.display()
         ))?
-    {
-        anstream::println!("skipped completion setup");
+    } else {
+        false
+    };
+    if !proceed {
+        anstream::println!(
+            "{}",
+            if interactive {
+                "skipped completion setup"
+            } else {
+                "non-interactive shell; skipped completion setup"
+            }
+        );
         anstream::println!("to configure manually, add this to {}:", rc_path.display());
         anstream::println!("  {line}");
         return Ok(());

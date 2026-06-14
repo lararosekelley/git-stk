@@ -13,12 +13,13 @@ fn setup_installs_man_page_and_wires_bashrc() {
     let home = repo.path().join("home");
     fs::create_dir_all(&home).expect("create fake home");
 
+    // --yes wires completions non-interactively (the test harness has no TTY,
+    // and setup now only prompts at a real terminal).
     repo.stack()
-        .args(["setup"])
+        .args(["setup", "--yes"])
         .env("HOME", &home)
         .env_remove("XDG_DATA_HOME")
         .env("SHELL", "/bin/bash")
-        .write_stdin("y\n")
         .assert()
         .success()
         .stdout(predicates::str::contains("installed man page"))
@@ -77,19 +78,22 @@ fn setup_is_idempotent_for_completions() {
 }
 
 #[test]
-fn setup_declining_prompt_skips_rc_but_installs_man_page() {
+fn setup_non_interactive_skips_completions_but_installs_man_page() {
     let repo = TestRepo::new();
     let home = repo.path().join("home");
     fs::create_dir_all(&home).expect("create fake home");
 
+    // No TTY and no --yes (the curl|bash case): setup must not show a prompt it
+    // can't answer - it skips completions cleanly and prints the manual line.
     repo.stack()
         .args(["setup"])
         .env("HOME", &home)
         .env("SHELL", "/bin/bash")
-        .write_stdin("n\n")
         .assert()
         .success()
-        .stdout(predicates::str::contains("skipped completion setup"))
+        .stdout(predicates::str::contains(
+            "non-interactive shell; skipped completion setup",
+        ))
         .stdout(predicates::str::contains(
             "source <(git stk completions bash)",
         ));

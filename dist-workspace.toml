@@ -17,8 +17,11 @@ tap = "lararosekelley/homebrew-tap"
 # binary runs on any Linux - glibc, Alpine, or an older distro - from one
 # artifact per arch.
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
-# Path that installers should place binaries in
-install-path = "CARGO_HOME"
+# Where installers place the binary. A neutral, non-Rust location so a
+# curl|bash user doesn't get it dropped in ~/.cargo/bin (which dist used to do
+# via CARGO_HOME, even for people who have never installed Rust); dist wires
+# this dir onto PATH in the installer.
+install-path = "~/.local/bin"
 # Where to host releases
 hosting = "github"
 # Publish to crates.io after the release builds succeed, via the custom
@@ -27,8 +30,10 @@ hosting = "github"
 publish-jobs = ["homebrew", "./publish-crates"]
 # Whether to install an updater program
 install-updater = false
-# Printed by the shell/powershell installers after a successful install
-install-success-msg = "git-stk installed! Run `git stk setup` to install the man page and shell completions."
+# Printed by the shell/powershell installers after a successful install.
+# NB: no backticks - the installer prints this as a shell literal, so `...`
+# would be command-substituted (i.e. actually run) at install time.
+install-success-msg = "git-stk installed! Run 'git stk setup' to install the man page and shell completions."
 
 [dist.binaries]
 aarch64-apple-darwin = ["git-stk"]
