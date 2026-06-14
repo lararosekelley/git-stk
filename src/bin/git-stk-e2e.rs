@@ -112,10 +112,7 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
     commit(work, "b.txt", "b\n", "b work")?;
 
     stk(work, &["submit", "--stack", "--push"])?;
-    let open = open_review_count(provider, slug)?;
-    if open != 2 {
-        return Err(format!("expected 2 open reviews after submit, saw {open}"));
-    }
+    wait_for_review_count(provider, slug, 2)?;
 
     stk(work, &["bottom"])?;
     write(work, "a.txt", "a\na2\n")?;
@@ -131,12 +128,7 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
     };
     stk(work, &["merge", "--all", merge_wait, "--yes"])?;
 
-    let after = open_review_count(provider, slug)?;
-    if after != 0 {
-        return Err(format!(
-            "expected no open reviews after merge --all, saw {after}"
-        ));
-    }
+    wait_for_review_count(provider, slug, 0)?;
     git(work, &["switch", "main"])?;
     git(work, &["pull", "--ff-only"])?;
     for file in ["a.txt", "b.txt"] {
@@ -241,6 +233,28 @@ fn clone(provider: Provider, slug: &str) -> Result<PathBuf, String> {
         }
     }
     Err(format!("clone failed after retries: {last}"))
+}
+
+/// Poll the open-review count until it matches `want`. `submit`/`merge` then
+/// immediately listing can race the provider's indexing (eventual consistency);
+/// without this, a transient mismatch fails the run - and the suite now gates
+/// releases, so a flake here blocks a release.
+fn wait_for_review_count(provider: Provider, slug: &str, want: usize) -> Result<(), String> {
+    let mut last = None;
+    for attempt in 0..6 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(2));
+        }
+        let count = open_review_count(provider, slug)?;
+        if count == want {
+            return Ok(());
+        }
+        last = Some(count);
+    }
+    Err(format!(
+        "expected {want} open reviews, saw {} after retries",
+        last.unwrap_or(want)
+    ))
 }
 
 /// Number of open reviews on the repo, parsed from the provider's list JSON.
