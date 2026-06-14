@@ -369,6 +369,30 @@ pub fn is_ancestor(ancestor: &str, descendant: &str) -> Result<bool> {
     .is_some())
 }
 
+/// Lines added and deleted in `branch` relative to `base`, over the symmetric
+/// `base...branch` range a forge uses for a review diff (the branch's own work
+/// since it diverged). Binary files, which `--numstat` marks with `-`, count
+/// as zero.
+pub fn diff_numstat(base: &str, branch: &str) -> Result<(usize, usize)> {
+    let output = output(&["diff", "--numstat", &format!("{base}...{branch}")])?;
+    let mut added = 0;
+    let mut deleted = 0;
+    for line in output.lines() {
+        let mut columns = line.split('\t');
+        added += column_count(columns.next());
+        deleted += column_count(columns.next());
+    }
+    Ok((added, deleted))
+}
+
+/// A `--numstat` count column: a number, or 0 for `-` (binary) or anything
+/// unparseable.
+fn column_count(column: Option<&str>) -> usize {
+    column
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
 pub fn supports_rebase_update_refs() -> Result<bool> {
     let output = Command::new("git")
         .args(["rebase", "-h"])

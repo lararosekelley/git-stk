@@ -99,7 +99,9 @@ fn list_plain_format_uses_plain_text_and_bare_urls() {
         .success()
         // Unquoted base; bare URL on its own line for chat apps to auto-link.
         .stdout(predicates::str::contains("1 PR, base main"))
-        .stdout(predicates::str::contains("1. add feature a (#1) - open"))
+        .stdout(predicates::str::contains(
+            "1. add feature a (#1, +1/-0) - open",
+        ))
         .stdout(predicates::str::contains("   demo://review/1"))
         // No markdown link syntax.
         .stdout(predicates::str::contains("](").not());
@@ -642,23 +644,24 @@ fn list_shows_review_numbers_for_branches_with_reviews() {
     repo.stack().args(["new", "feature/b"]).assert().success();
     repo.commit_file("b.txt", "b\n", "add b");
 
-    // No reviews yet: the tree carries no numbers.
+    // No reviews yet: no numbers, but each branch shows its diff size against
+    // its parent (one added line apiece).
     repo.stack()
         .args(["list"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("feature/a"))
+        .stdout(predicates::str::contains("feature/a (+1/-0)"))
         .stdout(predicates::str::contains("(#1)").not());
 
     repo.stack().args(["submit", "--stack"]).assert().success();
 
-    // Each branch now shows its open review number.
+    // Each branch now shows its open review number alongside the diff size.
     repo.stack()
         .args(["list"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("feature/a (#1)"))
-        .stdout(predicates::str::contains("feature/b (#2)"))
-        // The trunk has no review.
+        .stdout(predicates::str::contains("feature/a (#1, +1/-0)"))
+        .stdout(predicates::str::contains("feature/b (#2, +1/-0)"))
+        // The trunk has neither a review nor a parent to diff against.
         .stdout(predicates::str::contains("main (trunk)"));
 }
