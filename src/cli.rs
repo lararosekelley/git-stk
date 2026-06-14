@@ -6,6 +6,7 @@ use crate::commands;
 #[command(name = "git-stk")]
 #[command(version)]
 #[command(about = "Git-native stacked branch workflow helper, with GitHub and GitLab integration")]
+#[command(after_help = "New to stacking? Run `git stk guide` for short interactive tours.")]
 pub struct Cli {
     /// Pass raw git output through instead of showing it only on failure.
     #[arg(long, short = 'v', global = true)]

@@ -42,35 +42,45 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
         anstream::println!("children: {}", children.join(", "));
     }
 
-    let (provider, review_provider) = detect_review_provider()?;
-    anstream::println!("provider: {} ({})", provider.kind, provider.source);
+    // Provider state is best-effort: a repo with no remote (or no provider
+    // configured) still shows its local stack rather than hard-failing.
+    let detected = detect_review_provider().ok();
+    let review = match &detected {
+        Some((provider, review_provider)) => {
+            anstream::println!("provider: {} ({})", provider.kind, provider.source);
+            // Closed-inclusive: a review closed without merging is part of the
+            // branch's story, not "no review".
+            let review = review_provider.review_for_branch_including_closed(&branch)?;
+            match &review {
+                Some(review) => {
+                    anstream::println!(
+                        "review: {} {} {} -> {}",
+                        review.id,
+                        style::state(&review.state),
+                        style::paint(style::BRANCH, &review.branch),
+                        style::paint(style::BRANCH, &review.base)
+                    );
+                    anstream::println!("url: {}", style::paint(style::DIM, &review.url));
 
-    // Closed-inclusive: a review closed without merging is part of the
-    // branch's story, not "no review".
-    let review = review_provider.review_for_branch_including_closed(&branch)?;
-    match &review {
-        Some(review) => {
-            anstream::println!(
-                "review: {} {} {} -> {}",
-                review.id,
-                style::state(&review.state),
-                style::paint(style::BRANCH, &review.branch),
-                style::paint(style::BRANCH, &review.base)
-            );
-            anstream::println!("url: {}", style::paint(style::DIM, &review.url));
-
-            if let Some(parent) = parent.as_deref()
-                && parent != review.base
-            {
-                anstream::println!(
-                    "{} review base is {}, local parent is {parent} - run `git stk submit`",
-                    style::paint(style::WARN, "warning:"),
-                    review.base
-                );
+                    if let Some(parent) = parent.as_deref()
+                        && parent != review.base
+                    {
+                        anstream::println!(
+                            "{} review base is {}, local parent is {parent} - run `git stk submit`",
+                            style::paint(style::WARN, "warning:"),
+                            review.base
+                        );
+                    }
+                }
+                None => anstream::println!("review: none"),
             }
+            review
         }
-        None => anstream::println!("review: none"),
-    }
+        None => {
+            anstream::println!("{}", style::dim("provider: not detected (no review info)"));
+            None
+        }
+    };
 
     // Teach the loop: the next command, derived from review states and
     // local drift. A sync covers the restack, so the nudges don't stack.
@@ -91,22 +101,24 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
         _ => {}
     }
     if let Some(parent) = parent.as_deref() {
-        match review_provider.review_for_branch_including_closed(parent) {
-            Ok(Some(parent_review)) if parent_review.branch == parent => {
-                match parent_review.state {
-                    ReviewState::Merged => hints.push(format!(
-                        "parent review {} is merged - run `git stk sync`",
-                        parent_review.id
-                    )),
-                    ReviewState::Closed => hints.push(format!(
-                        "parent review {} was closed without merging - \
-                         retarget {branch} with `git stk adopt`",
-                        parent_review.id
-                    )),
-                    _ => {}
+        if let Some((_, review_provider)) = &detected {
+            match review_provider.review_for_branch_including_closed(parent) {
+                Ok(Some(parent_review)) if parent_review.branch == parent => {
+                    match parent_review.state {
+                        ReviewState::Merged => hints.push(format!(
+                            "parent review {} is merged - run `git stk sync`",
+                            parent_review.id
+                        )),
+                        ReviewState::Closed => hints.push(format!(
+                            "parent review {} was closed without merging - \
+                             retarget {branch} with `git stk adopt`",
+                            parent_review.id
+                        )),
+                        _ => {}
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
 
         if hints.is_empty()

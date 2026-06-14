@@ -20,6 +20,18 @@ pub fn current_branch() -> Result<String> {
         .context("failed to determine current branch")
 }
 
+/// Whether the working directory is inside a git work tree. Used for a clean
+/// "not a git repository" message instead of letting git's raw error surface
+/// from the first command that needs the repo.
+pub fn is_in_repo() -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .is_ok_and(|out| out.status.success() && out.stdout.starts_with(b"true"))
+}
+
 pub fn local_branches() -> Result<Vec<String>> {
     let output = output(&["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
     Ok(output.lines().map(str::to_owned).collect())

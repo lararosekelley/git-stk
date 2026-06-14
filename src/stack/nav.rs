@@ -157,6 +157,16 @@ pub fn print_stack(reviews: &BTreeMap<String, String>) -> Result<()> {
     let trunk = trunk_branch(&git::local_branches()?);
 
     let descendants = branch_and_descendants(&root)?;
+    // A lone branch (or the bare trunk) is not a stack - say so rather than
+    // drawing a one-node "stack".
+    if descendants.len() == 1 {
+        anstream::println!("no stacked branches");
+        anstream::println!(
+            "{}",
+            style::dim("create one on top of the current branch with `git stk new <branch>`")
+        );
+        return Ok(());
+    }
     let sizes = diff_sizes(descendants.iter().cloned(), &parents);
     let ctx = TreeCtx {
         current: &current,
