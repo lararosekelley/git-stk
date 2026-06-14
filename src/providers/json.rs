@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use super::ReviewState;
+use super::{ReviewRequest, ReviewState};
 
 pub(super) fn parse_body_field(output: &str, field: &str) -> Result<String> {
     let value: serde_json::Value =
@@ -44,6 +44,24 @@ pub(super) fn json_items(output: &str) -> Result<Vec<Value>> {
         Value::Object(_) => Ok(vec![value]),
         _ => bail!("provider JSON must be an object or array"),
     }
+}
+
+/// The first review in the provider's JSON, with its fields mapped by the
+/// provider-specific `from`. The array/object shell is shared; only `from`
+/// (the field names) differs between GitHub and GitLab.
+pub(super) fn first_review<F>(output: &str, from: F) -> Result<Option<ReviewRequest>>
+where
+    F: Fn(&Value) -> Result<ReviewRequest>,
+{
+    first_json_item(output)?.as_ref().map(from).transpose()
+}
+
+/// Every review in the provider's JSON, mapped by the provider-specific `from`.
+pub(super) fn all_reviews<F>(output: &str, from: F) -> Result<Vec<ReviewRequest>>
+where
+    F: Fn(&Value) -> Result<ReviewRequest>,
+{
+    json_items(output)?.iter().map(from).collect()
 }
 
 pub(super) fn required_string(value: &Value, keys: &[&str]) -> Result<String> {

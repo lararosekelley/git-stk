@@ -42,20 +42,8 @@ pub fn git_common_path(path: &str) -> Result<String> {
 }
 
 pub fn remote_url(remote: &str) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .args(["remote", "get-url", remote])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| format!("failed to read git remote {remote}"))?;
-
-    match output.status.code() {
-        Some(0) => Ok(Some(
-            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        )),
-        Some(2) => Ok(None),
-        _ => Err(command_error("git remote get-url", &output.stderr)),
-    }
+    // git remote get-url exits 2 when the remote does not exist.
+    output_codes(&["remote", "get-url", remote], &[2], "git remote get-url")
 }
 
 pub fn checkout(branch: &str) -> Result<()> {
@@ -372,21 +360,13 @@ pub fn rebase_autosquash(base: &str, update_refs: bool) -> Result<()> {
 }
 
 pub fn is_ancestor(ancestor: &str, descendant: &str) -> Result<bool> {
-    let output = Command::new("git")
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to run git merge-base --is-ancestor")?;
-
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Err(command_error(
-            "git merge-base --is-ancestor",
-            &output.stderr,
-        )),
-    }
+    // merge-base --is-ancestor exits 0 when it is, 1 when it is not.
+    Ok(output_codes(
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+        &[1],
+        "git merge-base --is-ancestor",
+    )?
+    .is_some())
 }
 
 pub fn supports_rebase_update_refs() -> Result<bool> {
@@ -421,66 +401,43 @@ pub fn rebase_abort() -> Result<()> {
 }
 
 pub fn config_get(key: &str) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .args(["config", "--get", key])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| format!("failed to read git config {key}"))?;
-
-    match output.status.code() {
-        Some(0) => Ok(Some(
-            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        )),
-        Some(1) => Ok(None),
-        _ => Err(command_error("git config --get", &output.stderr)),
-    }
+    // git config --get exits 1 when the key is unset.
+    output_codes(&["config", "--get", key], &[1], "git config --get")
 }
 
 pub fn config_get_bool(key: &str) -> Result<Option<bool>> {
-    let output = Command::new("git")
-        .args(["config", "--type=bool", "--get", key])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| format!("failed to read git config {key}"))?;
-
-    match output.status.code() {
-        Some(0) => {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            match value.as_str() {
-                "true" => Ok(Some(true)),
-                "false" => Ok(Some(false)),
-                _ => bail!("git config {key} is not a boolean: {value}"),
-            }
-        }
-        Some(1) => Ok(None),
-        _ => Err(command_error(
-            "git config --type=bool --get",
-            &output.stderr,
-        )),
+    let Some(value) = output_codes(
+        &["config", "--type=bool", "--get", key],
+        &[1],
+        "git config --type=bool --get",
+    )?
+    else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        "true" => Ok(Some(true)),
+        "false" => Ok(Some(false)),
+        _ => bail!("git config {key} is not a boolean: {value}"),
     }
 }
 
 pub fn config_get_regexp(pattern: &str) -> Result<Vec<(String, String)>> {
-    let output = Command::new("git")
-        .args(["config", "--get-regexp", pattern])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| format!("failed to read git config matching {pattern}"))?;
-
-    match output.status.code() {
-        Some(0) => Ok(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| {
-                line.split_once(' ')
-                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
-            })
-            .collect()),
-        Some(1) => Ok(Vec::new()),
-        _ => Err(command_error("git config --get-regexp", &output.stderr)),
-    }
+    // git config --get-regexp exits 1 when nothing matches.
+    let Some(text) = output_codes(
+        &["config", "--get-regexp", pattern],
+        &[1],
+        "git config --get-regexp",
+    )?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            line.split_once(' ')
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        })
+        .collect())
 }
 
 pub fn config_set(key: &str, value: &str) -> Result<()> {
@@ -488,16 +445,29 @@ pub fn config_set(key: &str, value: &str) -> Result<()> {
 }
 
 pub fn config_unset(key: &str) -> Result<()> {
+    // git config --unset exits 5 when the key was not set; either way it is now
+    // gone, so treat that as success.
+    output_codes(&["config", "--unset", key], &[5], "git config --unset").map(|_| ())
+}
+
+/// Run a git command and map its exit code: trimmed stdout on success, `None`
+/// for any code in `ok_empty` (an expected "nothing here" - e.g. `config
+/// --get`'s 1, or `config --unset`'s 5), and an error otherwise. `label` names
+/// the command for the error message.
+fn output_codes(args: &[&str], ok_empty: &[i32], label: &str) -> Result<Option<String>> {
     let output = Command::new("git")
-        .args(["config", "--unset", key])
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .with_context(|| format!("failed to unset git config {key}"))?;
+        .context("failed to run git")?;
 
     match output.status.code() {
-        Some(0) | Some(5) => Ok(()),
-        _ => Err(command_error("git config --unset", &output.stderr)),
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        )),
+        Some(code) if ok_empty.contains(&code) => Ok(None),
+        _ => Err(command_error(label, &output.stderr)),
     }
 }
 

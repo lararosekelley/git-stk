@@ -79,35 +79,48 @@ impl Run for Submit {
             settings::bool_setting(settings::SUBMIT_DRAFT_KEY)?
         };
 
-        submit(
-            self.branch.as_deref(),
+        submit(SubmitOptions {
+            branch: self.branch,
             submit_stack,
-            self.downstack,
-            self.dry_run,
-            PushMode::from_flags(self.push, self.no_push),
-            self.desc.as_deref(),
+            downstack: self.downstack,
+            dry_run: self.dry_run,
+            push_mode: PushMode::from_flags(self.push, self.no_push),
+            desc: self.desc,
             draft,
-            self.ready,
-            self.rebuild_overview,
-        )
+            ready: self.ready,
+            rebuild_overview: self.rebuild_overview,
+        })
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn submit(
-    branch: Option<&str>,
-    submit_stack: bool,
-    downstack: bool,
-    dry_run: bool,
-    push_mode: crate::cli::PushMode,
-    desc: Option<&str>,
-    draft: bool,
-    ready: bool,
-    rebuild_overview: bool,
-) -> Result<()> {
-    let branch = branch
-        .map(str::to_owned)
-        .map_or_else(git::current_branch, Ok)?;
+/// The resolved inputs for [`submit`] - one bundle instead of nine positional
+/// arguments. `Submit::run` resolves the flag/config defaults and fills it.
+pub struct SubmitOptions {
+    pub branch: Option<String>,
+    pub submit_stack: bool,
+    pub downstack: bool,
+    pub dry_run: bool,
+    pub push_mode: crate::cli::PushMode,
+    pub desc: Option<String>,
+    pub draft: bool,
+    pub ready: bool,
+    pub rebuild_overview: bool,
+}
+
+pub fn submit(options: SubmitOptions) -> Result<()> {
+    let SubmitOptions {
+        branch,
+        submit_stack,
+        downstack,
+        dry_run,
+        push_mode,
+        desc,
+        draft,
+        ready,
+        rebuild_overview,
+    } = options;
+
+    let branch = branch.map_or_else(git::current_branch, Ok)?;
     // The description targets this branch's review even in stack mode.
     let desc_branch = branch.clone();
 
@@ -224,7 +237,7 @@ pub fn submit(
         crate::notes::update_description_note(
             review_provider.as_ref(),
             &desc_branch,
-            desc,
+            &desc,
             dry_run,
         )?;
     }

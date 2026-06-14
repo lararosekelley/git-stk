@@ -11,7 +11,7 @@ pub struct New {
     #[arg(long, conflicts_with = "prepend")]
     insert: bool,
     /// Insert below the current branch, moving it onto the new one.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "insert")]
     prepend: bool,
     /// Print what would change (the branch, and any retargeted children)
     /// without creating or moving anything.

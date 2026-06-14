@@ -15,8 +15,8 @@ pub struct Absorb {
     /// Show the hunk -> commit routing without changing anything.
     #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
-    /// Also absorb unstaged tracked changes, not just staged ones
-    /// (overrides stk.absorbIncludeUnstaged).
+    /// Also absorb unstaged tracked changes, not just staged ones, overriding
+    /// stk.absorbIncludeUnstaged.
     #[arg(long, action = ArgAction::SetTrue)]
     include_unstaged: bool,
 }

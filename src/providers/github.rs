@@ -3,7 +3,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 
 use super::json::{
-    first_json_item, json_items, optional_bool, optional_string, parse_body_field, parse_state,
+    all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_state,
     required_string,
 };
 use super::{MergeBlocker, ReviewProvider, ReviewRequest, command_output, merge_with_retry};
@@ -274,14 +274,11 @@ fn list_review(branch: &str, state: Option<&str>) -> Result<Option<ReviewRequest
 }
 
 fn parse_github_review(output: &str) -> Result<Option<ReviewRequest>> {
-    first_json_item(output)?
-        .as_ref()
-        .map(github_review_from)
-        .transpose()
+    first_review(output, github_review_from)
 }
 
 fn parse_github_reviews(output: &str) -> Result<Vec<ReviewRequest>> {
-    json_items(output)?.iter().map(github_review_from).collect()
+    all_reviews(output, github_review_from)
 }
 
 fn github_review_from(review: &serde_json::Value) -> Result<ReviewRequest> {
