@@ -68,13 +68,20 @@ pub fn maybe_hint_update() {
     }
 }
 
-fn update_check_path() -> Option<PathBuf> {
+/// git-stk's config/state directory, where the install receipt and the
+/// update-check stamp live: `$XDG_CONFIG_HOME/git-stk`, `%LOCALAPPDATA%\git-stk`
+/// on Windows, or `~/.config/git-stk`.
+pub(crate) fn config_dir() -> Option<PathBuf> {
     let base = env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         // Windows has no HOME; %LOCALAPPDATA% is the home for app state.
         .or_else(|| env::var_os("LOCALAPPDATA").map(PathBuf::from))
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(base.join("git-stk").join(UPDATE_CHECK_FILE))
+    Some(base.join("git-stk"))
+}
+
+fn update_check_path() -> Option<PathBuf> {
+    Some(config_dir()?.join(UPDATE_CHECK_FILE))
 }
 
 /// Whether the daily window has passed (or the stamp is missing/garbled).
