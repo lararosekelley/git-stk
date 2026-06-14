@@ -161,6 +161,77 @@ fn setup_refresh_installs_man_page_without_touching_rc() {
     assert!(!home.join(".bashrc").exists());
 }
 
+/// Build a fake install footprint (bashrc completion block, man page, config
+/// dir) under `home`/`config`, and return the env a uninstall run needs.
+fn plant_install(home: &std::path::Path, config: &std::path::Path) {
+    fs::create_dir_all(home.join(".local/share/man/man1")).expect("man dir");
+    fs::create_dir_all(config.join("git-stk")).expect("config dir");
+    fs::write(
+        home.join(".bashrc"),
+        "export PATH=/x\n\n# added by git-stk setup\ncommand -v git-stk >/dev/null && source <(git stk completions bash)\n",
+    )
+    .expect("write bashrc");
+    fs::write(home.join(".local/share/man/man1/git-stk.1"), "manpage").expect("man page");
+    fs::write(config.join("git-stk/update-check"), "checked=1\n").expect("receipt dir");
+}
+
+#[test]
+fn uninstall_removes_the_setup_and_installer_footprint() {
+    let repo = TestRepo::new();
+    let home = repo.path().join("home");
+    let config = repo.path().join("config");
+    plant_install(&home, &config);
+
+    repo.stack()
+        .args(["uninstall", "-y"])
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("SHELL", "/bin/bash")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("removed bash completion line"))
+        .stdout(predicates::str::contains("removed man page"))
+        .stdout(predicates::str::contains(
+            "the git-stk binary is left in place",
+        ));
+
+    // The completion block is gone, the rest of the rc intact.
+    assert_eq!(
+        fs::read_to_string(home.join(".bashrc")).expect("read bashrc"),
+        "export PATH=/x\n"
+    );
+    assert!(!home.join(".local/share/man/man1/git-stk.1").exists());
+    assert!(!config.join("git-stk").exists());
+}
+
+#[test]
+fn uninstall_dry_run_removes_nothing() {
+    let repo = TestRepo::new();
+    let home = repo.path().join("home");
+    let config = repo.path().join("config");
+    plant_install(&home, &config);
+
+    repo.stack()
+        .args(["uninstall", "--dry-run"])
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("SHELL", "/bin/bash")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dry run: nothing was removed"));
+
+    // Everything still there.
+    assert!(
+        fs::read_to_string(home.join(".bashrc"))
+            .expect("read bashrc")
+            .contains("# added by git-stk setup")
+    );
+    assert!(home.join(".local/share/man/man1/git-stk.1").exists());
+    assert!(config.join("git-stk").exists());
+}
+
 #[test]
 fn setup_refresh_stays_quiet_when_completions_are_configured() {
     let repo = TestRepo::new();

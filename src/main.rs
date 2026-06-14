@@ -77,6 +77,7 @@ fn main() -> ExitCode {
         Command::Completions(command) => command.run(),
         Command::Guide(command) => command.run(),
         Command::Setup(command) => command.run(),
+        Command::Uninstall(command) => command.run(),
         Command::Upgrade(command) => command.run(),
         Command::Cleanup(command) => command.run(),
         Command::Credits(command) => command.run(),
@@ -143,6 +144,7 @@ fn lock_name(command: &Command) -> Option<&'static str> {
         | Command::Completions(_)
         | Command::Guide(_)
         | Command::Setup(_)
+        | Command::Uninstall(_)
         | Command::Upgrade(_)
         | Command::Credits(_) => None,
     }

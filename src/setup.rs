@@ -196,3 +196,142 @@ fn powershell_target() -> Option<(&'static str, PathBuf, &'static str)> {
     }
     None
 }
+
+/// Reverse `setup` and the installer: strip the completion line we added,
+/// delete the man page, and remove the config/receipt directory. The binary is
+/// reported (with its removal command) rather than deleted - a running exe
+/// cannot reliably unlink itself, and package-manager installs must go through
+/// their manager. Per-repo `stk.*` config and branch metadata are left alone.
+pub fn uninstall(dry_run: bool, yes: bool) -> Result<()> {
+    // The completion line, only when we can positively identify it by our own
+    // marker (a hand-added line stays - we report it instead).
+    let completion = match completion_target()? {
+        Some((shell, rc_path, _line)) => match fs::read_to_string(&rc_path) {
+            Ok(contents) if contents.contains(COMPLETION_MARKER) => {
+                Some((shell, rc_path, contents))
+            }
+            _ => None,
+        },
+        None => None,
+    };
+    let man_page = man_dir()
+        .ok()
+        .map(|dir| dir.join("git-stk.1"))
+        .filter(|p| p.exists());
+    let config_dir = crate::upgrade::config_dir().filter(|p| p.exists());
+
+    anstream::println!("git stk uninstall removes what setup and the installer added:");
+    let mut anything = false;
+    if let Some((shell, rc_path, _)) = &completion {
+        anstream::println!("  - {shell} completion line in {}", rc_path.display());
+        anything = true;
+    }
+    if let Some(path) = &man_page {
+        anstream::println!("  - man page {}", path.display());
+        anything = true;
+    }
+    if let Some(dir) = &config_dir {
+        anstream::println!("  - config and install receipt in {}", dir.display());
+        anything = true;
+    }
+    if !anything {
+        anstream::println!("  (nothing found - already removed, or installed another way)");
+    }
+
+    if dry_run {
+        anstream::println!("dry run: nothing was removed");
+        print_binary_note();
+        return Ok(());
+    }
+    if anything && !yes && !confirm("remove these? [y/N] ")? {
+        anstream::println!("uninstall cancelled");
+        print_binary_note();
+        return Ok(());
+    }
+
+    if let Some((shell, rc_path, contents)) = completion
+        && let Some(stripped) = strip_completion_block(&contents)
+    {
+        fs::write(&rc_path, stripped)
+            .with_context(|| format!("failed to update {}", rc_path.display()))?;
+        anstream::println!("removed {shell} completion line from {}", rc_path.display());
+    }
+    if let Some(path) = man_page {
+        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
+        anstream::println!("removed man page {}", path.display());
+    }
+    if let Some(dir) = config_dir {
+        fs::remove_dir_all(&dir).with_context(|| format!("failed to remove {}", dir.display()))?;
+        anstream::println!("removed {}", dir.display());
+    }
+
+    print_binary_note();
+    Ok(())
+}
+
+/// Tell the user how to remove the binary itself - the one thing uninstall does
+/// not do, since a running process can't reliably delete its own executable and
+/// package-manager installs must be removed through their manager.
+fn print_binary_note() {
+    anstream::println!();
+    match env::current_exe() {
+        Ok(path) => {
+            anstream::println!("the git-stk binary is left in place; remove it with:");
+            anstream::println!("  rm {}", path.display());
+        }
+        Err(_) => anstream::println!("remove the git-stk binary from your PATH to finish."),
+    }
+    anstream::println!(
+        "(or `cargo uninstall git-stk` / `brew uninstall git-stk` if you installed it that way)"
+    );
+    anstream::println!("per-repo stk.* config and branch metadata are left untouched.");
+}
+
+/// Drop the completion block `setup` appended - the [`COMPLETION_MARKER`], the
+/// completion line after it, and the single blank line setup put before it.
+/// `None` when there is no marker to remove.
+fn strip_completion_block(contents: &str) -> Option<String> {
+    let lines: Vec<&str> = contents.lines().collect();
+    let marker = lines
+        .iter()
+        .position(|line| line.trim() == COMPLETION_MARKER)?;
+    // The block is "<blank>\n<marker>\n<completion line>"; drop a preceding
+    // blank line if setup inserted one, and the completion line after.
+    let start = marker.saturating_sub(usize::from(
+        marker > 0 && lines[marker - 1].trim().is_empty(),
+    ));
+    let end = (marker + 2).min(lines.len());
+
+    let mut kept = lines[..start].to_vec();
+    kept.extend_from_slice(&lines[end..]);
+    let mut result = kept.join("\n");
+    if !result.is_empty() && contents.ends_with('\n') {
+        result.push('\n');
+    }
+    Some(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_removes_the_marked_block_setup_wrote() {
+        // What `setup` produces: existing content, a blank line, the marker,
+        // the completion line.
+        let rc = "export PATH=/x\n\n# added by git-stk setup\ncommand -v git-stk >/dev/null && source <(git stk completions bash)\n";
+        assert_eq!(strip_completion_block(rc).unwrap(), "export PATH=/x\n");
+    }
+
+    #[test]
+    fn strip_leaves_other_content_intact() {
+        // Lines after the block are preserved.
+        let rc = "# added by git-stk setup\ncommand -v git-stk\nalias g=git\n";
+        assert_eq!(strip_completion_block(rc).unwrap(), "alias g=git\n");
+    }
+
+    #[test]
+    fn strip_returns_none_without_the_marker() {
+        assert_eq!(strip_completion_block("export PATH=/x\n"), None);
+    }
+}

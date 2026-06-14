@@ -59,6 +59,13 @@ Upgrade an installer-managed copy with:
 git stk upgrade
 ```
 
+To remove git-stk, `git stk uninstall` reverses `setup` and the installer: it strips the completion line it
+added to your shell rc, deletes the man page, and removes the config/receipt directory (`--dry-run` to
+preview, `-y` to skip the prompt). It prints how to remove the binary itself rather than deleting it - a
+running program can't reliably delete its own executable, and a `cargo install` / Homebrew copy should go
+through `cargo uninstall git-stk` or `brew uninstall git-stk`. Per-repo `stk.*` config and branch metadata
+are left untouched.
+
 ## Shell Completions
 
 `git stk setup` configures these automatically. Completions are dynamic: the shell asks the binary for
