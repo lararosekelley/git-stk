@@ -141,6 +141,18 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             continue;
         }
 
+        // If this branch's parent merged in this same sync, leave its retarget
+        // to cleanup_merged_branch (step 6): it pins the fork point off the
+        // merged parent so the restack drops squash-merged commits instead of
+        // replaying them. Recording a base off the new parent here would lose
+        // that fork point - the provider may have already retargeted the review
+        // to the trunk (GitLab does this when the parent branch is deleted).
+        if let Some(parent) = stack::parent_of(branch)?
+            && merged.contains(&parent)
+        {
+            continue;
+        }
+
         if review.branch == review.base {
             bail!("refusing to set {branch} as its own stack parent");
         }

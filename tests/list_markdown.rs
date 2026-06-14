@@ -39,6 +39,42 @@ fn list_markdown_prints_summary_and_ordered_pr_list() {
 }
 
 #[test]
+fn list_annotates_gitlab_mr_numbers_without_the_deprecated_opened_flag() {
+    // Regression: open_reviews must not pass glab's deprecated --opened flag.
+    // glab prints the deprecation notice to stdout, which corrupts the JSON we
+    // parse, so the MR numbers silently vanished from `git stk list`.
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .log_all("glab.log")
+        .on(
+            "mr list",
+            r##"[{"iid":34,"state":"opened","target_branch":"main","source_branch":"feature/a","web_url":"https://gitlab.com/owner/repo/-/merge_requests/34","title":"A work"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("!34"));
+
+    let log = std::fs::read_to_string(repo.path().join("glab.log")).expect("glab log");
+    assert!(
+        log.contains("mr list"),
+        "open_reviews should list MRs: {log}"
+    );
+    assert!(
+        !log.contains("--opened"),
+        "must not pass deprecated --opened: {log}"
+    );
+}
+
+#[test]
 fn list_markdown_degrades_to_branch_names_without_provider() {
     let repo = TestRepo::new();
     // No remote, no provider config: lookups are impossible.
