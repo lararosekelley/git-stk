@@ -9,11 +9,12 @@
 #     built or published (see dist-workspace.toml).
 #
 # Matrix: one cell per OS (GitHub only for now; the gitlab cell, which needs
-# glab and a token, is the next fan-out). The harness is shell-agnostic and the
-# run commands here (cargo, gh) are portable, so each cell uses the runner's
-# default shell. Per-shell coverage (zsh on macOS, etc.) belongs to the future
-# setup/completions sub-check - it will use literal `shell:` steps gated by OS,
-# because matrix expressions are not allowed in the `shell:` key.
+# glab and a token, is the next fan-out). The macOS cell runs the harness under
+# zsh, linux under bash, windows under pwsh - three shells. Matrix expressions
+# aren't allowed in `shell:`, so the zsh run is split out with a literal shell
+# gated by `if:`; the env is shared via a YAML anchor. (The shell is mostly
+# cosmetic until the setup/completions sub-check exists, since the harness
+# itself shells out to git-stk/gh directly.)
 name: E2E
 
 on:
@@ -60,14 +61,22 @@ jobs:
           GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
         run: gh auth setup-git
 
+      # linux=bash, windows=pwsh (runner defaults).
       - name: Run e2e
-        env:
+        if: runner.os != 'macOS'
+        env: &e2e_env
           STK_E2E_PROVIDER: ${{ matrix.provider }}
           # Owner for the ephemeral repo; override with an E2E_OWNER repo
           # variable to point at a dedicated test org.
           STK_E2E_OWNER: ${{ vars.E2E_OWNER || github.repository_owner }}
-          # cargo run resolves the binary path + .exe cross-platform; the harness
-          # under test still needs the .exe suffix on Windows.
+          # The harness under test needs the .exe suffix on Windows.
           GIT_STK_BIN: ${{ github.workspace }}/target/debug/git-stk${{ runner.os == 'Windows' && '.exe' || '' }}
           GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
+        run: cargo run --features e2e --bin git-stk-e2e
+
+      # macOS runs the harness under zsh; env reused from the anchor above.
+      - name: Run e2e (macOS / zsh)
+        if: runner.os == 'macOS'
+        shell: zsh {0}
+        env: *e2e_env
         run: cargo run --features e2e --bin git-stk-e2e
