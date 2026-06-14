@@ -1,13 +1,14 @@
 //! Live end-to-end smoke test against a real review provider.
 //!
-//! Creates an ephemeral repo on the provider, runs the core stacked-branch
-//! lifecycle with the built `git-stk`, and deletes the repo on the way out
-//! (even on failure, via a drop guard). Gated behind the `e2e` feature so it
-//! never ships; invoked by `.github/workflows/e2e.yml`.
+//! Creates an ephemeral repo on the provider, runs the stacked-branch lifecycle
+//! with the built `git-stk`, and deletes the repo on the way out (even on
+//! failure, via a drop guard). Gated behind the `e2e` feature so it never
+//! ships; invoked by `.github/workflows/e2e.yml`.
 //!
-//! Covers the core lifecycle (build a stack -> submit -> restack ->
-//! squash-merge -> sync) on GitHub and GitLab. Deeper paths (issue auto-close,
-//! adopt/repair/rename) are TODO.
+//! Scenarios, all on one ephemeral repo, GitHub and GitLab:
+//!   1. core lifecycle  - build a stack -> submit -> restack -> squash-merge
+//!   2. issue auto-close - a branch that references an issue closes it on merge
+//!   3. metadata surgery - adopt, repair, rename
 //!
 //! Env:
 //!   STK_E2E_PROVIDER  `github` or `gitlab`
@@ -50,7 +51,7 @@ impl Provider {
         }
     }
 
-    /// The provider CLI binary (used for repo create/delete and review listing).
+    /// The provider CLI binary (repo create/delete, issue/review queries).
     fn cli(self) -> &'static str {
         match self {
             Self::Github => "gh",
@@ -94,34 +95,35 @@ fn run() -> Result<(), String> {
     git(work, &["config", "user.name", "git-stk e2e"])?;
     git(work, &["config", "stk.mergeStrategy", "squash"])?;
 
-    // 1. Build a two-branch stack.
-    stk(work, &["new", "feat/a"])?;
-    write(work, "a.txt", "a\n")?;
-    git(work, &["add", "."])?;
-    git(work, &["commit", "-m", "a work"])?;
-    stk(work, &["new", "feat/b"])?;
-    write(work, "b.txt", "b\n")?;
-    git(work, &["add", "."])?;
-    git(work, &["commit", "-m", "b work"])?;
+    core_lifecycle(provider, &slug, work)?;
+    issue_autoclose(provider, &slug, work)?;
+    metadata_surgery(work)?;
 
-    // 2. Submit the stack; expect two open reviews, feat/b targeting feat/a.
+    Ok(())
+}
+
+/// Build a two-branch stack, submit, amend + restack, then squash-merge the
+/// whole thing. The merge is the path that squash-broke before: feat/b must
+/// rebase onto main dropping feat/a's squashed commit, with no conflict.
+fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
+    stk(work, &["new", "feat/a"])?;
+    commit(work, "a.txt", "a\n", "a work")?;
+    stk(work, &["new", "feat/b"])?;
+    commit(work, "b.txt", "b\n", "b work")?;
+
     stk(work, &["submit", "--stack", "--push"])?;
-    let open = open_review_count(provider, &slug)?;
+    let open = open_review_count(provider, slug)?;
     if open != 2 {
         return Err(format!("expected 2 open reviews after submit, saw {open}"));
     }
 
-    // 3. Amend the bottom and restack; the child must follow.
     stk(work, &["bottom"])?;
     write(work, "a.txt", "a\na2\n")?;
     git(work, &["commit", "-am", "a work edit"])?;
     stk(work, &["restack", "--push"])?;
 
-    // 4. Land the whole stack with the squash strategy. The ephemeral repo has
-    //    no required checks; `--wait` (one cell) clears via the grace window,
-    //    `--no-wait` (the rest) merges straight through. This is the path that
-    //    squash-broke before: feat/b must rebase onto main dropping feat/a's
-    //    squashed commit, with no conflict.
+    // The ephemeral repo has no required checks; --wait (one cell) clears via
+    // the grace window, --no-wait (the rest) merges straight through.
     let merge_wait = if std::env::var("STK_E2E_WAIT").as_deref() == Ok("true") {
         "--wait"
     } else {
@@ -129,8 +131,7 @@ fn run() -> Result<(), String> {
     };
     stk(work, &["merge", "--all", merge_wait, "--yes"])?;
 
-    // 5. Everything landed: no open reviews, both files on the trunk.
-    let after = open_review_count(provider, &slug)?;
+    let after = open_review_count(provider, slug)?;
     if after != 0 {
         return Err(format!(
             "expected no open reviews after merge --all, saw {after}"
@@ -143,7 +144,58 @@ fn run() -> Result<(), String> {
             return Err(format!("{file} missing on main after the stack landed"));
         }
     }
+    Ok(())
+}
 
+/// A branch whose name references an issue gets a `Closes #N` line in its
+/// review, so merging it closes the issue on the provider.
+fn issue_autoclose(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
+    let number = create_issue(provider, slug, "e2e auto-close")?;
+    let branch = format!("{number}-fix");
+
+    stk(work, &["new", &branch])?;
+    commit(work, "fix.txt", "fix\n", &format!("fix #{number}"))?;
+    stk(work, &["submit", "--push"])?;
+    stk(work, &["merge", "-y"])?;
+
+    // The merged "Closes #N" closes the issue; allow a brief lag.
+    for attempt in 0..5 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(2));
+        }
+        if issue_state(provider, slug, number)? == "closed" {
+            return Ok(());
+        }
+    }
+    Err(format!("issue #{number} did not close after merge"))
+}
+
+/// The local-metadata paths: adopt a branch made outside git-stk, rebuild lost
+/// metadata with repair, then rename a branch and reconcile its review.
+fn metadata_surgery(work: &Path) -> Result<(), String> {
+    // adopt: attach a branch created outside git-stk onto the trunk.
+    git(work, &["switch", "-c", "loose", "main"])?;
+    commit(work, "loose.txt", "loose\n", "loose work")?;
+    stk(work, &["adopt"])?;
+    expect_parent(work, "loose", "main")?;
+    stk(work, &["submit", "--push"])?; // a review for repair to read
+
+    // repair: rebuild the parent after the metadata is lost.
+    git(work, &["config", "--unset", "branch.loose.stkParent"])?;
+    stk(work, &["repair"])?;
+    expect_parent(work, "loose", "main")?;
+
+    // rename: retarget the child and reconcile the review on the next submit.
+    stk(work, &["new", "child"])?;
+    commit(work, "child.txt", "child\n", "child work")?;
+    stk(work, &["submit", "--stack", "--push"])?;
+    stk(work, &["rename", "loose", "relabeled"])?;
+    expect_parent(work, "child", "relabeled")?;
+    expect_parent(work, "relabeled", "main")?;
+    // Reconciling submit: closes the stale review on the old name and opens a
+    // fresh one for relabeled (exercises the close/create paths; a captured
+    // stdin auto-confirms the close prompt). Success is the assertion.
+    stk(work, &["submit", "--stack", "--push"])?;
     Ok(())
 }
 
@@ -213,6 +265,74 @@ fn open_review_count(provider: Provider, slug: &str) -> Result<usize, String> {
     Ok(value.as_array().map_or(0, Vec::len))
 }
 
+fn create_issue(provider: Provider, slug: &str, title: &str) -> Result<u64, String> {
+    let output = match provider {
+        Provider::Github => sh(
+            "gh",
+            &[
+                "issue", "create", "--repo", slug, "--title", title, "--body", "e2e",
+            ],
+            None,
+        )?,
+        Provider::Gitlab => sh(
+            "glab",
+            &[
+                "issue",
+                "create",
+                "-R",
+                slug,
+                "--title",
+                title,
+                "--description",
+                "e2e",
+                "--yes",
+            ],
+            None,
+        )?,
+    };
+    // Both providers print the issue URL; the number is the last path segment.
+    // (GitHub uses .../issues/N; GitLab now uses .../-/work_items/N.)
+    let segment = output.rsplit('/').next().unwrap_or_default();
+    let digits: String = segment.chars().take_while(char::is_ascii_digit).collect();
+    digits
+        .parse()
+        .map_err(|_| format!("no issue number in create output: {output}"))
+}
+
+/// The issue's state via the provider API: `closed` on both (GitLab open is
+/// `opened`, but closed is `closed` on both, which is all we check).
+fn issue_state(provider: Provider, slug: &str, number: u64) -> Result<String, String> {
+    let output = match provider {
+        Provider::Github => sh(
+            "gh",
+            &["api", &format!("repos/{slug}/issues/{number}")],
+            None,
+        )?,
+        Provider::Gitlab => sh(
+            "glab",
+            &[
+                "api",
+                &format!("projects/{}/issues/{number}", slug.replace('/', "%2F")),
+            ],
+            None,
+        )?,
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&output).map_err(|e| format!("parse issue: {e}: {output}"))?;
+    Ok(value["state"].as_str().unwrap_or_default().to_owned())
+}
+
+fn expect_parent(work: &Path, branch: &str, want: &str) -> Result<(), String> {
+    let got = git(
+        work,
+        &["config", "--get", &format!("branch.{branch}.stkParent")],
+    )?;
+    if got != want {
+        return Err(format!("{branch} parent is {got:?}, expected {want:?}"));
+    }
+    Ok(())
+}
+
 /// Deletes the ephemeral repo when dropped, so a panic or early return can't
 /// leave it behind. Best-effort: a failed delete only warns.
 struct RepoGuard {
@@ -223,7 +343,9 @@ struct RepoGuard {
 impl Drop for RepoGuard {
     fn drop(&mut self) {
         eprintln!("e2e: deleting ephemeral repo {}", self.slug);
-        // `--yes` works for both gh and glab repo delete.
+        // `--yes` works for both gh and glab repo delete. (GitLab schedules
+        // delayed deletion rather than removing immediately - that's its
+        // default, and the unique names mean it never blocks a later run.)
         let status = Command::new(self.provider.cli())
             .args(["repo", "delete", &self.slug, "--yes"])
             .status();
@@ -242,6 +364,14 @@ fn env(key: &str) -> String {
 
 fn write(dir: &Path, file: &str, contents: &str) -> Result<(), String> {
     std::fs::write(dir.join(file), contents).map_err(|e| format!("write {file}: {e}"))
+}
+
+/// Write a file, stage everything, and commit.
+fn commit(dir: &Path, file: &str, contents: &str, message: &str) -> Result<(), String> {
+    write(dir, file, contents)?;
+    git(dir, &["add", "."])?;
+    git(dir, &["commit", "-m", message])?;
+    Ok(())
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
