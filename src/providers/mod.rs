@@ -408,13 +408,17 @@ const MERGE_RETRY_BACKOFF: Duration = Duration::from_millis(1500);
 
 /// Whether a failed merge is the platform transiently rejecting against a base
 /// it has not settled - worth retrying - rather than a real failure (conflict,
-/// failed check, closed review), which must surface immediately.
+/// failed check, closed review), which must surface immediately. GitHub says
+/// the "base/head branch was modified"; GitLab returns a 405 Method Not Allowed
+/// while the MR's merge status is still recomputing after a push (which
+/// `merge --all` triggers by force-pushing each branch just before merging it).
 fn is_transient_merge_error(error: &anyhow::Error) -> bool {
     let text = error.to_string().to_lowercase();
     [
         "base branch was modified",
         "head branch was modified",
         "try the merge again",
+        "method not allowed",
     ]
     .iter()
     .any(|signature| text.contains(signature))
@@ -518,6 +522,21 @@ mod tests {
         });
         assert_eq!(result.unwrap(), "merged");
         assert_eq!(calls, 2, "should retry once then succeed");
+    }
+
+    #[test]
+    fn a_gitlab_405_while_the_merge_status_recomputes_is_retried() {
+        let mut calls = 0;
+        let result = retry_transient_merge(3, Duration::ZERO, || {
+            calls += 1;
+            if calls < 2 {
+                Err(anyhow!("glab failed: ... /merge: 405 Method Not Allowed"))
+            } else {
+                Ok("merged".to_owned())
+            }
+        });
+        assert_eq!(result.unwrap(), "merged");
+        assert_eq!(calls, 2, "GitLab's transient 405 should be retried");
     }
 
     #[test]

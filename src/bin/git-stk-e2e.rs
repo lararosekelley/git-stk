@@ -5,22 +5,25 @@
 //! (even on failure, via a drop guard). Gated behind the `e2e` feature so it
 //! never ships; invoked by `.github/workflows/e2e.yml`.
 //!
-//! This is the proof-of-concept cell: GitHub only, the core lifecycle
-//! (build a stack -> submit -> restack -> squash-merge -> sync). GitLab and the
-//! deeper paths (issue auto-close, adopt/repair/rename) are TODO once the
-//! mechanism is proven in CI.
+//! Covers the core lifecycle (build a stack -> submit -> restack ->
+//! squash-merge -> sync) on GitHub and GitLab. Deeper paths (issue auto-close,
+//! adopt/repair/rename) are TODO.
 //!
 //! Env:
-//!   STK_E2E_PROVIDER  `github` (only github implemented so far)
-//!   STK_E2E_OWNER     owner (user or org) for the ephemeral repo
+//!   STK_E2E_PROVIDER  `github` or `gitlab`
+//!   STK_E2E_OWNER     owner/namespace for the ephemeral repo
+//!   STK_E2E_WAIT      `true` to use `merge --all --wait`; otherwise `--no-wait`
 //!   GIT_STK_BIN       path to the `git-stk` binary under test
-//!   GH_TOKEN          gh auth, with `repo` + `delete_repo` scope
+//!   GH_TOKEN          gh auth (github), with `repo` + `delete_repo`
+//!   GITLAB_TOKEN      glab auth (gitlab), with `api`
 //!
-//! Assumes `gh auth setup-git` has run so git can push over HTTPS.
+//! Push auth (gh credential helper / git credential store) is wired by the
+//! workflow before this runs.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread::sleep;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn main() {
     match run() {
@@ -32,13 +35,39 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), String> {
-    let provider = env("STK_E2E_PROVIDER");
-    if provider != "github" {
-        return Err(format!(
-            "provider {provider:?} not implemented yet (PoC is github-only)"
-        ));
+#[derive(Clone, Copy)]
+enum Provider {
+    Github,
+    Gitlab,
+}
+
+impl Provider {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "github" => Ok(Self::Github),
+            "gitlab" => Ok(Self::Gitlab),
+            other => Err(format!("unknown STK_E2E_PROVIDER {other:?}")),
+        }
     }
+
+    /// The provider CLI binary (used for repo create/delete and review listing).
+    fn cli(self) -> &'static str {
+        match self {
+            Self::Github => "gh",
+            Self::Gitlab => "glab",
+        }
+    }
+
+    fn host(self) -> &'static str {
+        match self {
+            Self::Github => "github.com",
+            Self::Gitlab => "gitlab.com",
+        }
+    }
+}
+
+fn run() -> Result<(), String> {
+    let provider = Provider::parse(&env("STK_E2E_PROVIDER"))?;
     let owner = env("STK_E2E_OWNER");
 
     // Unique name without a rand dependency: process id plus a nanosecond stamp.
@@ -49,15 +78,14 @@ fn run() -> Result<(), String> {
     let slug = format!("{owner}/git-stk-e2e-{}-{stamp}", std::process::id());
 
     // Create the ephemeral repo first; the guard deletes it no matter how we
-    // exit. --add-readme gives an initial commit on the default branch.
-    sh(
-        "gh",
-        &["repo", "create", &slug, "--private", "--add-readme"],
-        None,
-    )?;
-    let _repo = RepoGuard { slug: slug.clone() };
+    // exit. Both providers seed an initial commit on `main`.
+    create_repo(provider, &slug)?;
+    let _repo = RepoGuard {
+        provider,
+        slug: slug.clone(),
+    };
 
-    let dir = clone(&slug)?;
+    let dir = clone(provider, &slug)?;
     let work = dir.as_path();
 
     // Identity + squash strategy (the path the squash-merge restack-drop fix
@@ -76,20 +104,11 @@ fn run() -> Result<(), String> {
     git(work, &["add", "."])?;
     git(work, &["commit", "-m", "b work"])?;
 
-    // 2. Submit the stack; expect two open PRs, feat/b targeting feat/a.
+    // 2. Submit the stack; expect two open reviews, feat/b targeting feat/a.
     stk(work, &["submit", "--stack", "--push"])?;
-    let open = sh(
-        "gh",
-        &[
-            "pr", "list", "--repo", &slug, "--state", "open", "--json", "number",
-        ],
-        None,
-    )?;
-    let count = open.matches("\"number\"").count();
-    if count != 2 {
-        return Err(format!(
-            "expected 2 open PRs after submit, saw {count}: {open}"
-        ));
+    let open = open_review_count(provider, &slug)?;
+    if open != 2 {
+        return Err(format!("expected 2 open reviews after submit, saw {open}"));
     }
 
     // 3. Amend the bottom and restack; the child must follow.
@@ -98,23 +117,23 @@ fn run() -> Result<(), String> {
     git(work, &["commit", "-am", "a work edit"])?;
     stk(work, &["restack", "--push"])?;
 
-    // 4. Land the whole stack with the squash strategy. No branch protection on
-    //    the ephemeral repo, so each `--wait` clears via the "no checks" grace
-    //    window. This is the path that squash-broke before: feat/b must rebase
-    //    onto main dropping feat/a's squashed commit, with no conflict.
-    stk(work, &["merge", "--all", "--wait", "--yes"])?;
+    // 4. Land the whole stack with the squash strategy. The ephemeral repo has
+    //    no required checks; `--wait` (one cell) clears via the grace window,
+    //    `--no-wait` (the rest) merges straight through. This is the path that
+    //    squash-broke before: feat/b must rebase onto main dropping feat/a's
+    //    squashed commit, with no conflict.
+    let merge_wait = if std::env::var("STK_E2E_WAIT").as_deref() == Ok("true") {
+        "--wait"
+    } else {
+        "--no-wait"
+    };
+    stk(work, &["merge", "--all", merge_wait, "--yes"])?;
 
-    // 5. Everything landed: no open PRs, both files on the trunk.
-    let after = sh(
-        "gh",
-        &[
-            "pr", "list", "--repo", &slug, "--state", "open", "--json", "number",
-        ],
-        None,
-    )?;
-    if after.contains("\"number\"") {
+    // 5. Everything landed: no open reviews, both files on the trunk.
+    let after = open_review_count(provider, &slug)?;
+    if after != 0 {
         return Err(format!(
-            "expected no open PRs after merge --all, saw: {after}"
+            "expected no open reviews after merge --all, saw {after}"
         ));
     }
     git(work, &["switch", "main"])?;
@@ -128,16 +147,84 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn create_repo(provider: Provider, slug: &str) -> Result<(), String> {
+    match provider {
+        Provider::Github => sh(
+            "gh",
+            &["repo", "create", slug, "--private", "--add-readme"],
+            None,
+        ),
+        // --readme + --defaultBranch seed an initial commit on `main`; glab
+        // otherwise defaults the branch to `master`.
+        Provider::Gitlab => sh(
+            "glab",
+            &[
+                "repo",
+                "create",
+                slug,
+                "--private",
+                "--readme",
+                "--defaultBranch",
+                "main",
+            ],
+            None,
+        ),
+    }
+    .map(|_| ())
+}
+
+fn clone(provider: Provider, slug: &str) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!("git-stk-e2e-{}", std::process::id()));
+    let url = format!("https://{}/{slug}.git", provider.host());
+    // A just-created repo can lag a moment before it is cloneable; retry briefly.
+    let mut last = String::new();
+    for attempt in 0..5 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(2));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        match sh("git", &["clone", &url, &dir.to_string_lossy()], None) {
+            Ok(_) => return Ok(dir),
+            Err(error) => last = error,
+        }
+    }
+    Err(format!("clone failed after retries: {last}"))
+}
+
+/// Number of open reviews on the repo, parsed from the provider's list JSON.
+fn open_review_count(provider: Provider, slug: &str) -> Result<usize, String> {
+    let output = match provider {
+        Provider::Github => sh(
+            "gh",
+            &[
+                "pr", "list", "--repo", slug, "--state", "open", "--json", "number",
+            ],
+            None,
+        )?,
+        // glab mr list defaults to open; --output json prints a bare array.
+        Provider::Gitlab => sh(
+            "glab",
+            &["mr", "list", "-R", slug, "--output", "json"],
+            None,
+        )?,
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&output).map_err(|e| format!("parse review list: {e}: {output}"))?;
+    Ok(value.as_array().map_or(0, Vec::len))
+}
+
 /// Deletes the ephemeral repo when dropped, so a panic or early return can't
 /// leave it behind. Best-effort: a failed delete only warns.
 struct RepoGuard {
+    provider: Provider,
     slug: String,
 }
 
 impl Drop for RepoGuard {
     fn drop(&mut self) {
         eprintln!("e2e: deleting ephemeral repo {}", self.slug);
-        let status = Command::new("gh")
+        // `--yes` works for both gh and glab repo delete.
+        let status = Command::new(self.provider.cli())
             .args(["repo", "delete", &self.slug, "--yes"])
             .status();
         if !matches!(status, Ok(s) if s.success()) {
@@ -147,13 +234,6 @@ impl Drop for RepoGuard {
             );
         }
     }
-}
-
-fn clone(slug: &str) -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(format!("git-stk-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    sh("gh", &["repo", "clone", slug, &dir.to_string_lossy()], None)?;
-    Ok(dir)
 }
 
 fn env(key: &str) -> String {
