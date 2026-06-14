@@ -94,10 +94,15 @@ fn run() -> Result<(), String> {
     git(work, &["config", "user.email", "e2e@git-stk.test"])?;
     git(work, &["config", "user.name", "git-stk e2e"])?;
     git(work, &["config", "stk.mergeStrategy", "squash"])?;
+    // Non-interactive editor: `git stk continue` passes through to
+    // `git rebase --continue`, which would otherwise open an editor for the
+    // commit message and hang on a runner with no TTY.
+    git(work, &["config", "core.editor", "true"])?;
 
     core_lifecycle(provider, &slug, work)?;
     issue_autoclose(provider, &slug, work)?;
     metadata_surgery(work)?;
+    conflict_recovery(work)?;
 
     Ok(())
 }
@@ -189,6 +194,54 @@ fn metadata_surgery(work: &Path) -> Result<(), String> {
     // stdin auto-confirms the close prompt). Success is the assertion.
     stk(work, &["submit", "--stack", "--push"])?;
     Ok(())
+}
+
+/// An interrupted restack: a parent edit and a child edit to the same line
+/// force a conflict; `abort` must unwind it cleanly, and `continue` must finish
+/// it after the conflict is resolved. Local-only (no provider).
+fn conflict_recovery(work: &Path) -> Result<(), String> {
+    git(work, &["switch", "main"])?;
+    stk(work, &["new", "conflict/a"])?;
+    commit(work, "shared.txt", "original\n", "a base")?;
+    stk(work, &["new", "conflict/b"])?;
+    commit(work, "shared.txt", "child-change\n", "b change")?;
+    // Edit the same line on the parent so replaying the child conflicts.
+    stk(work, &["bottom"])?;
+    write(work, "shared.txt", "parent-change\n")?;
+    git(work, &["commit", "-am", "a change"])?;
+
+    // abort: the restack conflicts, abort restores a clean tree.
+    expect_conflict(stk(work, &["restack", "--no-push"]))?;
+    stk(work, &["abort"])?;
+    let dirty = git(work, &["status", "--porcelain"])?;
+    if !dirty.is_empty() {
+        return Err(format!("working tree not clean after abort:\n{dirty}"));
+    }
+
+    // continue: re-conflict, resolve, then continue finishes the restack.
+    expect_conflict(stk(work, &["restack", "--no-push"]))?;
+    write(work, "shared.txt", "resolved\n")?;
+    git(work, &["add", "shared.txt"])?;
+    stk(work, &["continue"])?;
+    // conflict/b now sits directly on conflict/a's tip.
+    let child_parent = git(work, &["rev-parse", "conflict/b~1"])?;
+    let base = git(work, &["rev-parse", "conflict/a"])?;
+    if child_parent != base {
+        return Err(format!(
+            "conflict/b not rebased onto conflict/a after continue ({child_parent} vs {base})"
+        ));
+    }
+    Ok(())
+}
+
+/// Assert a restack stopped on a conflict (non-zero exit) rather than succeeding.
+fn expect_conflict(result: Result<String, String>) -> Result<(), String> {
+    match result {
+        Err(_) => Ok(()),
+        Ok(output) => Err(format!(
+            "expected a restack conflict, but it succeeded: {output}"
+        )),
+    }
 }
 
 fn create_repo(provider: Provider, slug: &str) -> Result<(), String> {
