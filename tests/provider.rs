@@ -1,6 +1,7 @@
 mod common;
 
 use common::TestRepo;
+use predicates::prelude::PredicateBooleanExt;
 
 #[test]
 fn provider_detects_github_https_remote() {
@@ -152,4 +153,25 @@ fn provider_rejects_invalid_config() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("unsupported stk.provider value"));
+}
+
+#[test]
+fn provider_redacts_credentials_in_the_remote_url() {
+    let repo = TestRepo::new();
+    repo.git([
+        "remote",
+        "add",
+        "origin",
+        "https://x-access-token:ghp_SUPERSECRET@github.com/lararosekelley/git-stk.git",
+    ]);
+
+    repo.stack()
+        .arg("provider")
+        .assert()
+        .success()
+        // Detected, host shown, but the token never reaches the terminal.
+        .stdout(predicates::str::contains(
+            "github.com/lararosekelley/git-stk",
+        ))
+        .stdout(predicates::str::contains("ghp_SUPERSECRET").not());
 }

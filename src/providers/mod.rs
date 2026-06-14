@@ -94,7 +94,9 @@ impl fmt::Display for ProviderSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config => write!(formatter, "config"),
-            Self::Remote { remote, url } => write!(formatter, "remote {remote} ({url})"),
+            Self::Remote { remote, url } => {
+                write!(formatter, "remote {remote} ({})", redact_url(url))
+            }
         }
     }
 }
@@ -219,7 +221,10 @@ pub fn detect_provider() -> Result<DetectedProvider> {
 
     let gitlab_host = settings::gitlab_host()?;
     let Some(kind) = detect_provider_from_url(&url, gitlab_host.as_deref()) else {
-        bail!("could not detect provider from remote {remote} ({url})");
+        bail!(
+            "could not detect provider from remote {remote} ({})",
+            redact_url(&url)
+        );
     };
 
     Ok(DetectedProvider {
@@ -276,6 +281,28 @@ fn host_of(url: &str) -> &str {
     }
     // Otherwise the host ends at a ':' - a port, or the scp path separator.
     host_port.split(':').next().unwrap_or(host_port)
+}
+
+/// A remote URL with any embedded userinfo (`user:token@`) dropped, for safe
+/// display - an HTTPS remote can carry an auth token in the URL. scp-style
+/// `git@host:path` (no `scheme://`) carries no password, so it is left as is.
+fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, Some(path)),
+        None => (rest, None),
+    };
+    // Drop everything up to the last '@' in the authority (covers `token@`,
+    // `user:token@`, and an '@' inside the userinfo).
+    let Some((_, host)) = authority.rsplit_once('@') else {
+        return url.to_owned();
+    };
+    match path {
+        Some(path) => format!("{scheme}://{host}/{path}"),
+        None => format!("{scheme}://{host}"),
+    }
 }
 
 pub(crate) fn review_provider(kind: ProviderKind) -> Box<dyn ReviewProvider> {
@@ -509,6 +536,34 @@ mod tests {
         assert_eq!(host_of("gitlab.example.com"), "gitlab.example.com");
         // Userinfo with an embedded '@' is stripped at the last one.
         assert_eq!(host_of("https://user@name@github.com/r"), "github.com");
+    }
+
+    #[test]
+    fn redact_url_strips_embedded_credentials() {
+        // An HTTPS remote can carry a token; it must never be displayed.
+        assert_eq!(
+            redact_url("https://x-access-token:ghp_SECRET@github.com/owner/repo.git"),
+            "https://github.com/owner/repo.git"
+        );
+        assert_eq!(
+            redact_url("https://glpat-SECRET@gitlab.com/owner/repo"),
+            "https://gitlab.com/owner/repo"
+        );
+        // ssh userinfo (no secret) is dropped too; port and path stay.
+        assert_eq!(redact_url("ssh://git@host:22/g/r"), "ssh://host:22/g/r");
+    }
+
+    #[test]
+    fn redact_url_leaves_credential_free_urls_unchanged() {
+        assert_eq!(
+            redact_url("https://github.com/owner/repo.git"),
+            "https://github.com/owner/repo.git"
+        );
+        // scp form has no scheme and carries no password - left as is.
+        assert_eq!(
+            redact_url("git@github.com:owner/repo.git"),
+            "git@github.com:owner/repo.git"
+        );
     }
 
     #[test]
