@@ -24,20 +24,33 @@ there; just be polite 😉
 
 ## Install
 
-```sh
-curl https://larakelley.com/sh/git-stk | bash
-```
-
-Or with [Homebrew](https://brew.sh):
+With [Homebrew](https://brew.sh):
 
 ```sh
 brew install lararosekelley/tap/git-stk
 ```
 
-Installers are also attached to [GitHub Releases](https://github.com/lararosekelley/git-stk/releases). With a
-Rust toolchain, `cargo install git-stk --locked` builds from source, or `cargo binstall git-stk` fetches
-the prebuilt binary without compiling. The Linux builds are static (musl), so they run anywhere - glibc,
-Alpine, or an older distro.
+With a Rust toolchain, `cargo install git-stk --locked` builds from source, or `cargo binstall git-stk`
+fetches the prebuilt binary without compiling.
+
+Or the one-line installer, which downloads the prebuilt binary:
+
+```sh
+curl https://larakelley.com/sh/git-stk | bash
+```
+
+That runs [`install.sh`](./install.sh) - a thin wrapper around the
+[`cargo-dist`](https://github.com/axodotdev/cargo-dist)-generated `git-stk-installer.sh`. Every release
+attaches the prebuilt binaries, that installer, and per-file `.sha256` checksums to
+[GitHub Releases](https://github.com/lararosekelley/git-stk/releases), so you can download and verify a
+binary directly instead of piping to a shell:
+
+```sh
+# Linux x86_64, for example
+sha256sum -c git-stk-x86_64-unknown-linux-musl.tar.xz.sha256
+```
+
+The Linux builds are static (musl), so they run anywhere - glibc, Alpine, or an older distro.
 
 **Prerequisites:** review commands drive the GitHub (`gh`) or GitLab (`glab`) CLI, so install the one you
 use and sign in (`gh auth login` / `glab auth login`). git-stk needs git 2.38 or newer (for

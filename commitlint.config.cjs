@@ -33,6 +33,7 @@ module.exports = {
         "repair",
         "adopt",
         "absorb",
+        "security",
       ],
     ],
   },
