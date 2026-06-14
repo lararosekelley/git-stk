@@ -39,19 +39,15 @@ Rust toolchain, `cargo install git-stk --locked` builds from source, or `cargo b
 the prebuilt binary without compiling. The Linux builds are static (musl), so they run anywhere - glibc,
 Alpine, or an older distro.
 
+**Prerequisites:** review commands drive the GitHub (`gh`) or GitLab (`glab`) CLI, so install the one you
+use and sign in (`gh auth login` / `glab auth login`). git-stk needs git 2.38 or newer (for
+`rebase --update-refs`). The local stack commands work without either CLI.
+
 Then install the man page and wire up shell completions (idempotent; prompts before touching your shell rc):
 
 ```sh
 git stk setup [-y] [--refresh]
 ```
-
-New to stacking? `git stk guide` offers short interactive tours in a disposable sandbox repository:
-`intro` (the whole loop - create a stack, submit, restack, land it), `conflicts` (resolve and continue an
-interrupted restack), `repair` (rebuild lost stack metadata), `absorb` (fold review fixes into the
-commits that introduced them), `adopt` (adopt a hand-made branch into a stack, or move one to a new
-parent), and `undo` (reverse the last stack-rewriting command). A built-in demo provider stands in for
-GitHub, so nothing real is touched and no network is needed; `git config stk.provider demo` works in any
-scratch repo for the same offline playground.
 
 Upgrade an installer-managed copy with:
 
@@ -65,6 +61,24 @@ preview, `-y` to skip the prompt). It prints how to remove the binary itself rat
 running program can't reliably delete its own executable, and a `cargo install` / Homebrew copy should go
 through `cargo uninstall git-stk` or `brew uninstall git-stk`. Per-repo `stk.*` config and branch metadata
 are left untouched.
+
+## Quickstart
+
+```sh
+git stk new feature/api       # stack a branch on the current one
+# ...commit work...
+git stk new feature/web       # stack another on top of it
+# ...commit work...
+git stk submit --stack        # open a PR/MR for each branch, in order
+git stk merge --all           # land them bottom-up, in one command
+```
+
+New to stacking? `git stk guide` runs the whole loop offline in a disposable sandbox - nothing real is
+touched and no account is needed. The tours: `intro` (create a stack, submit, restack, land it),
+`conflicts` (resolve and continue an interrupted restack), `repair` (rebuild lost stack metadata),
+`absorb` (fold review fixes into the commits that introduced them), `adopt` (adopt a hand-made branch, or
+move one to a new parent), and `undo` (reverse the last stack-rewriting command). `git config stk.provider
+demo` turns any scratch repo into the same offline playground.
 
 ## Shell Completions
 
@@ -227,7 +241,7 @@ git stk view [branch]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
 git stk repair [--dry-run | --from-remote]
-git stk submit [branch] [-d <desc>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
+git stk submit [branch] [--no-stack] [-d <desc>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
 git stk submit [--stack | --no-stack | --downstack] [-d <desc>] [--draft | --no-draft] [--ready] [--rebuild-overview] [--dry-run] [--push | --no-push]
 git stk cleanup [branch] [--dry-run] [--keep-branch]
 ```
@@ -322,7 +336,7 @@ leaves the receipt's version stale - the HEAD build did not come from a release,
 pointing at the last one. `git stk upgrade --force` is the way back onto releases afterwards.
 
 Once a day, the everyday workflow commands (`list`, `status`, `sync`, `submit`, `merge`, `restack`,
-`cleanup`) check for a newer release after their work is done - capped at two seconds, silent on any
+`cleanup`) check for a newer release after their work is done - capped at five seconds, silent on any
 failure or when stderr is not a terminal - and print a one-line nudge when behind. The check stamps
 `update-check` next to the receipt; `git config stk.noUpdateCheck true` turns it off.
 
@@ -384,9 +398,9 @@ still can't transfer, of course.)
 
 While a stack-rewriting command runs (`submit`, `merge`, `sync`, `restack`, `absorb`, and friends) it holds
 a lock at `.git/stk-lock` so a second git-stk run cannot rewrite the stack at the same time; read-only
-commands are never blocked. If a run is killed mid-operation the lock can linger, but the next git-stk
-command reclaims it automatically once it sees the holding process is gone (on Windows, remove
-`.git/stk-lock` by hand).
+commands are never blocked. If a run is killed mid-operation the lock can linger, but the next
+stack-rewriting command reclaims it automatically once it sees the holding process is gone (on Windows,
+remove `.git/stk-lock` by hand).
 
 Inspect everything stk reads or wrote with:
 
