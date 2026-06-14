@@ -52,33 +52,47 @@ jobs:
       - name: Build git-stk and the e2e harness
         run: cargo build --features e2e --bin git-stk --bin git-stk-e2e
 
-      # Per-shell completions: generate the script for the cell's native shell
-      # and confirm that shell parses it - the real payoff of running each cell
-      # on bash/zsh/pwsh. Matrix expressions aren't allowed in `shell:`, so one
+      # Per-shell completions + setup: generate the completion script for the
+      # cell's native shell and confirm that shell parses it, then run
+      # `git stk setup -y` and confirm it wired the right rc - the real payoff of
+      # running each cell on bash/zsh/pwsh. `$SHELL` steers setup's shell
+      # detection. Matrix expressions aren't allowed in `shell:`, so one
       # literal-shell step per OS, gated by `if:`.
-      - name: Completions parse in bash
+      - name: Completions + setup (bash)
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          SHELL: /bin/bash
         run: |
           ./target/debug/git-stk completions bash > comp.bash
           test -s comp.bash
           bash -n comp.bash
+          ./target/debug/git-stk setup -y
+          grep -q "git stk completions bash" "$HOME/.bashrc"
 
-      - name: Completions parse in zsh
+      - name: Completions + setup (zsh)
         if: runner.os == 'macOS'
         shell: zsh {0}
+        env:
+          SHELL: /bin/zsh
         run: |
           ./target/debug/git-stk completions zsh > comp.zsh
           test -s comp.zsh
           zsh -n comp.zsh
+          ./target/debug/git-stk setup -y
+          grep -q "git stk completions zsh" "$HOME/.zshrc"
 
-      - name: Completions parse in pwsh
+      - name: Completions + setup (pwsh)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $script = & ./target/debug/git-stk.exe completions powershell | Out-String
           if ([string]::IsNullOrWhiteSpace($script)) { throw 'empty completion script' }
           $script | Invoke-Expression
+          & ./target/debug/git-stk.exe setup -y
+          if (-not (Select-String -Path $PROFILE -Pattern 'git stk completions powershell' -Quiet)) {
+            throw 'setup did not wire the PowerShell profile'
+          }
 
       # gh is preinstalled on GitHub runners; wire it to git so pushes over
       # HTTPS authenticate with the PAT.
