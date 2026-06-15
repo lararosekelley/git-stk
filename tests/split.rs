@@ -81,7 +81,9 @@ fn split_needs_at_least_two_commits() {
 }
 
 #[test]
-fn split_without_per_commit_is_not_yet_implemented() {
+fn split_interactive_without_a_terminal_points_at_per_commit() {
+    // The test harness has no TTY, so the interactive flow can't run; it should
+    // bail with a pointer to --per-commit rather than erroring obscurely.
     let repo = TestRepo::new();
     repo.stack().args(["new", "feature"]).assert().success();
     repo.commit_file("f1.txt", "1\n", "first change");
@@ -91,7 +93,6 @@ fn split_without_per_commit_is_not_yet_implemented() {
         .args(["split"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains(
-            "interactive grouping is not implemented yet",
-        ));
+        .stderr(predicates::str::contains("needs a terminal"))
+        .stderr(predicates::str::contains("--per-commit"));
 }

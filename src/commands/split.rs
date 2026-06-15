@@ -1,5 +1,10 @@
+use std::collections::BTreeSet;
+use std::io::IsTerminal;
+
 use anyhow::{Result, anyhow, bail};
 use clap::ArgAction;
+use dialoguer::theme::ColorfulTheme;
+use dialoguer::{Input, MultiSelect};
 
 use crate::commands::Run;
 use crate::git;
@@ -22,12 +27,11 @@ pub struct Split {
 
 impl Run for Split {
     fn run(self) -> Result<()> {
-        if !self.per_commit {
-            // The interactive editor-todo flow (grouping + renaming) is the next
-            // increment; the per-commit path is the foundation it builds on.
-            bail!("interactive grouping is not implemented yet; pass --per-commit for now");
+        if self.per_commit {
+            split_per_commit(self.dry_run)
+        } else {
+            split_interactive(self.dry_run)
         }
-        split_per_commit(self.dry_run)
     }
 }
 
@@ -71,6 +75,95 @@ fn split_per_commit(dry_run: bool) -> Result<()> {
     }
 
     apply(&branch, &base, &plan, dry_run)
+}
+
+/// Interactive split: pick which commits start a branch, then name each one.
+/// The top commit always stays on the original branch (the leaf).
+fn split_interactive(dry_run: bool) -> Result<()> {
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "the interactive split needs a terminal; pass --per-commit for a non-interactive split"
+        );
+    }
+    let branch = git::current_branch()?;
+    let base = base_of(&branch)?;
+
+    let mut commits = git::rev_list(&format!("{base}..{branch}"))?;
+    commits.reverse();
+    if commits.len() < 2 {
+        bail!(
+            "{branch} has {} commit(s) above {base}; need at least 2 to split",
+            commits.len()
+        );
+    }
+    let subjects: Vec<String> = commits
+        .iter()
+        .map(|sha| git::commit_subject(sha))
+        .collect::<Result<_>>()?;
+
+    // Phase 1: which commits start a new branch. The top commit is always the
+    // leaf, so only the commits below it are offered; default is one each.
+    let below = commits.len() - 1;
+    let labels: Vec<String> = (0..below)
+        .map(|i| format!("{}  {}", &commits[i][..8], subjects[i]))
+        .collect();
+    let theme = ColorfulTheme::default();
+    let checked = MultiSelect::with_theme(&theme)
+        .with_prompt(format!(
+            "Each checked commit starts a new branch (unchecked folds into the one below); {branch} stays the leaf"
+        ))
+        .items(&labels)
+        .defaults(&vec![true; below])
+        .interact()?;
+    let starts = group_starts(&checked, below);
+
+    // Phase 2: name each new branch (bottom-up), defaulting to a slug of the
+    // group's bottom commit. The leaf reuses the original branch name.
+    let mut taken: BTreeSet<String> = git::local_branches()?.into_iter().collect();
+    let mut plan: Vec<Plan> = Vec::new();
+    for (group, &start) in starts.iter().enumerate() {
+        let end = starts.get(group + 1).copied().unwrap_or(below);
+        let default = unique_name(&slugify(&subjects[start]), &mut taken.clone());
+        let name: String = Input::with_theme(&theme)
+            .with_prompt(format!(
+                "Name for new branch {}/{}",
+                group + 1,
+                starts.len()
+            ))
+            .default(default)
+            .interact_text()?;
+        if !stack::is_safe_ref_name(&name) {
+            bail!("{name:?} is not a valid branch name");
+        }
+        if name == branch {
+            bail!("a new branch cannot reuse the leaf's name {branch}");
+        }
+        if !taken.insert(name.clone()) {
+            bail!("branch name {name:?} is already taken");
+        }
+        plan.push(Plan {
+            name,
+            sha: commits[end - 1].clone(),
+        });
+    }
+    plan.push(Plan {
+        name: branch.clone(),
+        sha: commits[commits.len() - 1].clone(),
+    });
+
+    apply(&branch, &base, &plan, dry_run)
+}
+
+/// The commit indices that begin a branch: always the bottom (0) plus each one
+/// the user checked, sorted and deduped. Consecutive commits between two starts
+/// form one branch.
+fn group_starts(checked: &[usize], below: usize) -> Vec<usize> {
+    let mut starts: Vec<usize> = std::iter::once(0)
+        .chain(checked.iter().copied().filter(|&index| index < below))
+        .collect();
+    starts.sort_unstable();
+    starts.dedup();
+    starts
 }
 
 /// The branch's base: its recorded stack parent, or the trunk.
@@ -195,6 +288,14 @@ mod tests {
     fn slugify_falls_back_when_empty() {
         assert_eq!(slugify("!!!"), "branch");
         assert_eq!(slugify(""), "branch");
+    }
+
+    #[test]
+    fn group_starts_always_includes_the_bottom_and_dedups() {
+        assert_eq!(group_starts(&[1, 2], 3), vec![0, 1, 2]); // all checked -> one per commit
+        assert_eq!(group_starts(&[1], 3), vec![0, 1]); // the top commit folds into group 2
+        assert_eq!(group_starts(&[], 3), vec![0]); // everything folds into one branch
+        assert_eq!(group_starts(&[0, 2], 3), vec![0, 2]); // checking the bottom is moot
     }
 
     #[test]
