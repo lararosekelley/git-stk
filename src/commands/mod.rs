@@ -30,6 +30,7 @@ pub mod restack;
 pub mod review;
 pub mod run;
 pub mod setup;
+pub mod split;
 pub mod status;
 pub mod submit;
 pub mod sync;

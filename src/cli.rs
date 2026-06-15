@@ -30,6 +30,7 @@ pub enum Command {
     Adopt(commands::adopt::Adopt),
     Detach(commands::detach::Detach),
     Rename(commands::rename::Rename),
+    Split(commands::split::Split),
     Restack(commands::restack::Restack),
     Run(commands::run::Run),
     Continue(commands::restack::Continue),
