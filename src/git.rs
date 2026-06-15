@@ -297,6 +297,19 @@ pub fn rev_list(range: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// `(short-sha, subject)` for each commit in `range` (e.g. "main..HEAD"),
+/// newest first - one git call, for listing a branch's own commits.
+pub fn log_oneline(range: &str) -> Result<Vec<(String, String)>> {
+    Ok(output(&["log", "--format=%h%x09%s", range])
+        .with_context(|| format!("failed to log {range}"))?
+        .lines()
+        .filter_map(|line| {
+            line.split_once('\t')
+                .map(|(sha, subject)| (sha.to_owned(), subject.to_owned()))
+        })
+        .collect())
+}
+
 /// A commit's subject line.
 pub fn commit_subject(sha: &str) -> Result<String> {
     output(&["show", "--no-patch", "--format=%s", sha])

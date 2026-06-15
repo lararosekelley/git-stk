@@ -44,14 +44,17 @@ pub struct List {
     /// Show every stack, not just the one you are on.
     #[arg(long, conflicts_with = "format")]
     all: bool,
+    /// List each branch's own commits (short SHA + subject) beneath it.
+    #[arg(long, conflicts_with = "format")]
+    commits: bool,
 }
 
 impl Run for List {
     fn run(self) -> Result<()> {
         match (self.format, self.all) {
             (Some(format), _) => list_formatted(format),
-            (None, true) => crate::stack::print_all_stacks(&review_numbers()),
-            (None, false) => crate::stack::print_stack(&review_numbers()),
+            (None, true) => crate::stack::print_all_stacks(&review_numbers(), self.commits),
+            (None, false) => crate::stack::print_stack(&review_numbers(), self.commits),
         }
     }
 }

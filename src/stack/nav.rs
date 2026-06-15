@@ -149,7 +149,7 @@ pub fn checkout_bottom() -> Result<()> {
     git::checkout(&bottom)
 }
 
-pub fn print_stack(reviews: &BTreeMap<String, String>) -> Result<()> {
+pub fn print_stack(reviews: &BTreeMap<String, String>, commits: bool) -> Result<()> {
     let current = git::current_branch()?;
     let parents = parent_map()?;
     let root = root_for(&current, &parents);
@@ -172,8 +172,11 @@ pub fn print_stack(reviews: &BTreeMap<String, String>) -> Result<()> {
         current: &current,
         trunk: trunk.as_deref(),
         children: &children,
+        parents: &parents,
         reviews,
         sizes: &sizes,
+        commits,
+        width: term_width(),
     };
     let mut lines = Vec::new();
     collect_tree_lines(&ctx, &root, 0, &mut BTreeSet::new(), &mut lines);
@@ -197,7 +200,7 @@ pub fn print_stack(reviews: &BTreeMap<String, String>) -> Result<()> {
 /// Print every stack, not just the current one: the trunk-rooted forest with
 /// a single trunk line at the bottom, and each rootless fragment as its own
 /// tree above it. The branch you are on is marked wherever it appears.
-pub fn print_all_stacks(reviews: &BTreeMap<String, String>) -> Result<()> {
+pub fn print_all_stacks(reviews: &BTreeMap<String, String>, commits: bool) -> Result<()> {
     let current = git::current_branch()?;
     let parents = parent_map()?;
     let children = children_map(&parents);
@@ -233,8 +236,11 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, String>) -> Result<()> {
         current: &current,
         trunk: trunk.as_deref(),
         children: &children,
+        parents: &parents,
         reviews,
         sizes: &sizes,
+        commits,
+        width: term_width(),
     };
     for (index, root) in roots.iter().enumerate() {
         if index > 0 {
@@ -274,8 +280,20 @@ struct TreeCtx<'a> {
     current: &'a str,
     trunk: Option<&'a str>,
     children: &'a BTreeMap<String, Vec<String>>,
+    parents: &'a BTreeMap<String, String>,
     reviews: &'a BTreeMap<String, String>,
     sizes: &'a BTreeMap<String, (usize, usize)>,
+    /// `--commits`: list each branch's own commits beneath it.
+    commits: bool,
+    /// Terminal width, for truncating commit subjects.
+    width: usize,
+}
+
+/// Terminal width for truncation, defaulting to 80 when not a terminal.
+fn term_width() -> usize {
+    console::Term::stdout()
+        .size_checked()
+        .map_or(80, |(_, cols)| cols as usize)
 }
 
 /// Per-branch diff size (added, deleted lines) against its stack parent, for
@@ -338,6 +356,40 @@ fn collect_tree_lines(
         line.push_str(&tags.join(&separator));
         line.push_str(&style::paint(style::DIM, ")"));
     }
+
+    // With --commits, list the branch's own commits (parent..branch) under it.
+    // `lines` is printed reversed, so push them here (before the branch line)
+    // oldest-first: the reversal then shows them newest-first - git log order -
+    // directly below the branch. The trunk and parentless roots have no "own"
+    // commits to show.
+    if ctx.commits
+        && Some(branch) != ctx.trunk
+        && let Some(parent) = ctx.parents.get(branch)
+    {
+        let indent = "  ".repeat(depth + 1);
+        match git::log_oneline(&format!("{parent}..{branch}")) {
+            Ok(commits) if !commits.is_empty() => {
+                for (sha, subject) in commits.iter().rev() {
+                    let budget = ctx
+                        .width
+                        .saturating_sub(indent.len() + sha.len() + 2)
+                        .max(16);
+                    let subject = console::truncate_str(subject, budget, "…");
+                    lines.push(format!(
+                        "{indent}{}  {}",
+                        style::paint(style::DIM, sha),
+                        style::paint(style::DIM, &subject)
+                    ));
+                }
+            }
+            Ok(_) => lines.push(format!(
+                "{indent}{}",
+                style::paint(style::DIM, "(no commits)")
+            )),
+            Err(_) => {}
+        }
+    }
+
     lines.push(line);
 
     if !seen.insert(branch.to_owned()) {
