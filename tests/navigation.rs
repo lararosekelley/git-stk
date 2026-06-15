@@ -550,3 +550,55 @@ fn help_points_newcomers_at_the_guide() {
         .success()
         .stdout(predicates::str::contains("git stk guide"));
 }
+
+#[test]
+fn list_commits_shows_each_branch_commits_newest_first() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feat/a"]).assert().success();
+    repo.commit_file("a1.txt", "1\n", "add the first thing");
+    repo.commit_file("a2.txt", "2\n", "add the second thing");
+    repo.stack().args(["new", "feat/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "the b change");
+
+    // Without --commits, commit subjects are not shown.
+    repo.stack()
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("add the first thing").not());
+
+    // With --commits, each branch's own commits appear beneath it.
+    repo.stack()
+        .args(["list", "--commits"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("add the first thing"))
+        .stdout(predicates::str::contains("add the second thing"))
+        .stdout(predicates::str::contains("the b change"));
+}
+
+#[test]
+fn list_commits_marks_an_empty_branch() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feat/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    // A freshly created branch shares its parent's tip - no commits of its own.
+    repo.stack().args(["new", "feat/empty"]).assert().success();
+
+    repo.stack()
+        .args(["list", "--commits"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("(no commits)"));
+}
+
+#[test]
+fn list_commits_conflicts_with_format() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feat/a"]).assert().success();
+
+    repo.stack()
+        .args(["list", "--commits", "--format", "markdown"])
+        .assert()
+        .failure();
+}
