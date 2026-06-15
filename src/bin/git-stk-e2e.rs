@@ -6,9 +6,12 @@
 //! ships; invoked by `.github/workflows/e2e.yml`.
 //!
 //! Scenarios, all on one ephemeral repo, GitHub and GitLab:
-//!   1. core lifecycle  - build a stack -> submit -> restack -> squash-merge
+//!   1. core lifecycle   - build a stack -> submit -> restack -> squash-merge
 //!   2. issue auto-close - a branch that references an issue closes it on merge
 //!   3. metadata surgery - adopt, repair, rename
+//!   4. conflict recovery - an interrupted restack: abort, then continue
+//!   5. undo             - reverse the last stack-rewriting command
+//!   6. split            - explode a branch into one stacked branch per commit
 //!
 //! Env:
 //!   STK_E2E_PROVIDER  `github` or `gitlab`
@@ -104,6 +107,7 @@ fn run() -> Result<(), String> {
     metadata_surgery(work)?;
     conflict_recovery(work)?;
     undo_check(work)?;
+    split_check(work)?;
 
     Ok(())
 }
@@ -262,6 +266,36 @@ fn undo_check(work: &Path) -> Result<(), String> {
         return Err(format!(
             "undo did not restore undo/b ({restored} vs {before})"
         ));
+    }
+    Ok(())
+}
+
+/// `split --per-commit` explodes a branch into one branch per commit, reusing
+/// the original as the leaf. Here: a 2-commit branch becomes one new branch
+/// beneath it. Local-only (no provider).
+fn split_check(work: &Path) -> Result<(), String> {
+    git(work, &["switch", "main"])?;
+    stk(work, &["new", "split/work"])?;
+    commit(work, "s1.txt", "1\n", "split one")?;
+    commit(work, "s2.txt", "2\n", "split two")?;
+
+    stk(work, &["split", "--per-commit"])?;
+
+    // The bottom commit became `split-one` (slugged from its subject); the
+    // original `split/work` stays the leaf, reparented onto it.
+    let parent = git(work, &["config", "--get", "branch.split-one.stkParent"])?;
+    if parent != "main" {
+        return Err(format!("split-one parent is {parent:?}, expected main"));
+    }
+    let leaf_parent = git(work, &["config", "--get", "branch.split/work.stkParent"])?;
+    if leaf_parent != "split-one" {
+        return Err(format!(
+            "split/work parent is {leaf_parent:?}, expected split-one"
+        ));
+    }
+    // split-one points at the first commit (split/work's grandparent commit).
+    if git(work, &["rev-parse", "split-one"])? != git(work, &["rev-parse", "split/work~1"])? {
+        return Err("split-one does not point at split/work's first commit".to_owned());
     }
     Ok(())
 }
