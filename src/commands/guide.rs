@@ -34,6 +34,11 @@ const TOPICS: &[(&str, &str, Walk)] = &[
         "adopt a branch into a stack, or move it to a new parent",
         adopt,
     ),
+    (
+        "split",
+        "split a branch's commits into a stack of branches",
+        split,
+    ),
     ("undo", "reverse the last stack-rewriting command", undo),
 ];
 
@@ -41,7 +46,7 @@ const TOPICS: &[(&str, &str, Walk)] = &[
 #[derive(Debug, clap::Args)]
 pub struct Guide {
     /// Which tour to run; omit for a menu.
-    #[arg(value_parser = clap::builder::PossibleValuesParser::new(["intro", "conflicts", "repair", "absorb", "adopt", "undo"]))]
+    #[arg(value_parser = clap::builder::PossibleValuesParser::new(["intro", "conflicts", "repair", "absorb", "adopt", "split", "undo"]))]
     topic: Option<String>,
 }
 
@@ -363,6 +368,43 @@ fn undo(tour: &mut Tour) -> Result<()> {
     tour.stk_fails(&["undo"])?;
     tour.say("And it is local only: pushes and already-merged reviews are never");
     tour.say("reverted - `undo` touches branch tips and metadata, nothing remote.");
+    tour.finish()
+}
+
+fn split(tour: &mut Tour) -> Result<()> {
+    tour.banner("1/3 - a pile of commits on one branch");
+    tour.say("Sometimes you commit several changes on one branch before carving");
+    tour.say("them into reviewable pieces. Start with three commits:");
+    tour.stk(&["new", "feature/checkout"])?;
+    tour.commit("cart.txt", "cart model\n", "add cart model")?;
+    tour.commit("payment.txt", "stripe integration\n", "add payment")?;
+    tour.commit("receipt.txt", "email receipt\n", "send receipt")?;
+    tour.say("`list --commits` nests each branch's own commits, newest first, so");
+    tour.say("you can see the boundaries before splitting:");
+    tour.stk(&["list", "--commits"])?;
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("2/3 - split into a stack");
+    tour.say("`split --per-commit` makes one branch per commit, bottom-up, named");
+    tour.say("from each subject. The original branch stays as the leaf, and nothing");
+    tour.say("is rewritten - the new branches just point at the existing commits:");
+    tour.stk(&["split", "--per-commit"])?;
+    tour.stk(&["list"])?;
+    tour.say("(Plain `git stk split` opens an interactive picker instead, to group");
+    tour.say("several commits into one branch.)");
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("3/3 - tidy a name");
+    tour.say("Auto-slugged names are a fine start; `rename` cleans one up and keeps");
+    tour.say("the stack intact - children pointing at the old name are retargeted:");
+    tour.stk(&["rename", "add-cart-model", "feature/cart"])?;
+    tour.stk(&["list"])?;
+    tour.say("From here, `git stk submit --stack` opens one review per branch, in");
+    tour.say("order - the same as any other stack.");
     tour.finish()
 }
 
