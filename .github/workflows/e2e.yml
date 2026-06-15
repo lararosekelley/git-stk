@@ -30,6 +30,11 @@ permissions:
 
 jobs:
   e2e:
+    # The dist-generated release.yml triggers on pull_request (for `dist plan`)
+    # and invokes this as a plan-job, which would otherwise run the whole live
+    # suite on every PR - and fail on fork PRs that can't see the secrets. This
+    # is a release gate (tag pushes) and manual dispatch only.
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
