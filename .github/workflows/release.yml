@@ -220,10 +220,17 @@ jobs:
   host:
     needs:
       - plan
+      - custom-e2e
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine).
+    # HAND-EDIT (kept by `allow-dirty = ["ci"]` in dist-workspace.toml): the
+    # `needs.custom-e2e.result == 'success'` clause is added on top of dist's
+    # generated condition. Without it a failed e2e gate only *skips* the build
+    # jobs, and host's skip-tolerance would still create + publish the GitHub
+    # Release - the leak that shipped an empty v0.9.12. Requiring custom-e2e to
+    # succeed makes the live suite a real gate on host (and thus announce).
+    if: ${{ always() && needs.custom-e2e.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"

@@ -419,6 +419,12 @@ fn is_transient_merge_error(error: &anyhow::Error) -> bool {
         "head branch was modified",
         "try the merge again",
         "method not allowed",
+        // Transient API 5xx (the server hiccupped - not a verdict on the
+        // merge): 502/503/504/500. Worth retrying rather than failing the run.
+        "bad gateway",
+        "service unavailable",
+        "gateway time",
+        "internal server error",
     ]
     .iter()
     .any(|signature| text.contains(signature))
@@ -537,6 +543,23 @@ mod tests {
         });
         assert_eq!(result.unwrap(), "merged");
         assert_eq!(calls, 2, "GitLab's transient 405 should be retried");
+    }
+
+    #[test]
+    fn a_transient_5xx_from_the_api_is_retried() {
+        let mut calls = 0;
+        let result = retry_transient_merge(3, Duration::ZERO, || {
+            calls += 1;
+            if calls < 2 {
+                Err(anyhow!(
+                    "gh failed: non-200 OK status code: 502 Bad Gateway"
+                ))
+            } else {
+                Ok("merged".to_owned())
+            }
+        });
+        assert_eq!(result.unwrap(), "merged");
+        assert_eq!(calls, 2, "a 502 is a server hiccup, not a merge verdict");
     }
 
     #[test]

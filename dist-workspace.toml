@@ -7,6 +7,12 @@ members = ["cargo:."]
 cargo-dist-version = "0.31.0"
 # CI backends to support
 ci = "github"
+# release.yml is hand-edited: the `host` job's `if` is patched to require the
+# custom-e2e gate to succeed (dist doesn't gate host/announce on plan-jobs, only
+# the build jobs - see the comment in release.yml). allow-dirty stops `dist
+# generate`/`dist plan` from clobbering or rejecting that edit. Re-apply the
+# patch by hand after any intentional `dist generate`.
+allow-dirty = ["ci"]
 # The installers to generate for each app
 installers = ["shell", "powershell", "homebrew"]
 # Homebrew tap to publish the generated formula to (the repo must exist and

@@ -113,6 +113,11 @@ impl ReviewProvider for GitLabProvider {
         // the intent explicit. Either way the caller checks what happened.
         if auto {
             args.push("--auto-merge");
+        } else {
+            // An immediate merge right after a force-push (which restack and
+            // merge --all do) can race GitLab recomputing mergeability; wait for
+            // it to settle so we don't fail on a transient state.
+            wait_until_settled(review);
         }
         merge_with_retry(|| command_output("glab", &args))
     }
@@ -239,6 +244,54 @@ fn gitlab_review_from(review: &serde_json::Value) -> Result<ReviewRequest> {
 /// detailed status is trusted: the older coarse `merge_status` can't tell a
 /// conflict from a failing pipeline, so it (and anything unrecognized) is
 /// treated as not-blocked, leaving the caller to fall back to the error text.
+/// How long to wait for GitLab to recompute mergeability before an immediate
+/// merge (5 polls, 2s apart).
+const MERGE_SETTLE_POLLS: u32 = 5;
+const MERGE_SETTLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Wait for GitLab to finish recomputing the MR's mergeability. Right after a
+/// force-push (which restack and merge --all do), `detailed_merge_status` can
+/// read `checking`/`unchecked`/`preparing`, or even a transient `conflict`,
+/// before settling to `mergeable`; merging in that window fails spuriously. A
+/// genuine blocker that persists past the budget falls through, and the merge
+/// then surfaces the real reason.
+fn wait_until_settled(review: &ReviewRequest) {
+    for attempt in 0..MERGE_SETTLE_POLLS {
+        if attempt > 0 {
+            std::thread::sleep(MERGE_SETTLE_INTERVAL);
+        }
+        if !merge_status_settling(detailed_merge_status(review).as_deref()) {
+            return;
+        }
+    }
+}
+
+/// GitLab's `detailed_merge_status` for the MR, best-effort.
+fn detailed_merge_status(review: &ReviewRequest) -> Option<String> {
+    let output = command_output(
+        "glab",
+        &["mr", "view", review.id_value(), "--output", "json"],
+    )
+    .ok()?;
+    let value: serde_json::Value = serde_json::from_str(&output).ok()?;
+    value
+        .get("detailed_merge_status")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Whether a `detailed_merge_status` is still settling after a push - so a merge
+/// should wait rather than treat it as a verdict. `mergeable` and definite
+/// blockers (ci_*, draft, approvals) are settled; the recompute-window states,
+/// including a transient `conflict`, are not. An unknown/absent status is
+/// treated as settled, so the merge proceeds rather than waiting pointlessly.
+fn merge_status_settling(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("checking" | "unchecked" | "preparing" | "conflict")
+    )
+}
+
 fn classify_gitlab_merge(json: &str) -> MergeBlocker {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
         return MergeBlocker::None;
@@ -321,6 +374,19 @@ mod tests {
             classify_gitlab_merge(r#"{"detailed_merge_status":"mergeable"}"#),
             MergeBlocker::None
         );
+    }
+
+    #[test]
+    fn merge_status_settling_waits_through_the_recompute_window() {
+        // Post-push recompute states (incl. a transient conflict) -> wait.
+        assert!(super::merge_status_settling(Some("checking")));
+        assert!(super::merge_status_settling(Some("unchecked")));
+        assert!(super::merge_status_settling(Some("preparing")));
+        assert!(super::merge_status_settling(Some("conflict")));
+        // Settled: merge now, or let the real blocker surface.
+        assert!(!super::merge_status_settling(Some("mergeable")));
+        assert!(!super::merge_status_settling(Some("ci_still_running")));
+        assert!(!super::merge_status_settling(None));
     }
 
     #[test]
