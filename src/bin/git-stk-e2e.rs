@@ -94,10 +94,16 @@ fn run() -> Result<(), String> {
     git(work, &["config", "user.email", "e2e@git-stk.test"])?;
     git(work, &["config", "user.name", "git-stk e2e"])?;
     git(work, &["config", "stk.mergeStrategy", "squash"])?;
+    // Non-interactive editor: `git stk continue` passes through to
+    // `git rebase --continue`, which would otherwise open an editor for the
+    // commit message and hang on a runner with no TTY.
+    git(work, &["config", "core.editor", "true"])?;
 
     core_lifecycle(provider, &slug, work)?;
     issue_autoclose(provider, &slug, work)?;
     metadata_surgery(work)?;
+    conflict_recovery(work)?;
+    undo_check(work)?;
 
     Ok(())
 }
@@ -112,10 +118,7 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
     commit(work, "b.txt", "b\n", "b work")?;
 
     stk(work, &["submit", "--stack", "--push"])?;
-    let open = open_review_count(provider, slug)?;
-    if open != 2 {
-        return Err(format!("expected 2 open reviews after submit, saw {open}"));
-    }
+    wait_for_review_count(provider, slug, 2)?;
 
     stk(work, &["bottom"])?;
     write(work, "a.txt", "a\na2\n")?;
@@ -131,12 +134,7 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
     };
     stk(work, &["merge", "--all", merge_wait, "--yes"])?;
 
-    let after = open_review_count(provider, slug)?;
-    if after != 0 {
-        return Err(format!(
-            "expected no open reviews after merge --all, saw {after}"
-        ));
-    }
+    wait_for_review_count(provider, slug, 0)?;
     git(work, &["switch", "main"])?;
     git(work, &["pull", "--ff-only"])?;
     for file in ["a.txt", "b.txt"] {
@@ -199,6 +197,85 @@ fn metadata_surgery(work: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// An interrupted restack: a parent edit and a child edit to the same line
+/// force a conflict; `abort` must unwind it cleanly, and `continue` must finish
+/// it after the conflict is resolved. Local-only (no provider).
+fn conflict_recovery(work: &Path) -> Result<(), String> {
+    git(work, &["switch", "main"])?;
+    stk(work, &["new", "conflict/a"])?;
+    commit(work, "shared.txt", "original\n", "a base")?;
+    stk(work, &["new", "conflict/b"])?;
+    commit(work, "shared.txt", "child-change\n", "b change")?;
+    // Edit the same line on the parent so replaying the child conflicts.
+    stk(work, &["bottom"])?;
+    write(work, "shared.txt", "parent-change\n")?;
+    git(work, &["commit", "-am", "a change"])?;
+
+    // abort: the restack conflicts, abort restores a clean tree.
+    expect_conflict(stk(work, &["restack", "--no-push"]))?;
+    stk(work, &["abort"])?;
+    let dirty = git(work, &["status", "--porcelain"])?;
+    if !dirty.is_empty() {
+        return Err(format!("working tree not clean after abort:\n{dirty}"));
+    }
+
+    // continue: re-conflict, resolve, then continue finishes the restack.
+    expect_conflict(stk(work, &["restack", "--no-push"]))?;
+    write(work, "shared.txt", "resolved\n")?;
+    git(work, &["add", "shared.txt"])?;
+    stk(work, &["continue"])?;
+    // conflict/b now sits directly on conflict/a's tip.
+    let child_parent = git(work, &["rev-parse", "conflict/b~1"])?;
+    let base = git(work, &["rev-parse", "conflict/a"])?;
+    if child_parent != base {
+        return Err(format!(
+            "conflict/b not rebased onto conflict/a after continue ({child_parent} vs {base})"
+        ));
+    }
+    Ok(())
+}
+
+/// `undo` reverses the last stack-rewriting command, restoring branch tips and
+/// metadata. Here: a restack moves the child's tip, and undo restores it.
+/// Local-only.
+fn undo_check(work: &Path) -> Result<(), String> {
+    git(work, &["switch", "main"])?;
+    stk(work, &["new", "undo/a"])?;
+    commit(work, "undo-a.txt", "a\n", "undo a")?;
+    stk(work, &["new", "undo/b"])?;
+    commit(work, "undo-b.txt", "b\n", "undo b")?;
+    let before = git(work, &["rev-parse", "undo/b"])?;
+
+    // A rewrite that moves undo/b's tip: commit on the parent, then restack.
+    stk(work, &["bottom"])?;
+    write(work, "undo-a.txt", "a\nmore\n")?;
+    git(work, &["commit", "-am", "more a"])?;
+    stk(work, &["restack", "--no-push"])?;
+    let after = git(work, &["rev-parse", "undo/b"])?;
+    if after == before {
+        return Err("restack did not move undo/b, so there is nothing to undo".to_owned());
+    }
+
+    stk(work, &["undo"])?;
+    let restored = git(work, &["rev-parse", "undo/b"])?;
+    if restored != before {
+        return Err(format!(
+            "undo did not restore undo/b ({restored} vs {before})"
+        ));
+    }
+    Ok(())
+}
+
+/// Assert a restack stopped on a conflict (non-zero exit) rather than succeeding.
+fn expect_conflict(result: Result<String, String>) -> Result<(), String> {
+    match result {
+        Err(_) => Ok(()),
+        Ok(output) => Err(format!(
+            "expected a restack conflict, but it succeeded: {output}"
+        )),
+    }
+}
+
 fn create_repo(provider: Provider, slug: &str) -> Result<(), String> {
     match provider {
         Provider::Github => sh(
@@ -241,6 +318,28 @@ fn clone(provider: Provider, slug: &str) -> Result<PathBuf, String> {
         }
     }
     Err(format!("clone failed after retries: {last}"))
+}
+
+/// Poll the open-review count until it matches `want`. `submit`/`merge` then
+/// immediately listing can race the provider's indexing (eventual consistency);
+/// without this, a transient mismatch fails the run - and the suite now gates
+/// releases, so a flake here blocks a release.
+fn wait_for_review_count(provider: Provider, slug: &str, want: usize) -> Result<(), String> {
+    let mut last = None;
+    for attempt in 0..6 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(2));
+        }
+        let count = open_review_count(provider, slug)?;
+        if count == want {
+            return Ok(());
+        }
+        last = Some(count);
+    }
+    Err(format!(
+        "expected {want} open reviews, saw {} after retries",
+        last.unwrap_or(want)
+    ))
 }
 
 /// Number of open reviews on the repo, parsed from the provider's list JSON.
