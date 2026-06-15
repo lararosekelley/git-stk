@@ -154,10 +154,11 @@ Local stack metadata:
 git stk new <branch> [--insert | --prepend] [--dry-run]
 git stk parent [branch]
 git stk children [branch]
-git stk list [--all | --format <markdown|plain>]
+git stk list [--all] [--commits] [--format <markdown|plain>]
 git stk adopt [branch] [--parent <parent>] [--dry-run]   # defaults: current branch, trunk
 git stk detach [branch]
 git stk rename [branch] <new-name> [--dry-run]
+git stk split [--per-commit] [--dry-run]
 ```
 
 `new` normally stacks a fresh branch on top of where you stand. `--insert` splices it in _above_ the
@@ -185,6 +186,15 @@ the trunk show none.
 `list --all` shows every stack at once instead of just the one you are on - the trunk once at the bottom,
 each stack's tree above it, and any rootless fragments as their own trees - for an overview when several
 stacks are in flight.
+
+`list --commits` nests each branch's own commits (short SHA + subject) beneath it, newest-first, so you
+can see the commit boundaries at a glance - handy before a `split`. The trunk and empty branches show none.
+
+`split` turns the current branch's commits into a stack of branches, bottom-up, reusing the branch as the
+leaf (it keeps its name and tip). It is non-destructive: the new branches point at the existing commits, so
+nothing is rewritten. `--per-commit` makes one branch per commit, named from each commit's subject, with no
+prompts; without it, an interactive picker lets you group commits and name each branch. Inspect first with
+`list --commits`.
 
 `status` and `list` append `hint:` lines pointing at the next command when there is one: `restack` when a
 branch is behind its parent, `submit` when a review base went stale, `sync` when a review in the stack
