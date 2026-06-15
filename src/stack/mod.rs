@@ -418,7 +418,7 @@ pub fn apply_remote_metadata(remote: &str) -> Result<usize> {
 /// as an argument: non-empty, not an option (`-...`), and free of whitespace
 /// and control characters. git rejects other invalid refs itself; this guards
 /// the one thing it would not - a name it would parse as a flag.
-fn is_safe_ref_name(name: &str) -> bool {
+pub(crate) fn is_safe_ref_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
         && !name.chars().any(|c| c.is_whitespace() || c.is_control())
