@@ -71,6 +71,13 @@ pub fn create_branch(branch: &str) -> Result<()> {
     status(&["switch", "-c", branch]).with_context(|| format!("failed to create branch {branch}"))
 }
 
+/// Create a branch pointing at `sha` without checking it out or touching the
+/// working tree - used by `split` to point new branches at existing commits.
+pub fn create_branch_at(branch: &str, sha: &str) -> Result<()> {
+    status(&["branch", branch, sha])
+        .with_context(|| format!("failed to create branch {branch} at {sha}"))
+}
+
 /// Force-delete a branch. Use only once review state confirms it landed: a
 /// squash merge leaves the commits non-ancestry-merged, so `git branch -d`
 /// would refuse even though the work is in.
