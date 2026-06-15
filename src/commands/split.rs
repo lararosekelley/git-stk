@@ -17,7 +17,8 @@ use crate::style;
 /// new branches point at the existing commits, so nothing is rewritten.
 #[derive(Debug, clap::Args)]
 pub struct Split {
-    /// One branch per commit, named from each commit's subject - no editor.
+    /// One branch per commit, named from each commit's subject; skips the
+    /// interactive grouping picker.
     #[arg(long, action = ArgAction::SetTrue)]
     per_commit: bool,
     /// Print the plan without creating branches or writing metadata.
