@@ -15,40 +15,49 @@ pub struct Cli {
     pub command: Command,
 }
 
+// Ordered by workflow stage - create/edit, navigate, restack/resolve,
+// review/land, setup - rather than alphabetically: clap lists subcommands in
+// declaration order, so `git stk --help` reads as the workflow. clap has no way
+// to print headings or blank lines between subcommands, so the grouping is
+// conveyed by order alone; the blank lines below are for source readability.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     New(commands::new::New),
+    Adopt(commands::adopt::Adopt),
+    Split(commands::split::Split),
+    Rename(commands::rename::Rename),
+    Detach(commands::detach::Detach),
     Absorb(commands::absorb::Absorb),
-    Parent(commands::parent::Parent),
-    Children(commands::children::Children),
+
     Up(commands::up::Up),
     Down(commands::down::Down),
     Top(commands::top::Top),
     Bottom(commands::bottom::Bottom),
+    Parent(commands::parent::Parent),
+    Children(commands::children::Children),
     List(commands::list::List),
     Status(commands::status::Status),
-    Adopt(commands::adopt::Adopt),
-    Detach(commands::detach::Detach),
-    Rename(commands::rename::Rename),
-    Split(commands::split::Split),
+
     Restack(commands::restack::Restack),
     Run(commands::run::Run),
     Continue(commands::restack::Continue),
     Abort(commands::restack::Abort),
     Undo(commands::undo::Undo),
-    Provider(commands::provider::Provider),
+    Repair(commands::repair::Repair),
+
+    Submit(commands::submit::Submit),
     Review(commands::review::Review),
     View(commands::view::View),
     Sync(commands::sync::Sync),
     Merge(commands::merge::Merge),
-    Repair(commands::repair::Repair),
-    Submit(commands::submit::Submit),
+    Provider(commands::provider::Provider),
+
     Config(commands::config::Config),
+    Setup(commands::setup::Setup),
     Completions(commands::completions::Completions),
     Guide(commands::guide::Guide),
-    Setup(commands::setup::Setup),
-    Uninstall(commands::uninstall::Uninstall),
     Upgrade(commands::upgrade::Upgrade),
+    Uninstall(commands::uninstall::Uninstall),
     Cleanup(commands::cleanup::Cleanup),
     Credits(commands::credits::Credits),
 }

@@ -10,6 +10,7 @@ use crate::{git, stack};
 /// Print local and remote stack status for a branch.
 #[derive(Debug, clap::Args)]
 pub struct Status {
+    /// Branch to report on (defaults to the current branch).
     #[arg(add = ArgValueCompleter::new(completions::branch_candidates))]
     branch: Option<String>,
 }

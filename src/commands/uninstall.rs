@@ -3,9 +3,10 @@ use clap::ArgAction;
 
 use crate::commands::Run;
 
-/// Remove what `git stk setup` and the installer added: shell completion
-/// wiring, the man page, and the config/receipt directory. The binary itself
-/// is reported, not deleted.
+/// Remove what `git stk setup` and the installer added.
+///
+/// Shell completion wiring, the man page, and the config/receipt directory.
+/// The binary itself is reported, not deleted.
 #[derive(Debug, clap::Args)]
 pub struct Uninstall {
     /// Print what would be removed without removing anything.

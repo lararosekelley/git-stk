@@ -13,6 +13,7 @@ use crate::{git, stack};
 /// Create or update a remote review request for a branch.
 #[derive(Debug, clap::Args)]
 pub struct Submit {
+    /// Branch to submit (defaults to the current branch).
     #[arg(add = ArgValueCompleter::new(completions::branch_candidates))]
     branch: Option<String>,
     /// Print what would change without creating or updating reviews.

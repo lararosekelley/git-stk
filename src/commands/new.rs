@@ -6,6 +6,7 @@ use crate::commands::Run;
 /// Create a new child branch from the current branch.
 #[derive(Debug, clap::Args)]
 pub struct New {
+    /// Name for the new child branch.
     branch: String,
     /// Insert above the current branch, moving its children onto the new one.
     #[arg(long, conflicts_with = "prepend")]

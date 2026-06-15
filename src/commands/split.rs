@@ -11,8 +11,9 @@ use crate::git;
 use crate::stack;
 use crate::style;
 
-/// Split the current branch's commits into a stack of branches, bottom-up. The
-/// current branch is reused as the leaf (it keeps its name and tip); new
+/// Split the current branch's commits into a stack of branches, bottom-up.
+///
+/// The current branch is reused as the leaf (it keeps its name and tip); new
 /// branches are created beneath it for the commits below. Non-destructive: the
 /// new branches point at the existing commits, so nothing is rewritten.
 #[derive(Debug, clap::Args)]

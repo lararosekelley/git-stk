@@ -19,6 +19,7 @@ use crate::{git, stack};
 /// branches unprompted. `--dry-run` previews and `--keep-branch` retains them.
 #[derive(Debug, clap::Args)]
 pub struct Cleanup {
+    /// Branch to clean up (defaults to the current branch).
     #[arg(add = ArgValueCompleter::new(completions::branch_candidates))]
     branch: Option<String>,
     /// Print what would change without updating local metadata.

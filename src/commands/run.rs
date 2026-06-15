@@ -6,9 +6,10 @@ use clap::ArgAction;
 use crate::stack;
 use crate::style;
 
-/// Run a command on every branch in the stack, bottom-up, and report a
-/// per-branch pass/fail summary. Answers "does each layer build on its own?"
-/// before submitting - each PR is supposed to be independently green.
+/// Run a command on every branch in the stack, bottom-up, with a pass/fail summary.
+///
+/// Answers "does each layer build on its own?" before submitting - each PR is
+/// supposed to be independently green.
 #[derive(Debug, clap::Args)]
 pub struct Run {
     /// Stop at the first branch whose command fails.

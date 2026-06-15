@@ -7,9 +7,10 @@ use crate::cli::{PushMode, UpdateRefsMode};
 use crate::commands::Run;
 use crate::{git, settings, stack, style};
 
-/// Amend staged fixes into the stack commits that introduced the lines they
-/// touch. Each hunk is routed to the commit a `git blame` attributes its
-/// lines to; hunks that cannot be attributed are left in place.
+/// Amend staged fixes into the commits that introduced the lines they touch.
+///
+/// Each hunk is routed to the commit a `git blame` attributes its lines to;
+/// hunks that cannot be attributed are left in place.
 #[derive(Debug, clap::Args)]
 pub struct Absorb {
     /// Show the hunk -> commit routing without changing anything.
