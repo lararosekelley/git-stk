@@ -41,5 +41,8 @@ jobs:
           fi
 
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            git push gitlab "$GITHUB_REF_NAME:$GITHUB_REF_NAME"
+            # Force for the same reason as main: a deleted-and-recreated tag
+            # (e.g. a re-cut release) must overwrite the stale mirror tag rather
+            # than be rejected as "already exists".
+            git push --force gitlab "$GITHUB_REF_NAME:$GITHUB_REF_NAME"
           fi

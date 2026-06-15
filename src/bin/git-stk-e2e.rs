@@ -160,8 +160,12 @@ fn issue_autoclose(provider: Provider, slug: &str, work: &Path) -> Result<(), St
     stk(work, &["submit", "--push"])?;
     stk(work, &["merge", "-y"])?;
 
-    // The merged "Closes #N" closes the issue; allow a brief lag.
-    for attempt in 0..5 {
+    // The merged "Closes #N" closes the issue, but GitLab does it in an async
+    // background job that on gitlab.com routinely lags well past 10s under load
+    // (GitHub closes near-synchronously). Poll up to ~30s; the loop returns the
+    // instant it reads `closed`, so the longer ceiling is free for the fast
+    // providers and only the GitLab tail pays for it.
+    for attempt in 0..15 {
         if attempt > 0 {
             sleep(Duration::from_secs(2));
         }
