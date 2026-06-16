@@ -4,10 +4,12 @@
 
 use anyhow::Result;
 
-use crate::providers::{ReviewProvider, ReviewState};
+use crate::providers::{ProviderKind, ReviewProvider, ReviewState};
+use crate::settings;
 
 mod ledger;
 mod sections;
+mod template;
 
 pub use ledger::update_stack_notes;
 
@@ -129,6 +131,64 @@ pub fn update_description_note(
     Ok(())
 }
 
+/// Seed each freshly created review's body with the repo's PR/MR template, so
+/// the managed sections below augment it instead of `--fill` replacing it.
+/// Create-only - existing reviews keep whatever body they have - and skipped
+/// when `stk.usePrTemplate` is off or the repo has no single template.
+pub fn seed_template_notes(
+    review_provider: &dyn ReviewProvider,
+    kind: ProviderKind,
+    created: &[String],
+    dry_run: bool,
+) -> Result<()> {
+    if created.is_empty() || !settings::use_pr_template()? {
+        return Ok(());
+    }
+    let Some(template) = template::discover(kind)? else {
+        return Ok(());
+    };
+
+    for branch in created {
+        if dry_run {
+            anstream::println!("would seed the PR template into the review for {branch}");
+            continue;
+        }
+
+        let Some(review) = review_provider.review_for_branch(branch)? else {
+            anstream::println!("skipped PR template: no review found for {branch}");
+            continue;
+        };
+        if review.branch != *branch {
+            continue;
+        }
+
+        let body = review_provider.review_body(&review)?;
+        let updated = body_with_template(&body, &template);
+        if updated == body {
+            continue;
+        }
+
+        review_provider.update_review_body(&review, &updated)?;
+        anstream::println!("seeded the PR template into {}", review.id);
+    }
+
+    Ok(())
+}
+
+/// Place the template at the top of the body. An empty body becomes the
+/// template alone; a body that already carries it is left untouched (so a
+/// re-seed is a no-op); otherwise the template is prepended above the
+/// `--fill` content, with the managed sections appending below it later.
+fn body_with_template(body: &str, template: &str) -> String {
+    if body.trim().is_empty() {
+        return template.to_owned();
+    }
+    if body.contains(template) {
+        return body.to_owned();
+    }
+    format!("{template}\n\n{}", body.trim_start())
+}
+
 /// The issue number a branch name refers to, if any. A path segment that
 /// starts with the number (`123-fix-thing`, `fix/123-thing`, bare `123`) or
 /// prefixes it with issue/issues (`issue-123`, `fix/issues-123-thing`)
@@ -198,6 +258,26 @@ mod tests {
         assert_eq!(issue_number_from_branch("2024q1-cleanup"), None);
         assert_eq!(issue_number_from_branch("0-zero"), None);
         assert_eq!(issue_number_from_branch("upgrade-issue"), None);
+    }
+
+    #[test]
+    fn body_with_template_fills_an_empty_body() {
+        assert_eq!(body_with_template("", "## Summary"), "## Summary");
+        assert_eq!(body_with_template("   \n", "## Summary"), "## Summary");
+    }
+
+    #[test]
+    fn body_with_template_prepends_above_fill_content() {
+        assert_eq!(
+            body_with_template("Commit body.", "## Summary"),
+            "## Summary\n\nCommit body."
+        );
+    }
+
+    #[test]
+    fn body_with_template_is_idempotent_when_already_present() {
+        let seeded = "## Summary\n\nCommit body.";
+        assert_eq!(body_with_template(seeded, "## Summary"), seeded);
     }
 
     #[test]

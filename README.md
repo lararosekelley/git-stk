@@ -348,6 +348,13 @@ own `Closes #N` step stays inert on those shapes, so the two never collide.
 managed sections, for the current or named branch only. It sticks across resubmits until changed;
 `--desc ""` removes it.
 
+When the repo carries a pull/merge request template - GitHub's `PULL_REQUEST_TEMPLATE` (in the root,
+`.github/`, or `docs/`) or GitLab's `Default.md` under `.gitlab/merge_request_templates/` - a newly
+created review starts from it, with the managed sections (description, `Closes #N`, stack overview)
+appended beneath rather than replacing it, matching what opening the review on the web would give you.
+A `PULL_REQUEST_TEMPLATE/` directory of named choices has no single default, so it is skipped. Set
+`git config stk.usePrTemplate false` for a lean, git-stk-only body.
+
 Upgrading:
 
 ```sh
@@ -406,6 +413,10 @@ Everything is optional; defaults shown below:
     checkTimeout = 1800
     ; Open new reviews as drafts. Default: false.
     submitDraft = true
+    ; Seed a new review's body from the repo's PR/MR template (GitHub's
+    ; PULL_REQUEST_TEMPLATE, GitLab's Default.md) instead of replacing it.
+    ; Default: true.
+    usePrTemplate = false
     ; `absorb` also folds unstaged tracked edits, not just staged ones. Default: false.
     absorbIncludeUnstaged = true
     ; Skip the once-a-day check for a newer release. Default: false.

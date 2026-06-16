@@ -20,6 +20,7 @@ pub const NO_UPDATE_CHECK_KEY: &str = "stk.noUpdateCheck";
 pub const ABSORB_INCLUDE_UNSTAGED_KEY: &str = "stk.absorbIncludeUnstaged";
 pub const GITLAB_HOST_KEY: &str = "stk.gitlabHost";
 pub const CHECK_TIMEOUT_KEY: &str = "stk.checkTimeout";
+pub const USE_PR_TEMPLATE_KEY: &str = "stk.usePrTemplate";
 pub const DEFAULT_REMOTE: &str = "origin";
 
 /// How long `merge --wait` polls a review's checks before giving up, unless
@@ -43,6 +44,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     (ABSORB_INCLUDE_UNSTAGED_KEY, "false"),
     (GITLAB_HOST_KEY, "none; gitlab.com is always detected"),
     (CHECK_TIMEOUT_KEY, "1800 (30m); 0 waits indefinitely"),
+    (USE_PR_TEMPLATE_KEY, "true"),
 ];
 
 /// The remote used for provider detection, trunk discovery, and pushes.
@@ -91,6 +93,14 @@ fn parse_check_timeout(value: Option<&str>) -> Result<Option<Duration>> {
 /// A boolean setting's value, defaulting to false when unset.
 pub fn bool_setting(key: &str) -> Result<bool> {
     Ok(git::config_get_bool(key)?.unwrap_or(false))
+}
+
+/// Whether to seed a new review's body from the repo's PR/MR template
+/// (`stk.usePrTemplate`). Defaults to true - unlike most bool settings - so
+/// the template is honored out of the box; set false to opt into a lean,
+/// git-stk-only body.
+pub fn use_pr_template() -> Result<bool> {
+    Ok(git::config_get_bool(USE_PR_TEMPLATE_KEY)?.unwrap_or(true))
 }
 
 /// Resolve a `--push`/`--no-push` flag pair against its config-key default.
