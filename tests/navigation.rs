@@ -504,6 +504,39 @@ fn list_without_all_shows_only_the_current_stack() {
 }
 
 #[test]
+fn list_without_all_hides_sibling_stacks_sharing_the_trunk() {
+    let repo = TestRepo::new();
+
+    // Two independent stacks, both anchored on main.
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.git(["switch", "feature/a"]);
+
+    // The default view is the one stack you're on, sitting on its trunk - the
+    // sibling that only shares the trunk is left for its own `list`.
+    repo.stack()
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("feature/a"))
+        .stdout(predicates::str::contains("main (trunk)"))
+        .stdout(predicates::str::contains("feature/b").not());
+
+    // --all still shows both.
+    let output = repo
+        .stack()
+        .args(["list", "--all"])
+        .output()
+        .expect("list --all");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("feature/a") && stdout.contains("feature/b"),
+        "both stacks expected:\n{stdout}"
+    );
+}
+
+#[test]
 fn list_all_conflicts_with_format() {
     let repo = two_stacks();
 

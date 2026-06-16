@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 
 use super::{
-    branch_and_descendants, children_map, children_of, parent_map, parent_of, root_for,
+    children_map, children_of, current_stack_branches, parent_map, parent_of, root_for,
     trunk_branch,
 };
 use crate::git;
@@ -153,13 +153,11 @@ pub fn print_stack(reviews: &BTreeMap<String, String>, commits: bool) -> Result<
     let current = git::current_branch()?;
     let parents = parent_map()?;
     let root = root_for(&current, &parents);
-    let children = children_map(&parents);
     let trunk = trunk_branch(&git::local_branches()?);
 
-    let descendants = branch_and_descendants(&root)?;
     // A lone branch (or the bare trunk) is not a stack - say so rather than
     // drawing a one-node "stack".
-    if descendants.len() == 1 {
+    if parent_of(&current)?.is_none() && children_of(&current)?.is_empty() {
         anstream::println!("no stacked branches");
         anstream::println!(
             "{}",
@@ -167,7 +165,21 @@ pub fn print_stack(reviews: &BTreeMap<String, String>, commits: bool) -> Result<
         );
         return Ok(());
     }
-    let sizes = diff_sizes(descendants.iter().cloned(), &parents);
+
+    // Scope to the current branch's own line (fork siblings included, stacks
+    // that merely share the trunk excluded), so `list` shows just the stack you
+    // are on; `--all` is for the rest. The trunk stays as the rendered root so
+    // the stack still reads as sitting on its base.
+    let stack: BTreeSet<String> = current_stack_branches(&current)?.into_iter().collect();
+    let children: BTreeMap<String, Vec<String>> = children_map(&parents)
+        .into_iter()
+        .map(|(parent, kids)| {
+            let kept = kids.into_iter().filter(|kid| stack.contains(kid)).collect();
+            (parent, kept)
+        })
+        .collect();
+
+    let sizes = diff_sizes(stack.iter().cloned(), &parents);
     let ctx = TreeCtx {
         current: &current,
         trunk: trunk.as_deref(),
@@ -187,7 +199,7 @@ pub fn print_stack(reviews: &BTreeMap<String, String>, commits: bool) -> Result<
         anstream::println!("{line}");
     }
 
-    for branch in &descendants {
+    for branch in &stack {
         if let Some(parent) = parents.get(branch)
             && let Some(hint) = behind_parent_hint(branch, parent)
         {

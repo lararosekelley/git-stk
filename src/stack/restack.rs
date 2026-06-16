@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::{base_of, children_map, collect_descendants, parent_map, record_base, root_for};
+use super::{base_of, children_map, collect_descendants, line_base, parent_map, record_base};
 use crate::cli::{PushMode, UpdateRefsMode};
 use crate::git;
 use crate::settings;
@@ -20,10 +20,13 @@ const STATE_FILE: &str = "stack-state";
 pub fn restack(update_refs_mode: UpdateRefsMode, push_mode: PushMode, dry_run: bool) -> Result<()> {
     let current = git::current_branch()?;
     let parents = parent_map()?;
-    // Restack the whole stack containing the current branch, from anywhere
-    // in it: walk to the root, then rebase its descendants parent-first.
-    let root = root_for(&current, &parents);
-    let branches = restack_order(&root, &parents);
+    // Restack the stack containing the current branch, from anywhere in it:
+    // anchor on the bottom of its own line, then rebase that subtree
+    // parent-first. Anchoring on the line base rather than the trunk leaves
+    // sibling stacks that merely share the trunk alone - rebasing and
+    // force-pushing those would touch work this restack was never asked about.
+    let base = line_base(&current)?;
+    let branches = restack_order(&base, &parents);
 
     if branches.is_empty() {
         anstream::println!("{}", style::dim("nothing to restack"));

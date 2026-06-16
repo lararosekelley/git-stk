@@ -307,8 +307,9 @@ landing forever, and ctrl-c is always safe (rerun to resume from the new bottom)
 the bottom up through the current branch and out to its descendants - so it never matters where in that
 stack you are standing, and independent stacks that only share the trunk are left for their own submit.
 With `git config stk.submitStack true`, bare `submit` does this by default; `--no-stack` or naming a branch
-submits a single branch. (`restack` still rebases the whole subtree on the trunk, since re-basing an
-already-current sibling is a harmless no-op.)
+submits a single branch. `restack`, `sync`, and `list` are scoped the same way - they act on the stack
+containing the current branch, never the sibling stacks that merely share the trunk (which `restack`
+would otherwise rebase and force-push, and `list` would otherwise draw alongside yours).
 
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens

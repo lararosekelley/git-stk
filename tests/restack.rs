@@ -433,6 +433,42 @@ fn restack_push_flag_pushes_rewritten_branches() {
 }
 
 #[test]
+fn restack_leaves_sibling_stacks_sharing_the_trunk_alone() {
+    let repo = TestRepo::new();
+
+    // Two independent stacks, both anchored on main.
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // Advance main so both stacks are behind it (neither is a no-op restack).
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+    let sibling_remote = repo.remote_sha(&bare, "feature/b");
+    let sibling_local = repo.git(["rev-parse", "feature/b"]);
+
+    // Restack from feature/a: only its own line should move.
+    repo.git(["switch", "feature/a"]);
+    repo.stack()
+        .args(["restack", "--push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("rebasing feature/a onto main"))
+        .stdout(predicates::str::contains("pushed feature/a to origin"))
+        .stdout(predicates::str::contains("feature/b").not());
+
+    // The sibling was neither rebased nor pushed, and we stayed on our own
+    // branch rather than landing on the sibling's tip.
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
+    assert_eq!(repo.git(["rev-parse", "feature/b"]), sibling_local);
+    assert_eq!(repo.remote_sha(&bare, "feature/b"), sibling_remote);
+}
+
+#[test]
 fn restack_prints_push_hint_when_not_pushing() {
     let repo = TestRepo::new();
 
