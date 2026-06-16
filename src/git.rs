@@ -41,6 +41,14 @@ pub fn git_path(path: &str) -> Result<String> {
     output(&["rev-parse", "--git-path", path])
 }
 
+/// The repository's top-level working-tree directory.
+pub fn repo_root() -> Result<std::path::PathBuf> {
+    Ok(std::path::PathBuf::from(output(&[
+        "rev-parse",
+        "--show-toplevel",
+    ])?))
+}
+
 /// Resolve `path` under the repo's *common* git dir, which all linked
 /// worktrees share, rather than the per-worktree dir `git_path` returns. Use
 /// this for state that guards or mirrors the shared config (`branch.*`), so

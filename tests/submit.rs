@@ -134,6 +134,130 @@ fn submit_creates_gitlab_mr_without_fill() {
 }
 
 #[test]
+fn submit_seeds_the_github_pr_template_above_the_managed_body() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    // The template is a committed working-tree file, like any repo would have.
+    fs::create_dir_all(repo.path().join(".github")).unwrap();
+    repo.write(
+        ".github/pull_request_template.md",
+        "## Summary\n\n- [ ] Tests pass\n",
+    );
+    repo.git(["add", "."]);
+    repo.git(["commit", "-m", "add PR template"]);
+
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.git(["config", "branch.feature/b.stkParent", "main"]);
+
+    let fake = FakeProvider::new()
+        // No review at create time; `pr create` records a marker so the
+        // post-create lookup (for seeding) then resolves to #12.
+        .record(
+            "pr create",
+            "created.txt",
+            "https://github.com/owner/repo/pull/12",
+        )
+        .on("pr view 12", r#"{"body":""}"#)
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        .on_after(
+            "feature/b",
+            "created.txt",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/12","title":"B work"}]"##,
+        )
+        .on("feature/b", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "feature/b"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("created feature/b -> main"))
+        .stdout(predicates::str::contains("seeded the PR template into #12"));
+
+    // The fresh body is the template, not the empty --fill body it replaced.
+    let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("seeded body");
+    assert_eq!(
+        body.trim_end(),
+        "pr edit 12 --body ## Summary\n\n- [ ] Tests pass"
+    );
+}
+
+#[test]
+fn submit_seeds_the_gitlab_default_mr_template() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    fs::create_dir_all(repo.path().join(".gitlab/merge_request_templates")).unwrap();
+    repo.write(
+        ".gitlab/merge_request_templates/Default.md",
+        "## What\n\n## Why\n",
+    );
+    repo.git(["add", "."]);
+    repo.git(["commit", "-m", "add MR template"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "the subject");
+
+    let fake = FakeProvider::new()
+        .record("mr create", "created.txt", "created mr")
+        .on("mr view 7", r#"{"description":""}"#)
+        .record("mr update 7 --description", "update-7.txt", "")
+        .on_after(
+            "feature/a",
+            "created.txt",
+            r##"[{"iid":7,"state":"opened","source_branch":"feature/a","target_branch":"main","web_url":"https://gitlab.com/o/r/-/merge_requests/7","title":"the subject"}]"##,
+        )
+        .on("feature/a", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("seeded the PR template into !7"));
+
+    let body = fs::read_to_string(repo.path().join("update-7.txt")).expect("seeded body");
+    assert!(
+        body.contains("--description ## What\n\n## Why"),
+        "body: {body}"
+    );
+}
+
+#[test]
+fn submit_skips_the_template_when_use_pr_template_is_off() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.usePrTemplate", "false"]);
+    fs::create_dir_all(repo.path().join(".github")).unwrap();
+    repo.write(".github/pull_request_template.md", "## Summary\n");
+    repo.git(["add", "."]);
+    repo.git(["commit", "-m", "add PR template"]);
+
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.git(["config", "branch.feature/b.stkParent", "main"]);
+
+    // No body lookup/edit should happen: the guard short-circuits before any
+    // provider call beyond the create and its pre-check, so a stray call fails.
+    let fake = FakeProvider::new()
+        .record(
+            "pr create",
+            "created.txt",
+            "https://github.com/owner/repo/pull/12",
+        )
+        .on("feature/b", "[]")
+        .fallback_fail("unexpected gh args")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "feature/b"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("created feature/b -> main"))
+        .stdout(predicates::str::contains("seeded the PR template").not());
+}
+
+#[test]
 fn submit_dry_run_reports_update_without_calling_update() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "gitlab"]);

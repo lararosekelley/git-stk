@@ -173,18 +173,22 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
         }
     }
 
-    let (_, review_provider) = detect_review_provider()?;
+    let (provider, review_provider) = detect_review_provider()?;
     let mut summary = SubmitSummary::default();
 
+    let mut created = Vec::new();
     for (branch, parent) in &branch_parents {
-        summary.record(submit_branch(
-            review_provider.as_ref(),
-            branch,
-            parent,
-            dry_run,
-            draft,
-        )?);
+        let action = submit_branch(review_provider.as_ref(), branch, parent, dry_run, draft)?;
+        if action == SubmitAction::Created {
+            created.push(branch.clone());
+        }
+        summary.record(action);
     }
+
+    // Seed freshly created reviews from the repo's PR template before the
+    // managed sections go in, so our content appends beneath it rather than
+    // replacing it.
+    crate::notes::seed_template_notes(review_provider.as_ref(), provider.kind, &created, dry_run)?;
 
     // Flip drafts in scope to ready for review (the escape hatch for
     // stk.submitDraft users).
