@@ -309,14 +309,22 @@ pub fn stack_line(branch: &str) -> Result<Vec<String>> {
 }
 
 /// Every branch in the stack `branch` belongs to, trunk excluded: the whole
-/// subtree under the stack's root (so fork siblings are included too), unlike
-/// [`stack_line`] which is only `branch`'s own line. The root is the trunk for
-/// an anchored stack - dropped here - or an unanchored base branch, which is a
-/// real stacked branch and stays in.
+/// subtree under the stack's base (so fork siblings are included too), unlike
+/// [`stack_line`] which is only `branch`'s own line. The base is the bottom of
+/// `branch`'s line - its topmost non-trunk ancestor - so sibling stacks that
+/// merely share the trunk are left out, exactly as they are for [`stack_line`].
+/// For an unanchored stack the base is its real root branch, itself stacked,
+/// so it stays in.
 pub fn current_stack_branches(branch: &str) -> Result<Vec<String>> {
-    let root = stack_root(branch)?;
+    // Anchor on the bottom of this branch's own line, not `stack_root`: when the
+    // stack is anchored to the trunk, `stack_root` is the trunk and its subtree
+    // is every sibling stack off the trunk, not just this one.
+    let base = path_from_root(branch)?
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| branch.to_owned());
     let trunk = trunk_branch(&git::local_branches()?);
-    Ok(branch_and_descendants(&root)?
+    Ok(branch_and_descendants(&base)?
         .into_iter()
         .filter(|candidate| Some(candidate) != trunk.as_ref())
         .collect())
