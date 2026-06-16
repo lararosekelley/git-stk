@@ -565,6 +565,62 @@ fn sync_styles_closed_reviews_in_the_stack_overview() {
 }
 
 #[test]
+fn sync_leaves_sibling_stacks_sharing_the_trunk_out_of_the_overview() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+
+    // Two independent stacks that share only the trunk:
+    //   main -> feature/a   (PR #12)
+    //   main -> feature/x   (PR #99)
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "feature/x"]).assert().success();
+    repo.commit_file("x.txt", "x\n", "x work");
+
+    // Stand on feature/a and sync. Its stack is just feature/a; the sibling
+    // off the trunk must not be swept in (it gets its own sync).
+    repo.git(["switch", "feature/a"]);
+
+    let fake = FakeProvider::new()
+        .on("pr view 12", r#"{"body":""}"#)
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        // A guard: if the sibling stack leaks in, its body gets written here.
+        .record("pr edit 99 --body", "edit-body-99.txt", "")
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##,
+        )
+        .on(
+            "feature/x",
+            r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"feature/x","url":"https://github.com/owner/repo/pull/99","title":"X work"}]"##,
+        )
+        .on("pr edit", "updated review")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("updated stack note in #12"))
+        .stdout(predicates::str::contains("#99").not());
+
+    // feature/a's overview lists only its own review and the trunk - the
+    // unrelated sibling stack never leaks into the ledger.
+    let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("body for #12");
+    assert!(body.contains("[A work (#12)](https://github.com/owner/repo/pull/12)"));
+    assert!(!body.contains("#99"), "sibling stack leaked into #12:\n{body}");
+    assert!(!body.contains("X work"), "sibling stack leaked into #12:\n{body}");
+
+    // The sibling's review body was never touched by this sync.
+    assert!(
+        !repo.path().join("edit-body-99.txt").exists(),
+        "sync wrote the sibling stack's review body"
+    );
+}
+
+#[test]
 fn sync_reports_stack_complete_when_everything_merged() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
