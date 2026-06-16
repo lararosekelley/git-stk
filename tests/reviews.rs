@@ -610,8 +610,14 @@ fn sync_leaves_sibling_stacks_sharing_the_trunk_out_of_the_overview() {
     // unrelated sibling stack never leaks into the ledger.
     let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("body for #12");
     assert!(body.contains("[A work (#12)](https://github.com/owner/repo/pull/12)"));
-    assert!(!body.contains("#99"), "sibling stack leaked into #12:\n{body}");
-    assert!(!body.contains("X work"), "sibling stack leaked into #12:\n{body}");
+    assert!(
+        !body.contains("#99"),
+        "sibling stack leaked into #12:\n{body}"
+    );
+    assert!(
+        !body.contains("X work"),
+        "sibling stack leaked into #12:\n{body}"
+    );
 
     // The sibling's review body was never touched by this sync.
     assert!(
