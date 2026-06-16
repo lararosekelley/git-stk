@@ -66,9 +66,12 @@ impl Run for List {
 pub fn list_formatted(format: Format) -> Result<()> {
     let current = git::current_branch()?;
     let root = stack::stack_root(&current)?;
-    let branches: Vec<String> = stack::branch_and_descendants(&root)?
+    // Scope to the current branch's own line, like the tree view: sibling
+    // stacks that only share the trunk are left out. The base (trunk, or an
+    // unanchored root branch) is the summary's base, not a row.
+    let branches: Vec<String> = stack::current_stack_branches(&current)?
         .into_iter()
-        .skip(1) // the root is the base, not part of the stack
+        .filter(|branch| *branch != root)
         .collect();
 
     if branches.is_empty() {

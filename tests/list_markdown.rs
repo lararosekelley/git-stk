@@ -1,6 +1,7 @@
 mod common;
 
 use common::{FakeProvider, TestRepo};
+use predicates::prelude::PredicateBooleanExt;
 
 #[test]
 fn list_markdown_prints_summary_and_ordered_pr_list() {
@@ -88,6 +89,24 @@ fn list_markdown_degrades_to_branch_names_without_provider() {
         .stdout(predicates::str::contains("2 branches, base `main`"))
         .stdout(predicates::str::contains("1. `feature/a` (no review)"))
         .stdout(predicates::str::contains("2. `feature/b` (no review)"));
+}
+
+#[test]
+fn list_markdown_scopes_to_the_current_stack() {
+    let repo = TestRepo::new();
+    // Two stacks sharing only the trunk; the summary covers the one you're on.
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.git(["switch", "feature/a"]);
+
+    repo.stack()
+        .args(["list", "--format", "markdown"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("1 branch, base `main`"))
+        .stdout(predicates::str::contains("1. `feature/a` (no review)"))
+        .stdout(predicates::str::contains("feature/b").not());
 }
 
 #[test]

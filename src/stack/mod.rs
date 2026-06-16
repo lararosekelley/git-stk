@@ -308,6 +308,20 @@ pub fn stack_line(branch: &str) -> Result<Vec<String>> {
     Ok(line)
 }
 
+/// The base of `branch`'s own line: its topmost non-trunk ancestor (the branch
+/// just above the trunk), or `branch` itself when it has no parent. This is the
+/// anchor for "the current stack" - the subtree under it includes genuine fork
+/// siblings but excludes stacks that merely share the trunk - so `restack`,
+/// `list`, `sync`, and `run` all agree on scope. Unlike [`stack_root`], which
+/// collapses a trunk-anchored line all the way to the trunk and so sweeps in
+/// every sibling stack.
+pub(crate) fn line_base(branch: &str) -> Result<String> {
+    Ok(path_from_root(branch)?
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| branch.to_owned()))
+}
+
 /// Every branch in the stack `branch` belongs to, trunk excluded: the whole
 /// subtree under the stack's base (so fork siblings are included too), unlike
 /// [`stack_line`] which is only `branch`'s own line. The base is the bottom of
@@ -316,13 +330,7 @@ pub fn stack_line(branch: &str) -> Result<Vec<String>> {
 /// For an unanchored stack the base is its real root branch, itself stacked,
 /// so it stays in.
 pub fn current_stack_branches(branch: &str) -> Result<Vec<String>> {
-    // Anchor on the bottom of this branch's own line, not `stack_root`: when the
-    // stack is anchored to the trunk, `stack_root` is the trunk and its subtree
-    // is every sibling stack off the trunk, not just this one.
-    let base = path_from_root(branch)?
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| branch.to_owned());
+    let base = line_base(branch)?;
     let trunk = trunk_branch(&git::local_branches()?);
     Ok(branch_and_descendants(&base)?
         .into_iter()
