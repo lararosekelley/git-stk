@@ -431,21 +431,48 @@ fn is_transient_merge_error(error: &anyhow::Error) -> bool {
 }
 
 /// Run a merge, retrying while it fails transiently so the "base branch was
-/// modified" race does not stop a `merge --all` loop.
+/// modified" race does not stop a `merge --all` loop. Between transient
+/// retries it only waits a fixed backoff - the right default when there is no
+/// per-provider signal to poll.
 fn merge_with_retry(attempt: impl FnMut() -> Result<String>) -> Result<String> {
-    retry_transient_merge(MERGE_ATTEMPTS, MERGE_RETRY_BACKOFF, attempt)
+    retry_transient_merge(
+        MERGE_ATTEMPTS,
+        || std::thread::sleep(MERGE_RETRY_BACKOFF),
+        attempt,
+    )
+}
+
+/// Like [`merge_with_retry`], but instead of a blind backoff it runs `resettle`
+/// between transient retries - re-polling the provider until the review is
+/// actually mergeable again. GitLab's 405-while-recomputing race needs this:
+/// the recompute can outlast a fixed sleep, but tracking the real status waits
+/// exactly as long as it takes.
+pub(super) fn merge_with_resettle(
+    mut resettle: impl FnMut(),
+    attempt: impl FnMut() -> Result<String>,
+) -> Result<String> {
+    retry_transient_merge(
+        MERGE_ATTEMPTS,
+        move || {
+            // A short floor delay first, so a provider that reports "mergeable"
+            // yet still 405s for a beat isn't hammered in a tight loop.
+            std::thread::sleep(MERGE_RETRY_BACKOFF);
+            resettle();
+        },
+        attempt,
+    )
 }
 
 fn retry_transient_merge(
     attempts: u32,
-    backoff: Duration,
+    mut on_transient: impl FnMut(),
     mut attempt: impl FnMut() -> Result<String>,
 ) -> Result<String> {
     for remaining in (0..attempts).rev() {
         match attempt() {
             Ok(output) => return Ok(output),
             Err(error) if remaining > 0 && is_transient_merge_error(&error) => {
-                std::thread::sleep(backoff);
+                on_transient();
             }
             Err(error) => return Err(error),
         }
@@ -516,16 +543,20 @@ mod tests {
     #[test]
     fn transient_error_is_retried_then_succeeds() {
         let mut calls = 0;
-        let result = retry_transient_merge(3, Duration::ZERO, || {
-            calls += 1;
-            if calls < 2 {
-                Err(anyhow!(
-                    "gh failed: GraphQL: Base branch was modified. Review and try the merge again."
-                ))
-            } else {
-                Ok("merged".to_owned())
-            }
-        });
+        let result = retry_transient_merge(
+            3,
+            || {},
+            || {
+                calls += 1;
+                if calls < 2 {
+                    Err(anyhow!(
+                        "gh failed: GraphQL: Base branch was modified. Review and try the merge again."
+                    ))
+                } else {
+                    Ok("merged".to_owned())
+                }
+            },
+        );
         assert_eq!(result.unwrap(), "merged");
         assert_eq!(calls, 2, "should retry once then succeed");
     }
@@ -533,31 +564,82 @@ mod tests {
     #[test]
     fn a_gitlab_405_while_the_merge_status_recomputes_is_retried() {
         let mut calls = 0;
-        let result = retry_transient_merge(3, Duration::ZERO, || {
-            calls += 1;
-            if calls < 2 {
-                Err(anyhow!("glab failed: ... /merge: 405 Method Not Allowed"))
-            } else {
-                Ok("merged".to_owned())
-            }
-        });
+        let result = retry_transient_merge(
+            3,
+            || {},
+            || {
+                calls += 1;
+                if calls < 2 {
+                    Err(anyhow!("glab failed: ... /merge: 405 Method Not Allowed"))
+                } else {
+                    Ok("merged".to_owned())
+                }
+            },
+        );
         assert_eq!(result.unwrap(), "merged");
         assert_eq!(calls, 2, "GitLab's transient 405 should be retried");
     }
 
     #[test]
+    fn the_between_retry_action_runs_once_per_transient_retry() {
+        // `merge_with_resettle` re-polls via this hook instead of a blind
+        // sleep; the hook runs once per transient retry, never after success.
+        let mut resettles = 0;
+        let mut calls = 0;
+        let result = retry_transient_merge(
+            3,
+            || resettles += 1,
+            || {
+                calls += 1;
+                // 405 twice (recompute still in flight), then mergeable.
+                if calls < 3 {
+                    Err(anyhow!("glab failed: ... /merge: 405 Method Not Allowed"))
+                } else {
+                    Ok("merged".to_owned())
+                }
+            },
+        );
+        assert_eq!(result.unwrap(), "merged");
+        assert_eq!(calls, 3, "should retry until the merge lands");
+        assert_eq!(
+            resettles, 2,
+            "re-poll once per transient retry, not after the final success"
+        );
+    }
+
+    #[test]
+    fn the_between_retry_action_does_not_run_on_a_real_failure() {
+        let mut resettles = 0;
+        let result = retry_transient_merge(
+            3,
+            || resettles += 1,
+            || {
+                Err(anyhow!(
+                    "glab failed: Merge request is not mergeable: conflict"
+                ))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(resettles, 0, "a non-transient failure must not re-poll");
+    }
+
+    #[test]
     fn a_transient_5xx_from_the_api_is_retried() {
         let mut calls = 0;
-        let result = retry_transient_merge(3, Duration::ZERO, || {
-            calls += 1;
-            if calls < 2 {
-                Err(anyhow!(
-                    "gh failed: non-200 OK status code: 502 Bad Gateway"
-                ))
-            } else {
-                Ok("merged".to_owned())
-            }
-        });
+        let result = retry_transient_merge(
+            3,
+            || {},
+            || {
+                calls += 1;
+                if calls < 2 {
+                    Err(anyhow!(
+                        "gh failed: non-200 OK status code: 502 Bad Gateway"
+                    ))
+                } else {
+                    Ok("merged".to_owned())
+                }
+            },
+        );
         assert_eq!(result.unwrap(), "merged");
         assert_eq!(calls, 2, "a 502 is a server hiccup, not a merge verdict");
     }
@@ -565,10 +647,14 @@ mod tests {
     #[test]
     fn a_persistent_transient_error_gives_up_after_the_attempt_budget() {
         let mut calls = 0;
-        let result = retry_transient_merge(3, Duration::ZERO, || {
-            calls += 1;
-            Err(anyhow!("gh failed: Base branch was modified"))
-        });
+        let result = retry_transient_merge(
+            3,
+            || {},
+            || {
+                calls += 1;
+                Err(anyhow!("gh failed: Base branch was modified"))
+            },
+        );
         assert!(result.is_err());
         assert_eq!(calls, 3, "should try exactly the budgeted number of times");
     }
@@ -576,12 +662,16 @@ mod tests {
     #[test]
     fn a_real_failure_is_not_retried() {
         let mut calls = 0;
-        let result = retry_transient_merge(3, Duration::ZERO, || {
-            calls += 1;
-            Err(anyhow!(
-                "gh failed: Pull request is not mergeable: conflicts"
-            ))
-        });
+        let result = retry_transient_merge(
+            3,
+            || {},
+            || {
+                calls += 1;
+                Err(anyhow!(
+                    "gh failed: Pull request is not mergeable: conflicts"
+                ))
+            },
+        );
         assert!(result.is_err());
         assert_eq!(calls, 1, "a non-transient error must surface immediately");
     }

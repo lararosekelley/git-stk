@@ -7,7 +7,8 @@ use super::json::{
     required_string,
 };
 use super::{
-    MergeBlocker, ReviewProvider, ReviewRequest, WaitOutcome, command_output, merge_with_retry,
+    MergeBlocker, ReviewProvider, ReviewRequest, WaitOutcome, command_output, merge_with_resettle,
+    merge_with_retry,
 };
 
 pub(super) struct GitLabProvider;
@@ -110,16 +111,24 @@ impl ReviewProvider for GitLabProvider {
             _ => args.push("--squash"),
         }
         // glab schedules on pending pipelines by default; --auto just makes
-        // the intent explicit. Either way the caller checks what happened.
+        // the intent explicit. A scheduled merge is queued for when checks
+        // pass, so it sidesteps the post-push recompute race; a fixed backoff
+        // retry is enough.
         if auto {
             args.push("--auto-merge");
-        } else {
-            // An immediate merge right after a force-push (which restack and
-            // merge --all do) can race GitLab recomputing mergeability; wait for
-            // it to settle so we don't fail on a transient state.
-            wait_until_settled(review);
+            return merge_with_retry(|| command_output("glab", &args));
         }
-        merge_with_retry(|| command_output("glab", &args))
+
+        // An immediate merge right after a force-push (which restack and
+        // merge --all do) can race GitLab recomputing mergeability; wait for it
+        // to settle first. If the merge still 405s, the recompute is still in
+        // flight, so re-poll until it settles between retries rather than
+        // guessing a fixed delay that the recompute can outlast.
+        wait_until_settled(review);
+        merge_with_resettle(
+            || wait_until_settled(review),
+            || command_output("glab", &args),
+        )
     }
 
     fn merge_blocker(&self, review: &ReviewRequest) -> Result<MergeBlocker> {
@@ -281,14 +290,18 @@ fn detailed_merge_status(review: &ReviewRequest) -> Option<String> {
 }
 
 /// Whether a `detailed_merge_status` is still settling after a push - so a merge
-/// should wait rather than treat it as a verdict. `mergeable` and definite
-/// blockers (ci_*, draft, approvals) are settled; the recompute-window states,
-/// including a transient `conflict`, are not. An unknown/absent status is
-/// treated as settled, so the merge proceeds rather than waiting pointlessly.
+/// should wait rather than treat it as a verdict. The recompute-window states
+/// (`checking`/`unchecked`/`preparing`, and a transient `conflict`) are still
+/// settling, as is an absent status: right after a push GitLab often has not
+/// populated `detailed_merge_status` yet, and treating that "not computed yet"
+/// as settled is what let merges fire into the 405 window. A recognized settled
+/// status (`mergeable`, or a definite blocker like `ci_*`/draft/approvals) is
+/// not settling. The poll budget in [`wait_until_settled`] bounds the wait, so
+/// a status that never populates still falls through rather than hanging.
 fn merge_status_settling(status: Option<&str>) -> bool {
     matches!(
         status,
-        Some("checking" | "unchecked" | "preparing" | "conflict")
+        None | Some("checking" | "unchecked" | "preparing" | "conflict")
     )
 }
 
@@ -383,10 +396,11 @@ mod tests {
         assert!(super::merge_status_settling(Some("unchecked")));
         assert!(super::merge_status_settling(Some("preparing")));
         assert!(super::merge_status_settling(Some("conflict")));
+        // Not computed yet (no field right after a push) -> wait, not fire.
+        assert!(super::merge_status_settling(None));
         // Settled: merge now, or let the real blocker surface.
         assert!(!super::merge_status_settling(Some("mergeable")));
         assert!(!super::merge_status_settling(Some("ci_still_running")));
-        assert!(!super::merge_status_settling(None));
     }
 
     #[test]
