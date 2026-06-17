@@ -361,15 +361,22 @@ A `PULL_REQUEST_TEMPLATE/` directory of named choices has no single default, so 
 Upgrading:
 
 ```sh
-git stk upgrade              # upgrade to the latest release
-git stk upgrade --force      # reinstall the latest release even if up to date
-git stk upgrade --head [-y]  # build and install the latest unreleased commit
+git stk upgrade               # upgrade to the latest release
+git stk upgrade --force       # reinstall the latest release even if up to date
+git stk upgrade --head [-y]   # build and install the latest unreleased commit
+git stk downgrade [-y]        # step back to the release before this one
+git stk downgrade --to <ver>  # step back to a specific older release
 ```
 
 `upgrade` is driven by the install receipt the shell installer writes to `~/.config/git-stk/`
 (`%LOCALAPPDATA%\git-stk` on Windows): it records the installed version and where the binary lives, so
 `upgrade` knows what to replace. Copies installed with `cargo install` have no receipt and should upgrade
 through cargo instead.
+
+`downgrade` is the way back when a release misbehaves: it reinstalls an earlier one through the same
+receipt, so the daily check and a later `upgrade` stay correct. It is riskier than upgrading - an older
+binary may not understand state a newer one wrote - so it confirms first (`-y` skips). It never steps
+below the release that introduced `downgrade` itself; an older `--to` is refused rather than clamped.
 
 `--head` requires a Rust tool-chain, prompts before installing a pre-release build, and intentionally
 leaves the receipt's version stale - the HEAD build did not come from a release, so the receipt keeps

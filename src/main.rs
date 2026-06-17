@@ -91,6 +91,7 @@ fn main() -> ExitCode {
         Command::Setup(command) => command.run(),
         Command::Uninstall(command) => command.run(),
         Command::Upgrade(command) => command.run(),
+        Command::Downgrade(command) => command.run(),
         Command::Cleanup(command) => command.run(),
         Command::Credits(command) => command.run(),
     };
@@ -120,6 +121,7 @@ fn needs_repo(command: &Command) -> bool {
         Command::Setup(_)
             | Command::Uninstall(_)
             | Command::Upgrade(_)
+            | Command::Downgrade(_)
             | Command::Completions(_)
             | Command::Guide(_)
             | Command::Credits(_)
@@ -174,6 +176,7 @@ fn lock_name(command: &Command) -> Option<&'static str> {
         | Command::Setup(_)
         | Command::Uninstall(_)
         | Command::Upgrade(_)
+        | Command::Downgrade(_)
         | Command::Credits(_) => None,
     }
 }

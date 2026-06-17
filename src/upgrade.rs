@@ -5,12 +5,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs, sync::mpsc, thread};
 
 use anyhow::{Context, Result, bail};
-use axoupdater::AxoUpdater;
+use axoupdater::{AxoUpdater, UpdateRequest};
 
 use crate::prompt::confirm;
 
-/// Source repository used for `--head` installs.
+/// Source repository used for `--head` installs and release discovery.
 const REPO_URL: &str = "https://github.com/lararosekelley/git-stk";
+
+/// The first release that shipped `downgrade`, and the floor it can reach.
+/// Going below would strand the user on a binary with no `downgrade` (unable
+/// to step back again) and predates the state-format guarantees this command
+/// assumes. MUST equal the version this command ships in.
+const MIN_DOWNGRADE_VERSION: &str = "0.9.17";
 
 /// Stamp file next to the install receipt; one release check per day.
 const UPDATE_CHECK_FILE: &str = "update-check";
@@ -182,9 +188,220 @@ fn upgrade_to_latest_release(force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Step back to an earlier release. Riskier than upgrading - an older binary
+/// may not understand state a newer one wrote - so it confirms first (unless
+/// `yes`) and never goes below [`MIN_DOWNGRADE_VERSION`].
+pub fn downgrade(to: Option<String>, yes: bool) -> Result<()> {
+    let installed = env!("CARGO_PKG_VERSION");
+    let installed_version = parse_version(installed)
+        .with_context(|| format!("could not parse the installed version {installed}"))?;
+    let floor = parse_version(MIN_DOWNGRADE_VERSION).expect("floor is a valid version");
+
+    if installed_version <= floor {
+        anstream::println!(
+            "git-stk {installed} is the earliest release `downgrade` can reach; \
+             nothing older to downgrade to"
+        );
+        return Ok(());
+    }
+
+    let requested = match &to {
+        Some(to) => Some(parse_version(to).with_context(|| format!("not a version: {to}"))?),
+        None => None,
+    };
+    // Only the default (no `--to`) needs the release list.
+    let available = match requested {
+        Some(_) => Vec::new(),
+        None => remote_release_versions()?,
+    };
+    let target = version_string(resolve_target(
+        installed_version,
+        floor,
+        requested,
+        &available,
+    )?);
+
+    let mut updater = AxoUpdater::new_for("git-stk");
+    updater
+        .load_receipt()
+        .map_err(anyhow::Error::from)
+        .context(
+            "no usable install receipt found; if git-stk was installed with cargo, \
+         downgrade with `cargo install git-stk@<version> --locked` instead",
+        )?;
+
+    anstream::println!("downgrade git-stk {installed} -> {target}");
+    anstream::println!(
+        "a release older than {installed} may not understand state a newer one wrote \
+         (PR ledger, branch metadata, the shared metadata ref)"
+    );
+    if !yes && !confirm("continue? [y/N] ")? {
+        anstream::println!("downgrade cancelled");
+        return Ok(());
+    }
+
+    updater.configure_version_specifier(UpdateRequest::SpecificVersion(target.clone()));
+    // Going backward is never "needed" by the cur < new check; force it. The
+    // installer for the target version rewrites the receipt, keeping it honest.
+    updater.always_update(true);
+
+    match updater
+        .run_sync()
+        .context("failed to downgrade to the requested release")?
+    {
+        Some(result) => {
+            anstream::println!(
+                "{}",
+                crate::style::success(&format!(
+                    "downgraded git-stk {installed} -> {}",
+                    result.new_version
+                ))
+            );
+            anstream::println!("to move forward again, run: git stk upgrade");
+            refresh_assets_with_new_binary();
+        }
+        None => anstream::println!("git-stk is already at {target}"),
+    }
+    Ok(())
+}
+
+type Version3 = (u64, u64, u64);
+
+/// Choose the version to downgrade to. `available` is consulted only for the
+/// default (no `--to`); an explicit target is validated against the installed
+/// version and the floor rather than silently clamped.
+fn resolve_target(
+    installed: Version3,
+    floor: Version3,
+    requested: Option<Version3>,
+    available: &[Version3],
+) -> Result<Version3> {
+    match requested {
+        Some(target) => {
+            if target >= installed {
+                bail!(
+                    "{} is not older than the installed {}; use `git stk upgrade` to move forward",
+                    version_string(target),
+                    version_string(installed)
+                );
+            }
+            if target < floor {
+                bail!(
+                    "{} is below {}, the earliest release `downgrade` can reach",
+                    version_string(target),
+                    version_string(floor)
+                );
+            }
+            Ok(target)
+        }
+        None => available
+            .iter()
+            .copied()
+            .filter(|version| *version < installed && *version >= floor)
+            .max()
+            .with_context(|| {
+                format!(
+                    "no release between {} and {} to downgrade to",
+                    version_string(floor),
+                    version_string(installed)
+                )
+            }),
+    }
+}
+
+/// Parse a plain `X.Y.Z`. Anything else - extra parts, pre-release suffixes -
+/// yields None, so non-release tags are skipped.
+fn parse_version(text: &str) -> Option<Version3> {
+    let mut parts = text.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn version_string((major, minor, patch): Version3) -> String {
+    format!("{major}.{minor}.{patch}")
+}
+
+/// Released versions, from the repo's `vX.Y.Z` tags.
+fn remote_release_versions() -> Result<Vec<Version3>> {
+    let output = Command::new("git")
+        .args(["ls-remote", "--tags", REPO_URL])
+        .output()
+        .context("failed to list releases; check your network connection")?;
+    if !output.status.success() {
+        bail!("failed to fetch the release list from {REPO_URL}");
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .filter_map(|line| line.split("refs/tags/").nth(1))
+        .filter(|tag| !tag.ends_with("^{}"))
+        .filter_map(|tag| parse_version(tag.strip_prefix('v').unwrap_or(tag)))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_version_accepts_plain_xyz_and_rejects_the_rest() {
+        assert_eq!(parse_version("0.9.16"), Some((0, 9, 16)));
+        assert_eq!(parse_version("10.0.3"), Some((10, 0, 3)));
+        assert_eq!(parse_version("0.9"), None);
+        assert_eq!(parse_version("0.9.16.1"), None);
+        assert_eq!(parse_version("0.9.0-rc.1"), None);
+        assert_eq!(parse_version("v0.9.16"), None);
+    }
+
+    #[test]
+    fn resolve_target_requires_explicit_to_be_older() {
+        let (installed, floor) = ((0, 9, 18), (0, 9, 17));
+        assert!(resolve_target(installed, floor, Some((0, 9, 18)), &[]).is_err());
+        assert!(resolve_target(installed, floor, Some((0, 9, 19)), &[]).is_err());
+    }
+
+    #[test]
+    fn resolve_target_refuses_explicit_below_the_floor() {
+        let (installed, floor) = ((0, 9, 18), (0, 9, 17));
+        assert!(resolve_target(installed, floor, Some((0, 9, 16)), &[]).is_err());
+        assert_eq!(
+            resolve_target(installed, floor, Some((0, 9, 17)), &[]).unwrap(),
+            (0, 9, 17)
+        );
+    }
+
+    #[test]
+    fn resolve_target_default_picks_the_previous_release() {
+        let (installed, floor) = ((0, 9, 20), (0, 9, 17));
+        let available = [(0, 9, 17), (0, 9, 18), (0, 9, 19), (0, 9, 20)];
+        assert_eq!(
+            resolve_target(installed, floor, None, &available).unwrap(),
+            (0, 9, 19)
+        );
+    }
+
+    #[test]
+    fn resolve_target_default_never_crosses_the_floor() {
+        let (installed, floor) = ((0, 9, 18), (0, 9, 17));
+        let available = [(0, 9, 15), (0, 9, 16), (0, 9, 17), (0, 9, 18)];
+        // Releases below the floor are out; the previous in-range one is the floor.
+        assert_eq!(
+            resolve_target(installed, floor, None, &available).unwrap(),
+            (0, 9, 17)
+        );
+    }
+
+    #[test]
+    fn resolve_target_default_errors_when_nothing_older_in_range() {
+        let (installed, floor) = ((0, 9, 18), (0, 9, 17));
+        assert!(resolve_target(installed, floor, None, &[(0, 9, 18), (0, 9, 19)]).is_err());
+    }
 
     #[test]
     fn should_check_when_stamp_is_missing_or_garbled() {
