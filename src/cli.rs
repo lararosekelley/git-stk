@@ -57,6 +57,7 @@ pub enum Command {
     Completions(commands::completions::Completions),
     Guide(commands::guide::Guide),
     Upgrade(commands::upgrade::Upgrade),
+    Downgrade(commands::downgrade::Downgrade),
     Uninstall(commands::uninstall::Uninstall),
     Cleanup(commands::cleanup::Cleanup),
     Credits(commands::credits::Credits),

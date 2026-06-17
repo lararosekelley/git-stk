@@ -18,6 +18,7 @@ pub mod config;
 pub mod credits;
 pub mod detach;
 pub mod down;
+pub mod downgrade;
 pub mod guide;
 pub mod list;
 pub mod merge;
