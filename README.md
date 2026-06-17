@@ -353,6 +353,8 @@ When the repo carries a pull/merge request template - GitHub's `PULL_REQUEST_TEM
 `.github/`, or `docs/`) or GitLab's `Default.md` under `.gitlab/merge_request_templates/` - a newly
 created review starts from it, with the managed sections (description, `Closes #N`, stack overview)
 appended beneath rather than replacing it, matching what opening the review on the web would give you.
+When those managed sections follow a template, a horizontal-rule (`---`) seam is inserted between the
+two, so the automated block reads as distinct from your template rather than blurring into it.
 A `PULL_REQUEST_TEMPLATE/` directory of named choices has no single default, so it is skipped. Set
 `git config stk.usePrTemplate false` for a lean, git-stk-only body.
 

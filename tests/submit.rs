@@ -225,6 +225,57 @@ fn submit_seeds_the_gitlab_default_mr_template() {
 }
 
 #[test]
+fn submit_seeds_a_seam_below_the_template_when_managed_content_follows() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    fs::create_dir_all(repo.path().join(".github")).unwrap();
+    repo.write(
+        ".github/pull_request_template.md",
+        "## Summary\n\n- [ ] Tests pass\n",
+    );
+    repo.git(["add", "."]);
+    repo.git(["commit", "-m", "add PR template"]);
+
+    // The branch name references an issue, so a `Closes #5` note will follow
+    // the template - the seed should lay a horizontal-rule seam for it.
+    repo.git(["switch", "-c", "5-fix"]);
+    repo.git(["config", "branch.5-fix.stkParent", "main"]);
+
+    let fake = FakeProvider::new()
+        .record(
+            "pr create",
+            "created.txt",
+            "https://github.com/owner/repo/pull/12",
+        )
+        .on("pr view 12", r#"{"body":""}"#)
+        // Capture every body edit so the seed's own edit (with the seam) is
+        // visible even after the later Closes edit.
+        .record_append("pr edit 12 --body", "edits-12.log", "")
+        .on_after(
+            "5-fix",
+            "created.txt",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"5-fix","url":"https://github.com/owner/repo/pull/12","title":"Fix"}]"##,
+        )
+        .on("5-fix", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "5-fix"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("seeded the PR template into #12"));
+
+    // The seed wrote the template followed by a `---` seam, so the managed
+    // content that follows reads as a distinct block beneath it.
+    let edits = fs::read_to_string(repo.path().join("edits-12.log")).expect("edits log");
+    assert!(
+        edits.contains("pr edit 12 --body ## Summary\n\n- [ ] Tests pass\n\n---"),
+        "seed should append a seam rule:\n{edits}"
+    );
+}
+
+#[test]
 fn submit_skips_the_template_when_use_pr_template_is_off() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
