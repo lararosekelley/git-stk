@@ -59,9 +59,9 @@ sha256sum -c git-stk-x86_64-unknown-linux-musl.tar.xz.sha256
 
 The Linux builds are static (musl), so they run anywhere - glibc, Alpine, or an older distro.
 
-**Prerequisites:** review commands drive the GitHub (`gh`) or GitLab (`glab`) CLI, so install the one you
-use and sign in (`gh auth login` / `glab auth login`). git-stk needs git 2.38 or newer (for
-`rebase --update-refs`). The local stack commands work without either CLI.
+**Prerequisites:** review commands drive the GitHub (`gh`), GitLab (`glab`), or Gitea/Forgejo (`tea`) CLI,
+so install the one you use and sign in (`gh auth login` / `glab auth login` / `tea login add`). git-stk
+needs git 2.38 or newer (for `rebase --update-refs`). The local stack commands work without any CLI.
 
 Then install the man page and wire up shell completions (idempotent; prompts before touching your shell rc):
 
@@ -396,13 +396,17 @@ Everything is optional; defaults shown below:
 
 ```ini
 [stk]
-    ; Review provider: github, gitlab, or demo (offline playground).
+    ; Review provider: github, gitlab, gitea, or demo (offline playground).
     ; Default: auto-detect from the remote URL.
     provider = github
     ; Self-hosted GitLab host to detect as GitLab alongside gitlab.com (a bare
     ; host or a full URL). `glab` picks up the host from the remote itself.
     ; Default: gitlab.com only.
     gitlabHost = gitlab.example.com
+    ; Self-hosted Gitea/Forgejo host to detect as Gitea alongside gitea.com and
+    ; codeberg.org (a bare host or a full URL). `tea` picks up the host itself.
+    ; Default: gitea.com and codeberg.org only.
+    giteaHost = gitea.example.com
     ; Remote used for provider detection and pushes. Default: origin.
     remote = origin
     ; Pass --update-refs to git rebase during restack. Default: false.

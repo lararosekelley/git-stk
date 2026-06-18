@@ -18,6 +18,7 @@ pub(super) fn discover(kind: ProviderKind) -> Result<Option<String>> {
     Ok(match kind {
         ProviderKind::GitHub => github_template(&root),
         ProviderKind::GitLab => gitlab_template(&root),
+        ProviderKind::Gitea => gitea_template(&root),
         ProviderKind::Demo => None,
     })
 }
@@ -27,11 +28,21 @@ pub(super) fn discover(kind: ProviderKind) -> Result<Option<String>> {
 /// `PULL_REQUEST_TEMPLATE/` directory holds several named templates with no
 /// single default, so it is reported and skipped rather than guessed at.
 fn github_template(root: &Path) -> Option<String> {
-    const DIRS: [&str; 3] = [".github", ".", "docs"];
+    pr_template(root, &[".github", ".", "docs"])
+}
+
+/// Gitea (and Forgejo) read the same `PULL_REQUEST_TEMPLATE` files, also
+/// honoring a `.gitea/` directory alongside the GitHub locations.
+fn gitea_template(root: &Path) -> Option<String> {
+    pr_template(root, &[".gitea", ".github", ".", "docs"])
+}
+
+/// Scan `dirs` (in order) for a single `PULL_REQUEST_TEMPLATE` file.
+fn pr_template(root: &Path, dirs: &[&str]) -> Option<String> {
     const NAMES: [&str; 2] = ["PULL_REQUEST_TEMPLATE", "pull_request_template"];
     const EXTS: [&str; 3] = [".md", ".txt", ""];
 
-    for dir in DIRS {
+    for dir in dirs {
         let base = root.join(dir);
         for name in NAMES {
             for ext in EXTS {
