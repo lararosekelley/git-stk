@@ -106,10 +106,47 @@ fn process_is_dead(pid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn process_is_dead(pid: i32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess};
+
+    // Stable Win32 ABI values, kept local to minimize the windows-sys surface
+    // this depends on (and so the feature flags it needs).
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_INVALID_PARAMETER: u32 = 87;
+
+    if pid <= 0 {
+        return false;
+    }
+
+    // SAFETY: plain Win32 calls; the handle, when opened, is closed before we
+    // return. Every uncertain outcome reads as alive, so we never reclaim a
+    // lock whose holder might still be running.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+        if handle.is_null() {
+            // Read GetLastError immediately, before any other call clobbers it.
+            // Only "no such process" is a confident dead; access-denied (exists,
+            // another user) and any other error mean alive.
+            return GetLastError() == ERROR_INVALID_PARAMETER;
+        }
+
+        let mut exit_code: u32 = 0;
+        let queried = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+
+        // Dead only on a positively-read terminal exit code; a failed query or
+        // the still-running sentinel reads as alive.
+        queried != 0 && exit_code != STILL_ACTIVE
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn process_is_dead(_pid: i32) -> bool {
-    // No portable existence probe without a platform crate; never auto-reclaim
-    // here - the contention message tells the user how to clear a stale lock.
+    // No portable existence probe on this platform; never auto-reclaim here -
+    // the contention message tells the user how to clear a stale lock.
     false
 }
 
