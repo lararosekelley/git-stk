@@ -32,9 +32,9 @@ fn mutating_command_refuses_while_locked() {
         )));
 }
 
-// Auto-reclaim relies on a PID-liveness probe (kill(pid, 0)), which git-stk
-// only does on Unix; on Windows a stale lock is removed by hand.
-#[cfg(unix)]
+// Auto-reclaim relies on a PID-liveness probe: kill(pid, 0) on Unix,
+// OpenProcess + GetExitCodeProcess on Windows. PID 2000000000 is
+// no-such-process on both, so this runs on every platform with a probe.
 #[test]
 fn a_stale_lock_from_a_dead_process_is_reclaimed() {
     let repo = TestRepo::new();
