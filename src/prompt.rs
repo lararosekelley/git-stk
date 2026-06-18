@@ -3,34 +3,43 @@ use std::io::{self, BufRead, Write};
 use anyhow::{Context, Result};
 
 pub fn confirm(prompt: &str) -> Result<bool> {
-    print!("{prompt}");
-    io::stdout().flush().context("failed to flush stdout")?;
-
-    let mut answer = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .context("failed to read confirmation")?;
-
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES"))
+    prompt_yes_no(prompt, false)
 }
 
 /// Like [`confirm`], but a bare Enter - or EOF, i.e. a non-interactive run -
 /// counts as yes. For prompts whose safe default is to proceed.
 pub fn confirm_default_yes(prompt: &str) -> Result<bool> {
-    print!("{prompt}");
-    io::stdout().flush().context("failed to flush stdout")?;
+    prompt_yes_no(prompt, true)
+}
 
-    let mut answer = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .context("failed to read confirmation")?;
+/// Read a yes/no answer. Unrecognized input re-prompts rather than silently
+/// taking the default - so a stray line (type-ahead buffered while a provider
+/// CLI was still printing) is not misread as the answer to a destructive
+/// prompt. A bare Enter takes `default_yes`; EOF (a non-interactive run with
+/// nothing left to read) also takes it, so piped and scripted callers work
+/// unchanged.
+fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
+    loop {
+        print!("{prompt}");
+        io::stdout().flush().context("failed to flush stdout")?;
 
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "" | "y" | "yes"
-    ))
+        let mut answer = String::new();
+        let read = io::stdin()
+            .lock()
+            .read_line(&mut answer)
+            .context("failed to read confirmation")?;
+        if read == 0 {
+            // EOF: nothing left to read, so take the default.
+            return Ok(default_yes);
+        }
+
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            "" => return Ok(default_yes),
+            _ => anstream::eprintln!("please answer y or n"),
+        }
+    }
 }
 
 /// Number the options and read a 1-based choice from stdin. EOF or input
