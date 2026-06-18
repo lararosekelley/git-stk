@@ -244,8 +244,14 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     } else {
         Vec::new()
     };
-    for (_, old) in &renamed {
-        close_superseded_review(review_provider.as_ref(), old, dry_run)?;
+    // Track which markers are safe to drop: those whose old review was
+    // actually retired (or had nothing to retire). A declined close keeps its
+    // marker so a later submit re-offers the reconciliation.
+    let mut reconciled: Vec<&str> = Vec::new();
+    for (branch, old) in &renamed {
+        if close_superseded_review(review_provider.as_ref(), old, dry_run)? {
+            reconciled.push(branch);
+        }
     }
 
     // After every review exists, write the description, link any issue the
@@ -269,9 +275,10 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
         )?;
     }
 
-    // The ledger has now pruned the superseded entries, so drop the markers.
+    // The ledger has now pruned the superseded entries, so drop the markers -
+    // but only for reviews that were retired, not ones the user kept.
     if !dry_run {
-        for (branch, _) in &renamed {
+        for branch in &reconciled {
             stack::clear_renamed_from(branch)?;
         }
     }
@@ -289,33 +296,37 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
 /// Retire the open review still heading a renamed-away branch. The fresh
 /// review already exists, so closing here never leaves the work without one.
 /// Prompts (default yes; a non-interactive run proceeds) before closing.
+///
+/// Returns whether the supersession was reconciled: `true` when the old review
+/// was closed or there was nothing to close, `false` when the user declined -
+/// so the caller keeps the rename marker for a later submit to re-offer.
 fn close_superseded_review(
     review_provider: &dyn ReviewProvider,
     old: &str,
     dry_run: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(review) = review_provider.review_for_branch(old)? else {
-        return Ok(());
+        return Ok(true);
     };
     if review.branch != *old {
-        return Ok(());
+        return Ok(true);
     }
 
     if dry_run {
         anstream::println!("would close superseded review {} for {old}", review.id);
-        return Ok(());
+        return Ok(true);
     }
     if !crate::prompt::confirm_default_yes(&format!(
         "close the replaced review {} for {old} and delete its branch? [Y/n] ",
         review.id
     ))? {
         anstream::println!("kept review {} for {old}", review.id);
-        return Ok(());
+        return Ok(false);
     }
 
     review_provider.close_review(&review, true)?;
     anstream::println!("closed superseded review {} for {old}", review.id);
-    Ok(())
+    Ok(true)
 }
 
 fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {

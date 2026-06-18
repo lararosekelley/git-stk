@@ -549,6 +549,78 @@ fn single_branch_submit_defers_rename_supersession_to_stack_submit() {
     );
 }
 
+/// A 2-branch stack with both reviews submitted, then the leaf renamed so its
+/// open review is superseded. Leaves the repo on feature/b2 with the marker set.
+fn renamed_leaf_awaiting_supersession() -> TestRepo {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "demo"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "add a");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "add b");
+    repo.stack().args(["submit", "--stack"]).assert().success();
+
+    repo.stack()
+        .args(["rename", "feature/b2"])
+        .assert()
+        .success();
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b2.stkRenamedFrom"]),
+        "feature/b"
+    );
+    repo
+}
+
+#[test]
+fn declining_the_supersession_close_keeps_the_marker_for_a_later_submit() {
+    let repo = renamed_leaf_awaiting_supersession();
+
+    // Decline the close: the old review is kept, and the marker must survive
+    // so a later submit re-offers rather than orphaning the stale review.
+    repo.stack()
+        .args(["submit", "--stack"])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("kept review #2 for feature/b"));
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b2.stkRenamedFrom"]),
+        "feature/b"
+    );
+
+    // A later submit re-offers; accepting closes it and consumes the marker.
+    repo.stack()
+        .args(["submit", "--stack"])
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "closed superseded review #2 for feature/b",
+        ));
+    assert!(
+        repo.git_status(["config", "--get", "branch.feature/b2.stkRenamedFrom"])
+            .stdout
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_confirm_reprompts_past_unrecognized_input() {
+    let repo = renamed_leaf_awaiting_supersession();
+
+    // A stray line (e.g. type-ahead) before the real answer must not be misread
+    // as the answer: the prompt re-asks and honors the "y" that follows.
+    repo.stack()
+        .args(["submit", "--stack"])
+        .write_stdin("git stk status\ny\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "closed superseded review #2 for feature/b",
+        ));
+}
+
 /// The stored review body for demo review `id`, for asserting overview content.
 fn demo_review_body(repo: &TestRepo, id: u64) -> String {
     let raw = std::fs::read_to_string(repo.path().join(".git/stk-demo-reviews"))
