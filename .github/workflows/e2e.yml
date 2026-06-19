@@ -9,7 +9,9 @@
 #     built or published (see dist-workspace.toml).
 #
 # Matrix: GitHub on each OS (macOS=zsh, linux=bash, windows=pwsh - three shells),
-# plus a GitLab cell on ubuntu. Only ubuntu+github exercises `merge --all --wait`
+# plus a GitLab cell and a Gitea cell on ubuntu (Gitea runs against a throwaway
+# Dockerized instance, so it needs no account or secret). Only ubuntu+github
+# exercises `merge --all --wait`
 # (the grace-window path); the rest use `--no-wait` to keep runs fast - the wait
 # path only needs proving once. Matrix expressions aren't allowed in `shell:`, so
 # the zsh run is split out with a literal shell gated by `if:`, sharing env via a
@@ -43,6 +45,7 @@ jobs:
           - { os: macos-latest, provider: github }
           - { os: windows-latest, provider: github }
           - { os: ubuntu-latest, provider: gitlab }
+          - { os: ubuntu-latest, provider: gitea }
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -150,9 +153,39 @@ jobs:
           printf 'https://oauth2:%s@gitlab.com\n' "$GITLAB_TOKEN" > "$HOME/.git-credentials"
           chmod 600 "$HOME/.git-credentials"
 
-      # linux=bash, windows=pwsh (runner defaults).
+      # Gitea is self-hosted: stand up a throwaway instance in Docker (no
+      # account or secret needed), seed an admin + token, install tea, log in,
+      # and store a git credential for HTTPS pushes. The token is generated at
+      # runtime and exported to later steps via $GITHUB_ENV.
+      - name: Start Gitea + tea (Gitea)
+        if: matrix.provider == 'gitea'
+        run: |
+          docker run -d --name gitea -p 3000:3000 \
+            -e GITEA__security__INSTALL_LOCK=true \
+            -e GITEA__server__ROOT_URL=http://localhost:3000/ \
+            gitea/gitea:1.22
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:3000/api/v1/version >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec -u git gitea gitea admin user create \
+            --username e2e --password e2epass123 --email e2e@example.com \
+            --admin --must-change-password=false
+          token=$(curl -fsS -u e2e:e2epass123 -X POST \
+            http://localhost:3000/api/v1/users/e2e/tokens \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"e2e","scopes":["all"]}' | jq -r .sha1)
+          curl -fsSL https://dl.gitea.com/tea/0.14.1/tea-0.14.1-linux-amd64 -o /tmp/tea
+          sudo install -m755 /tmp/tea /usr/local/bin/tea
+          tea login add --name e2e --url http://localhost:3000 --token "$token"
+          git config --global credential.helper store
+          printf 'http://e2e:%s@localhost:3000\n' "$token" > "$HOME/.git-credentials"
+          chmod 600 "$HOME/.git-credentials"
+          echo "GITEA_TOKEN=$token" >> "$GITHUB_ENV"
+
+      # linux=bash, windows=pwsh (runner defaults). Gitea has its own run step.
       - name: Run e2e
-        if: runner.os != 'macOS'
+        if: runner.os != 'macOS' && matrix.provider != 'gitea'
         env: &e2e_env
           STK_E2E_PROVIDER: ${{ matrix.provider }}
           # Owner for the ephemeral repo; override with an E2E_OWNER repo
@@ -171,4 +204,16 @@ jobs:
         if: runner.os == 'macOS'
         shell: zsh {0}
         env: *e2e_env
+        run: cargo run --features e2e --bin git-stk-e2e
+
+      # Gitea: owner is the seeded admin user, the instance is the local Docker
+      # service, and GITEA_TOKEN comes from the setup step's $GITHUB_ENV export.
+      - name: Run e2e (Gitea)
+        if: matrix.provider == 'gitea'
+        env:
+          STK_E2E_PROVIDER: gitea
+          STK_E2E_OWNER: e2e
+          STK_E2E_GITEA_URL: http://localhost:3000
+          STK_E2E_GITEA_LOGIN: e2e
+          GIT_STK_BIN: ${{ github.workspace }}/target/debug/git-stk
         run: cargo run --features e2e --bin git-stk-e2e
