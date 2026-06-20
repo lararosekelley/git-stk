@@ -6,7 +6,7 @@ use crate::git;
 use super::json::{all_reviews, optional_bool, optional_string, parse_state, required_string};
 use super::{
     CHECK_GRACE_POLLS, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
-    check_poll_interval, checks_timed_out, command_output, merge_with_retry,
+    check_poll_interval, checks_timed_out, command_output, merge_with_resettle,
     review_merged_out_of_band,
 };
 
@@ -89,7 +89,14 @@ impl ReviewProvider for GiteaProvider {
         // Gitea/tea has no scheduled ("merge when checks pass") merge, so `auto`
         // falls back to an immediate merge; a real block surfaces as an error.
         let args = vec!["pr", "merge", review.id_value(), "--style", style];
-        merge_with_retry(|| command_output("tea", &args))
+        // A merge right after a force-push (restack, merge --all) can race Gitea
+        // recomputing mergeability and get rejected ("is it still open?"). Wait
+        // for it to settle, and re-poll between retries rather than guess a delay.
+        wait_until_mergeable(review.id_value());
+        merge_with_resettle(
+            || wait_until_mergeable(review.id_value()),
+            || command_output("tea", &args),
+        )
     }
 
     fn merge_blocker(&self, _review: &ReviewRequest) -> Result<MergeBlocker> {
@@ -224,6 +231,29 @@ fn list_pulls(state: &str) -> Result<Vec<ReviewRequest>> {
         }
     }
     Ok(reviews)
+}
+
+/// How long to wait for Gitea to recompute mergeability after a push before a
+/// merge (5 polls, 2s apart) - the same shape as the gitlab settle.
+const MERGE_SETTLE_POLLS: u32 = 5;
+const MERGE_SETTLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Poll until the PR reports mergeable, bounded by the settle budget. An absent
+/// or false `mergeable` (still computing, or a genuine block) just exhausts the
+/// budget; the merge attempt then surfaces the real reason.
+fn wait_until_mergeable(id_value: &str) {
+    for attempt in 0..MERGE_SETTLE_POLLS {
+        if attempt > 0 {
+            std::thread::sleep(MERGE_SETTLE_INTERVAL);
+        }
+        if api_pull(id_value)
+            .ok()
+            .and_then(|pull| pull.get("mergeable").and_then(Value::as_bool))
+            == Some(true)
+        {
+            return;
+        }
+    }
 }
 
 fn gitea_review_from(review: &Value) -> Result<ReviewRequest> {

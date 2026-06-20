@@ -430,7 +430,8 @@ const MERGE_RETRY_BACKOFF: Duration = Duration::from_millis(1500);
 /// failed check, closed review), which must surface immediately. GitHub says
 /// the "base/head branch was modified"; GitLab returns a 405 Method Not Allowed
 /// while the MR's merge status is still recomputing after a push (which
-/// `merge --all` triggers by force-pushing each branch just before merging it).
+/// `merge --all` triggers by force-pushing each branch just before merging it);
+/// Gitea rejects with "failed to merge PR, is it still open?" in the same window.
 fn is_transient_merge_error(error: &anyhow::Error) -> bool {
     let text = error.to_string().to_lowercase();
     [
@@ -438,6 +439,7 @@ fn is_transient_merge_error(error: &anyhow::Error) -> bool {
         "head branch was modified",
         "try the merge again",
         "method not allowed",
+        "is it still open",
         // Transient API 5xx (the server hiccupped - not a verdict on the
         // merge): 502/503/504/500. Worth retrying rather than failing the run.
         "bad gateway",
