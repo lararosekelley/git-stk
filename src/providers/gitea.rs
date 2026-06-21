@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::git;
 
 use super::json::{
-    all_reviews, json_items, optional_bool, optional_string, parse_state, required_string,
+    all_reviews, optional_bool, optional_string, parse_body_field, parse_state, required_string,
 };
 use super::{
     MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome, command_output,
@@ -63,7 +63,7 @@ impl ReviewProvider for GiteaProvider {
         // `tea pr edit` cannot change the target branch, so PATCH it through
         // the API passthrough (which still uses tea's stored auth).
         let endpoint = format!("repos/{}/pulls/{}", repo_slug()?, review.id_value());
-        let data = format!(r#"{{"base":"{base}"}}"#);
+        let data = serde_json::json!({ "base": base }).to_string();
         command_output(
             "tea",
             &["api", "--method", "PATCH", &endpoint, "--data", &data],
@@ -71,10 +71,11 @@ impl ReviewProvider for GiteaProvider {
     }
 
     fn review_body(&self, review: &ReviewRequest) -> Result<String> {
-        // No single-PR view command; read the body off the listing.
-        Ok(pull_object(review.id_value())?
-            .map(|pull| optional_string(&pull, "body"))
-            .unwrap_or_default())
+        // Fetch the single PR through the API passthrough rather than scanning
+        // the listing, so the body is read correctly even past the first page.
+        let endpoint = format!("repos/{}/pulls/{}", repo_slug()?, review.id_value());
+        let output = command_output("tea", &["api", &endpoint])?;
+        parse_body_field(&output, "body")
     }
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {
@@ -112,13 +113,7 @@ impl ReviewProvider for GiteaProvider {
     }
 
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {
-        let output = command_output(
-            "tea",
-            &[
-                "pr", "list", "--state", "open", "--output", "json", "--limit", "200",
-            ],
-        )?;
-        all_reviews(&output, gitea_review_from)
+        list_pulls("open")
     }
 
     fn mark_ready(&self, review: &ReviewRequest) -> Result<String> {
@@ -145,14 +140,17 @@ impl ReviewProvider for GiteaProvider {
 /// `include_closed`) closed. Gitea's `pr list` has no head filter, so list and
 /// match client-side.
 fn find_review(branch: &str, include_closed: bool) -> Result<Option<ReviewRequest>> {
-    let mut matches: Vec<ReviewRequest> = list_all()?
+    let mut matches: Vec<ReviewRequest> = list_pulls("all")?
         .into_iter()
         .filter(|review| review.branch == branch)
         .collect();
     matches.sort_by_key(|review| state_rank(&review.state));
-    Ok(matches
-        .into_iter()
-        .find(|review| include_closed || !matches!(review.state, ReviewState::Closed)))
+    Ok(matches.into_iter().find(|review| match review.state {
+        // Open and merged are the live review; closed or unrecognized states
+        // surface only when explicitly asked, matching GitHub/GitLab.
+        ReviewState::Open | ReviewState::Merged => true,
+        ReviewState::Closed | ReviewState::Unknown(_) => include_closed,
+    }))
 }
 
 fn state_rank(state: &ReviewState) -> u8 {
@@ -164,31 +162,32 @@ fn state_rank(state: &ReviewState) -> u8 {
     }
 }
 
-fn list_all() -> Result<Vec<ReviewRequest>> {
-    let output = command_output(
-        "tea",
-        &[
-            "pr", "list", "--state", "all", "--output", "json", "--limit", "200",
-        ],
-    )?;
-    all_reviews(&output, gitea_review_from)
-}
-
-/// The raw JSON object for one PR (by number), from the listing.
-fn pull_object(id_value: &str) -> Result<Option<Value>> {
-    let output = command_output(
-        "tea",
-        &[
-            "pr", "list", "--state", "all", "--output", "json", "--limit", "200",
-        ],
-    )?;
-    Ok(json_items(&output)?
-        .into_iter()
-        .find(|pull| pull_number(pull).as_deref() == Some(id_value)))
-}
-
-fn pull_number(pull: &Value) -> Option<String> {
-    required_string(pull, &["number", "index", "id"]).ok()
+/// Every PR in the given state (`open`/`closed`/`all`), following pagination.
+/// Gitea's `pr list` has no head filter, so callers match client-side; paging
+/// keeps a branch's review from falling off the first page on a busy repo.
+fn list_pulls(state: &str) -> Result<Vec<ReviewRequest>> {
+    const PAGE_SIZE: usize = 200;
+    // Bound the walk so a misbehaving server can't loop forever.
+    const MAX_PAGES: usize = 50;
+    let limit = PAGE_SIZE.to_string();
+    let mut reviews = Vec::new();
+    for page in 1..=MAX_PAGES {
+        let page = page.to_string();
+        let output = command_output(
+            "tea",
+            &[
+                "pr", "list", "--state", state, "--output", "json", "--page", &page, "--limit",
+                &limit,
+            ],
+        )?;
+        let batch = all_reviews(&output, gitea_review_from)?;
+        let full_page = batch.len() == PAGE_SIZE;
+        reviews.extend(batch);
+        if !full_page {
+            break;
+        }
+    }
+    Ok(reviews)
 }
 
 fn gitea_review_from(review: &Value) -> Result<ReviewRequest> {
