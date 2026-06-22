@@ -5,7 +5,7 @@
 //! failure, via a drop guard). Gated behind the `e2e` feature so it never
 //! ships; invoked by `.github/workflows/e2e.yml`.
 //!
-//! Scenarios, all on one ephemeral repo, GitHub and GitLab:
+//! Scenarios, all on one ephemeral repo, GitHub / GitLab / Gitea:
 //!   1. core lifecycle   - build a stack -> submit -> restack -> squash-merge
 //!   2. issue auto-close - a branch that references an issue closes it on merge
 //!   3. metadata surgery - adopt, repair, rename
@@ -14,12 +14,15 @@
 //!   6. split            - explode a branch into one stacked branch per commit
 //!
 //! Env:
-//!   STK_E2E_PROVIDER  `github` or `gitlab`
-//!   STK_E2E_OWNER     owner/namespace for the ephemeral repo
-//!   STK_E2E_WAIT      `true` to use `merge --all --wait`; otherwise `--no-wait`
-//!   GIT_STK_BIN       path to the `git-stk` binary under test
-//!   GH_TOKEN          gh auth (github), with `repo` + `delete_repo`
-//!   GITLAB_TOKEN      glab auth (gitlab), with `api`
+//!   STK_E2E_PROVIDER    `github`, `gitlab`, or `gitea`
+//!   STK_E2E_OWNER       owner/namespace for the ephemeral repo
+//!   STK_E2E_WAIT        `true` to use `merge --all --wait`; otherwise `--no-wait`
+//!   GIT_STK_BIN         path to the `git-stk` binary under test
+//!   GH_TOKEN            gh auth (github), with `repo` + `delete_repo`
+//!   GITLAB_TOKEN        glab auth (gitlab), with `api`
+//!   STK_E2E_GITEA_URL   gitea instance base URL (gitea)
+//!   STK_E2E_GITEA_LOGIN tea login name for the instance (gitea)
+//!   GITEA_TOKEN         token for the embedded git-credential push URL (gitea)
 //!
 //! Push auth (gh credential helper / git credential store) is wired by the
 //! workflow before this runs.
@@ -43,6 +46,7 @@ fn main() {
 enum Provider {
     Github,
     Gitlab,
+    Gitea,
 }
 
 impl Provider {
@@ -50,6 +54,7 @@ impl Provider {
         match value {
             "github" => Ok(Self::Github),
             "gitlab" => Ok(Self::Gitlab),
+            "gitea" => Ok(Self::Gitea),
             other => Err(format!("unknown STK_E2E_PROVIDER {other:?}")),
         }
     }
@@ -59,15 +64,18 @@ impl Provider {
         match self {
             Self::Github => "gh",
             Self::Gitlab => "glab",
+            Self::Gitea => "tea",
         }
     }
+}
 
-    fn host(self) -> &'static str {
-        match self {
-            Self::Github => "github.com",
-            Self::Gitlab => "gitlab.com",
-        }
-    }
+/// The Gitea instance base URL (e.g. `http://localhost:3000`) and the `tea`
+/// login name to drive it; both come from the workflow's Docker service.
+fn gitea_base() -> String {
+    env("STK_E2E_GITEA_URL").trim_end_matches('/').to_owned()
+}
+fn gitea_login() -> String {
+    env("STK_E2E_GITEA_LOGIN")
 }
 
 fn run() -> Result<(), String> {
@@ -101,6 +109,15 @@ fn run() -> Result<(), String> {
     // `git rebase --continue`, which would otherwise open an editor for the
     // commit message and hang on a runner with no TTY.
     git(work, &["config", "core.editor", "true"])?;
+    // The ephemeral Gitea instance isn't gitea.com/codeberg.org, so widen
+    // detection to its host - which also exercises the self-hosted path live.
+    if let Provider::Gitea = provider {
+        let base = gitea_base();
+        let host = base
+            .split_once("://")
+            .map_or(base.as_str(), |(_, host)| host);
+        git(work, &["config", "stk.giteaHost", host])?;
+    }
 
     core_lifecycle(provider, &slug, work)?;
     issue_autoclose(provider, &slug, work)?;
@@ -336,13 +353,41 @@ fn create_repo(provider: Provider, slug: &str) -> Result<(), String> {
             ],
             None,
         ),
+        // Create under the token user via the API; auto_init seeds main.
+        Provider::Gitea => {
+            let name = slug.split('/').next_back().unwrap_or_default();
+            let body = format!(
+                r#"{{"name":"{name}","private":true,"auto_init":true,"default_branch":"main"}}"#
+            );
+            sh(
+                "tea",
+                &[
+                    "api",
+                    "--login",
+                    &gitea_login(),
+                    "-X",
+                    "POST",
+                    "user/repos",
+                    "-d",
+                    &body,
+                ],
+                None,
+            )
+        }
     }
     .map(|_| ())
 }
 
 fn clone(provider: Provider, slug: &str) -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("git-stk-e2e-{}", std::process::id()));
-    let url = format!("https://{}/{slug}.git", provider.host());
+    let url = match provider {
+        Provider::Github => format!("https://github.com/{slug}.git"),
+        Provider::Gitlab => format!("https://gitlab.com/{slug}.git"),
+        // A clean URL (no token): the workflow wires a git credential store for
+        // pushes, and `tea` reads the repo from this remote's host - which it
+        // can't do if the token is embedded in the URL.
+        Provider::Gitea => format!("{}/{slug}.git", gitea_base()),
+    };
     // A just-created repo can lag a moment before it is cloneable; retry briefly.
     let mut last = String::new();
     for attempt in 0..5 {
@@ -396,6 +441,16 @@ fn open_review_count(provider: Provider, slug: &str) -> Result<usize, String> {
             &["mr", "list", "-R", slug, "--output", "json"],
             None,
         )?,
+        Provider::Gitea => sh(
+            "tea",
+            &[
+                "api",
+                "--login",
+                &gitea_login(),
+                &format!("repos/{slug}/pulls?state=open&limit=50"),
+            ],
+            None,
+        )?,
     };
     let value: serde_json::Value =
         serde_json::from_str(&output).map_err(|e| format!("parse review list: {e}: {output}"))?;
@@ -426,6 +481,29 @@ fn create_issue(provider: Provider, slug: &str, title: &str) -> Result<u64, Stri
             ],
             None,
         )?,
+        // Create via the API and read the number straight from the JSON.
+        Provider::Gitea => {
+            let body = format!(r#"{{"title":"{title}","body":"e2e"}}"#);
+            let output = sh(
+                "tea",
+                &[
+                    "api",
+                    "--login",
+                    &gitea_login(),
+                    "-X",
+                    "POST",
+                    &format!("repos/{slug}/issues"),
+                    "-d",
+                    &body,
+                ],
+                None,
+            )?;
+            let value: serde_json::Value = serde_json::from_str(&output)
+                .map_err(|e| format!("parse issue create: {e}: {output}"))?;
+            return value["number"]
+                .as_u64()
+                .ok_or_else(|| format!("no issue number in create output: {output}"));
+        }
     };
     // Both providers print the issue URL; the number is the last path segment.
     // (GitHub uses .../issues/N; GitLab now uses .../-/work_items/N.)
@@ -450,6 +528,16 @@ fn issue_state(provider: Provider, slug: &str, number: u64) -> Result<String, St
             &[
                 "api",
                 &format!("projects/{}/issues/{number}", slug.replace('/', "%2F")),
+            ],
+            None,
+        )?,
+        Provider::Gitea => sh(
+            "tea",
+            &[
+                "api",
+                "--login",
+                &gitea_login(),
+                &format!("repos/{slug}/issues/{number}"),
             ],
             None,
         )?,
@@ -480,12 +568,25 @@ struct RepoGuard {
 impl Drop for RepoGuard {
     fn drop(&mut self) {
         eprintln!("e2e: deleting ephemeral repo {}", self.slug);
-        // `--yes` works for both gh and glab repo delete. (GitLab schedules
-        // delayed deletion rather than removing immediately - that's its
-        // default, and the unique names mean it never blocks a later run.)
-        let status = Command::new(self.provider.cli())
-            .args(["repo", "delete", &self.slug, "--yes"])
-            .status();
+        let status = match self.provider {
+            // `--yes` works for both gh and glab repo delete. (GitLab schedules
+            // delayed deletion rather than removing immediately - that's its
+            // default, and the unique names mean it never blocks a later run.)
+            Provider::Github | Provider::Gitlab => Command::new(self.provider.cli())
+                .args(["repo", "delete", &self.slug, "--yes"])
+                .status(),
+            // tea has no scripted repo-delete; DELETE via the API.
+            Provider::Gitea => Command::new("tea")
+                .args([
+                    "api",
+                    "--login",
+                    &gitea_login(),
+                    "-X",
+                    "DELETE",
+                    &format!("repos/{}", self.slug),
+                ])
+                .status(),
+        };
         if !matches!(status, Ok(s) if s.success()) {
             eprintln!(
                 "e2e: WARNING: failed to delete {} - delete it by hand",

@@ -3,12 +3,11 @@ use serde_json::Value;
 
 use crate::git;
 
-use super::json::{
-    all_reviews, optional_bool, optional_string, parse_body_field, parse_state, required_string,
-};
+use super::json::{all_reviews, optional_bool, optional_string, parse_state, required_string};
 use super::{
-    MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome, command_output,
-    merge_with_retry,
+    CHECK_GRACE_POLLS, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
+    check_poll_interval, checks_timed_out, command_output, merge_with_resettle,
+    review_merged_out_of_band,
 };
 
 pub(super) struct GiteaProvider;
@@ -71,11 +70,7 @@ impl ReviewProvider for GiteaProvider {
     }
 
     fn review_body(&self, review: &ReviewRequest) -> Result<String> {
-        // Fetch the single PR through the API passthrough rather than scanning
-        // the listing, so the body is read correctly even past the first page.
-        let endpoint = format!("repos/{}/pulls/{}", repo_slug()?, review.id_value());
-        let output = command_output("tea", &["api", &endpoint])?;
-        parse_body_field(&output, "body")
+        Ok(optional_string(&api_pull(review.id_value())?, "body"))
     }
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {
@@ -94,7 +89,14 @@ impl ReviewProvider for GiteaProvider {
         // Gitea/tea has no scheduled ("merge when checks pass") merge, so `auto`
         // falls back to an immediate merge; a real block surfaces as an error.
         let args = vec!["pr", "merge", review.id_value(), "--style", style];
-        merge_with_retry(|| command_output("tea", &args))
+        // A merge right after a force-push (restack, merge --all) can race Gitea
+        // recomputing mergeability and get rejected ("is it still open?"). Wait
+        // for it to settle, and re-poll between retries rather than guess a delay.
+        wait_until_mergeable(review.id_value());
+        merge_with_resettle(
+            || wait_until_mergeable(review.id_value()),
+            || command_output("tea", &args),
+        )
     }
 
     fn merge_blocker(&self, _review: &ReviewRequest) -> Result<MergeBlocker> {
@@ -105,11 +107,50 @@ impl ReviewProvider for GiteaProvider {
         Ok(MergeBlocker::None)
     }
 
-    fn wait_for_checks(&self, _review: &ReviewRequest) -> Result<WaitOutcome> {
-        // PR 1 does not yet wire Gitea's per-PR check status, so treat checks as
-        // absent and proceed; if checks actually gate the merge, the merge call
-        // surfaces the block. (PR 2 reads the `ci` field / commit status.)
-        Ok(WaitOutcome::Passed)
+    fn wait_for_checks(&self, review: &ReviewRequest) -> Result<WaitOutcome> {
+        // Poll the head commit's combined status. A just-pushed head has no
+        // status for a moment; tolerate that for a grace window before
+        // concluding there are no checks (mirrors the gitlab path).
+        let head_sha = api_pull(review.id_value())?
+            .get("head")
+            .and_then(|head| head.get("sha"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if head_sha.is_empty() {
+            return Ok(WaitOutcome::Passed);
+        }
+        let endpoint = format!("repos/{}/commits/{head_sha}/status", repo_slug()?);
+        let started = std::time::Instant::now();
+        let timeout = crate::settings::check_timeout()?;
+        let mut no_status = 0u32;
+        loop {
+            let value: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+                .context("failed to parse gitea status JSON")?;
+            let state = optional_string(&value, "state");
+            // No statuses yet (empty state / zero count): wait out the grace
+            // window, then treat as "no checks".
+            let none_yet =
+                value.get("total_count").and_then(Value::as_u64) == Some(0) || state.is_empty();
+            match state.as_str() {
+                _ if none_yet && no_status >= CHECK_GRACE_POLLS => return Ok(WaitOutcome::Passed),
+                _ if none_yet => no_status += 1,
+                "success" => return Ok(WaitOutcome::Passed),
+                "failure" | "error" => return Ok(WaitOutcome::Failed),
+                // pending/warning: statuses exist and are running - reset.
+                _ => no_status = 0,
+            }
+
+            if let Some(timeout) = timeout
+                && started.elapsed() >= timeout
+            {
+                return Err(checks_timed_out(review, timeout));
+            }
+            if review_merged_out_of_band(self, review)? {
+                return Ok(WaitOutcome::Landed);
+            }
+            std::thread::sleep(check_poll_interval());
+        }
     }
 
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {
@@ -162,25 +203,30 @@ fn state_rank(state: &ReviewState) -> u8 {
     }
 }
 
-/// Every PR in the given state (`open`/`closed`/`all`), following pagination.
-/// Gitea's `pr list` has no head filter, so callers match client-side; paging
-/// keeps a branch's review from falling off the first page on a busy repo.
+/// One pull request's canonical API object.
+fn api_pull(id_value: &str) -> Result<Value> {
+    let endpoint = format!("repos/{}/pulls/{id_value}", repo_slug()?);
+    serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+        .context("failed to parse gitea pull JSON")
+}
+
+/// Every PR in `state` (open|closed|all) as ReviewRequests, following
+/// pagination. Uses the API passthrough rather than `tea pr list` (whose JSON
+/// is a lossy projection: no `merged`, `draft`, or nested refs), and pages so a
+/// branch's review can't fall off the first page on a busy repo.
 fn list_pulls(state: &str) -> Result<Vec<ReviewRequest>> {
-    const PAGE_SIZE: usize = 200;
+    // Gitea caps page size at 50, so request exactly that and page past it.
+    const PAGE_SIZE: usize = 50;
     // Bound the walk so a misbehaving server can't loop forever.
     const MAX_PAGES: usize = 50;
-    let limit = PAGE_SIZE.to_string();
+    let slug = repo_slug()?;
     let mut reviews = Vec::new();
     for page in 1..=MAX_PAGES {
-        let page = page.to_string();
-        let output = command_output(
-            "tea",
-            &[
-                "pr", "list", "--state", state, "--output", "json", "--page", &page, "--limit",
-                &limit,
-            ],
+        let endpoint = format!("repos/{slug}/pulls?state={state}&page={page}&limit={PAGE_SIZE}");
+        let batch = all_reviews(
+            &command_output("tea", &["api", &endpoint])?,
+            gitea_review_from,
         )?;
-        let batch = all_reviews(&output, gitea_review_from)?;
         let full_page = batch.len() == PAGE_SIZE;
         reviews.extend(batch);
         if !full_page {
@@ -188,6 +234,29 @@ fn list_pulls(state: &str) -> Result<Vec<ReviewRequest>> {
         }
     }
     Ok(reviews)
+}
+
+/// How long to wait for Gitea to recompute mergeability after a push before a
+/// merge (5 polls, 2s apart) - the same shape as the gitlab settle.
+const MERGE_SETTLE_POLLS: u32 = 5;
+const MERGE_SETTLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Poll until the PR reports mergeable, bounded by the settle budget. An absent
+/// or false `mergeable` (still computing, or a genuine block) just exhausts the
+/// budget; the merge attempt then surfaces the real reason.
+fn wait_until_mergeable(id_value: &str) {
+    for attempt in 0..MERGE_SETTLE_POLLS {
+        if attempt > 0 {
+            std::thread::sleep(MERGE_SETTLE_INTERVAL);
+        }
+        if api_pull(id_value)
+            .ok()
+            .and_then(|pull| pull.get("mergeable").and_then(Value::as_bool))
+            == Some(true)
+        {
+            return;
+        }
+    }
 }
 
 fn gitea_review_from(review: &Value) -> Result<ReviewRequest> {
