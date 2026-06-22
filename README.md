@@ -5,12 +5,12 @@
 
 [![crates.io](https://img.shields.io/crates/v/git-stk?color=cc6699)](https://crates.io/crates/git-stk)
 
-> Git-native stacked branch workflow helper with GitHub and GitLab review integration.
+> Git-native stacked branch workflow helper with GitHub, GitLab, and Gitea support.
 
 ---
 
 `git-stk` keeps stacks as ordinary Git branches. Stack parent metadata is stored locally in `.git/config` as
-`branch.<name>.stkParent`, and GitHub PR bases or GitLab MR target branches can be used to reconstruct that metadata.
+`branch.<name>.stkParent`, and GitHub/Gitea PR bases or GitLab MR target branches can be used to reconstruct that metadata.
 
 ![Formatted and automatically managed PR descriptions](./assets/git-stk-pr-description.png)
 
@@ -296,7 +296,8 @@ flow. Landing a stack becomes one `git stk merge` per PR - or just `git stk merg
 merge-and-sync bottom-up until the stack is complete, with a single confirmation up front. With required
 checks still running, `--auto` schedules the merge instead (GitHub `--auto`, GitLab auto-merge); a merge
 that only got scheduled - on GitLab that is the default - skips the sync (and stops `--all`) with a note
-to rerun `git stk sync` once checks pass. `merge --all --wait` (or `git config stk.mergeWait true`) polls
+to rerun `git stk sync` once checks pass. Gitea has no scheduled-merge mode, so `--auto` there falls
+back to an immediate merge attempt - a still-failing check surfaces as a merge error. `merge --all --wait` (or `git config stk.mergeWait true`) polls
 each review's checks until they settle before merging it - turning the landing into genuinely one command;
 a failing check stops the loop, and `--no-wait` overrides the config. A freshly pushed branch whose checks
 are still queued (not yet registered) is waited out, not mistaken for "no checks." The wait gives up after
@@ -350,8 +351,8 @@ managed sections, for the current or named branch only. It sticks across resubmi
 `--desc ""` removes it.
 
 When the repo carries a pull/merge request template - GitHub's `PULL_REQUEST_TEMPLATE` (in the root,
-`.github/`, or `docs/`) or GitLab's `Default.md` under `.gitlab/merge_request_templates/` - a newly
-created review starts from it, with the managed sections (description, `Closes #N`, stack overview)
+`.github/`, or `docs/`), Gitea's/Forgejo's in those same spots or a `.gitea/` directory, or GitLab's
+`Default.md` under `.gitlab/merge_request_templates/` - a newly created review starts from it, with the managed sections (description, `Closes #N`, stack overview)
 appended beneath rather than replacing it, matching what opening the review on the web would give you.
 When those managed sections follow a template, a horizontal-rule (`---`) seam is inserted between the
 two, so the automated block reads as distinct from your template rather than blurring into it.
@@ -427,7 +428,7 @@ Everything is optional; defaults shown below:
     checkTimeout = 1800
     ; Open new reviews as drafts. Default: false.
     submitDraft = true
-    ; Seed a new review's body from the repo's PR/MR template (GitHub's
+    ; Seed a new review's body from the repo's PR/MR template (GitHub/Gitea
     ; PULL_REQUEST_TEMPLATE, GitLab's Default.md) instead of replacing it.
     ; Default: true.
     usePrTemplate = false
@@ -442,8 +443,8 @@ The tool also manages per-branch metadata: `branch.<name>.stkParent` (the stack 
 `cleanup`, and `repair`; you normally never touch them by hand.
 
 Branches are the real state; the metadata is just annotation. If it is ever lost or stale, `git stk repair`
-rebuilds it from review bases (when `gh`/`glab` is available) and branch ancestry, and verifies recorded
-fork points. Anything it cannot resolve safely is reported for a manual `git stk adopt`.
+rebuilds it from review bases (when the provider CLI - `gh`/`glab`/`tea` - is available) and branch
+ancestry, and verifies recorded fork points. Anything it cannot resolve safely is reported for a manual `git stk adopt`.
 
 Working across machines? The parent map rides along on a shared ref (`refs/stk/metadata`), published
 automatically whenever git-stk pushes branches (`submit`/`restack`/`sync` with push). On another clone,
@@ -466,7 +467,7 @@ git stk config
 ## Providers
 
 Provider detection uses `stk.provider` first, then `stk.remote`, then `origin`. GitHub support shells out
-to `gh`. GitLab support shells out to `glab`. Authenticate those CLIs before using provider commands.
+to `gh`, GitLab support shells out to `glab`, and Gitea to `tea`. Authenticate those CLIs before using provider commands.
 
 ## Re-stacking
 
