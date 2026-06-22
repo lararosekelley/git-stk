@@ -223,7 +223,10 @@ fn list_pulls(state: &str) -> Result<Vec<ReviewRequest>> {
     let mut reviews = Vec::new();
     for page in 1..=MAX_PAGES {
         let endpoint = format!("repos/{slug}/pulls?state={state}&page={page}&limit={PAGE_SIZE}");
-        let batch = all_reviews(&command_output("tea", &["api", &endpoint])?, gitea_review_from)?;
+        let batch = all_reviews(
+            &command_output("tea", &["api", &endpoint])?,
+            gitea_review_from,
+        )?;
         let full_page = batch.len() == PAGE_SIZE;
         reviews.extend(batch);
         if !full_page {
