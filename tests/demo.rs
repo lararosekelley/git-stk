@@ -621,6 +621,37 @@ fn a_confirm_reprompts_past_unrecognized_input() {
         ));
 }
 
+#[test]
+fn sync_from_the_trunk_keeps_sibling_stack_notes_separate() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "demo"]);
+
+    // Two independent stacks, each a direct child of main.
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "add a");
+    repo.stack().args(["submit", "--stack"]).assert().success(); // review #1
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "add b");
+    repo.stack().args(["submit", "--stack"]).assert().success(); // review #2
+
+    // Sync from the trunk sees both sibling stacks; each PR's note must stay
+    // scoped to its own stack rather than listing the other one.
+    repo.git(["switch", "main"]);
+    repo.stack().args(["sync"]).assert().success();
+
+    let body_a = demo_review_body(&repo, 1);
+    let body_b = demo_review_body(&repo, 2);
+    assert!(
+        body_a.contains("demo://review/1") && !body_a.contains("demo://review/2"),
+        "feature/a's note leaked the sibling stack:\n{body_a}"
+    );
+    assert!(
+        body_b.contains("demo://review/2") && !body_b.contains("demo://review/1"),
+        "feature/b's note leaked the sibling stack:\n{body_b}"
+    );
+}
+
 /// The stored review body for demo review `id`, for asserting overview content.
 fn demo_review_body(repo: &TestRepo, id: u64) -> String {
     let raw = std::fs::read_to_string(repo.path().join(".git/stk-demo-reviews"))

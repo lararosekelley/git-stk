@@ -2,6 +2,8 @@
 //! refresh the marker-delimited overview whose merged and closed entries
 //! outlive their local branches.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use serde_json::{Value, json};
 
@@ -65,13 +67,37 @@ impl NoteEntry {
     }
 }
 
-/// Maintain a stack overview in every review body: the full ledger
-/// leaf-first, the trunk at the bottom, and a pointing emoji marking the
-/// review being viewed. Lives between marker comments so refreshes replace
-/// it in place, and self-repairs if the markers were hand-edited away.
-/// Merged and closed entries are preserved from the previous note and
-/// restyled instead of dropped.
+/// Maintain a stack overview in every review body, one independent stack at a
+/// time: a PR's overview must list only its own stack, never sibling stacks
+/// that merely share the trunk. `branch_parents` can span several such stacks
+/// (e.g. a `sync` run from the trunk), so group by each branch's child-of-trunk
+/// root and refresh each group's notes on its own.
 pub fn update_stack_notes(
+    review_provider: &dyn ReviewProvider,
+    branch_parents: &[(String, String)],
+    dry_run: bool,
+    rebuild: bool,
+) -> Result<()> {
+    let mut stacks: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for (branch, parent) in branch_parents {
+        // The line base (the branch's child-of-trunk ancestor) identifies the
+        // independent stack it belongs to; a broken lookup keeps the branch on
+        // its own rather than folding it into another stack.
+        let key = crate::stack::line_base(branch).unwrap_or_else(|_| branch.clone());
+        stacks
+            .entry(key)
+            .or_default()
+            .push((branch.clone(), parent.clone()));
+    }
+    for stack in stacks.values() {
+        update_one_stack(review_provider, stack, dry_run, rebuild)?;
+    }
+    Ok(())
+}
+
+/// Refresh the overview across one independent stack. `branch_parents` here is
+/// a single stack, bottom-first.
+fn update_one_stack(
     review_provider: &dyn ReviewProvider,
     branch_parents: &[(String, String)],
     dry_run: bool,
