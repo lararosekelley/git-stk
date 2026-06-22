@@ -297,7 +297,8 @@ merge-and-sync bottom-up until the stack is complete, with a single confirmation
 checks still running, `--auto` schedules the merge instead (GitHub `--auto`, GitLab auto-merge); a merge
 that only got scheduled - on GitLab that is the default - skips the sync (and stops `--all`) with a note
 to rerun `git stk sync` once checks pass. Gitea has no scheduled-merge mode, so `--auto` there falls
-back to an immediate merge attempt - a still-failing check surfaces as a merge error. `merge --all --wait` (or `git config stk.mergeWait true`) polls
+back to an immediate merge attempt - a still-failing check surfaces as a merge error. `merge --all --wait`
+(or `git config stk.mergeWait true`) polls
 each review's checks until they settle before merging it - turning the landing into genuinely one command;
 a failing check stops the loop, and `--no-wait` overrides the config. A freshly pushed branch whose checks
 are still queued (not yet registered) is waited out, not mistaken for "no checks." The wait gives up after
@@ -352,7 +353,8 @@ managed sections, for the current or named branch only. It sticks across resubmi
 
 When the repo carries a pull/merge request template - GitHub's `PULL_REQUEST_TEMPLATE` (in the root,
 `.github/`, or `docs/`), Gitea's/Forgejo's in those same spots or a `.gitea/` directory, or GitLab's
-`Default.md` under `.gitlab/merge_request_templates/` - a newly created review starts from it, with the managed sections (description, `Closes #N`, stack overview)
+`Default.md` under `.gitlab/merge_request_templates/` - a newly created review starts from it, with the managed sections
+(description, `Closes #N`, stack overview)
 appended beneath rather than replacing it, matching what opening the review on the web would give you.
 When those managed sections follow a template, a horizontal-rule (`---`) seam is inserted between the
 two, so the automated block reads as distinct from your template rather than blurring into it.
