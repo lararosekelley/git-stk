@@ -40,11 +40,13 @@ fn humanize(duration: Duration) -> String {
 }
 
 mod demo;
+mod gitea;
 mod github;
 mod gitlab;
 mod json;
 
 use demo::DemoProvider;
+use gitea::GiteaProvider;
 use github::GitHubProvider;
 use gitlab::GitLabProvider;
 
@@ -52,6 +54,7 @@ use gitlab::GitLabProvider;
 pub enum ProviderKind {
     GitHub,
     GitLab,
+    Gitea,
     /// Offline stand-in: reviews in `.git`, merges as local squashes. Only
     /// ever selected explicitly via `stk.provider = demo`.
     Demo,
@@ -62,6 +65,7 @@ impl ProviderKind {
         match value.to_ascii_lowercase().as_str() {
             "github" | "gh" => Some(Self::GitHub),
             "gitlab" | "glab" => Some(Self::GitLab),
+            "gitea" | "tea" => Some(Self::Gitea),
             "demo" => Some(Self::Demo),
             _ => None,
         }
@@ -73,6 +77,7 @@ impl fmt::Display for ProviderKind {
         match self {
             Self::GitHub => write!(formatter, "github"),
             Self::GitLab => write!(formatter, "gitlab"),
+            Self::Gitea => write!(formatter, "gitea"),
             Self::Demo => write!(formatter, "demo"),
         }
     }
@@ -230,7 +235,9 @@ pub(super) fn review_merged_out_of_band(
 pub fn detect_provider() -> Result<DetectedProvider> {
     if let Some(value) = git::config_get(settings::PROVIDER_KEY)? {
         let Some(kind) = ProviderKind::parse(&value) else {
-            bail!("unsupported stk.provider value {value:?}; expected github, gitlab, or demo");
+            bail!(
+                "unsupported stk.provider value {value:?}; expected github, gitlab, gitea, or demo"
+            );
         };
 
         return Ok(DetectedProvider {
@@ -245,7 +252,9 @@ pub fn detect_provider() -> Result<DetectedProvider> {
     };
 
     let gitlab_host = settings::gitlab_host()?;
-    let Some(kind) = detect_provider_from_url(&url, gitlab_host.as_deref()) else {
+    let gitea_host = settings::gitea_host()?;
+    let Some(kind) = detect_provider_from_url(&url, gitlab_host.as_deref(), gitea_host.as_deref())
+    else {
         bail!(
             "could not detect provider from remote {remote} ({})",
             redact_url(&url)
@@ -259,8 +268,13 @@ pub fn detect_provider() -> Result<DetectedProvider> {
 }
 
 /// Detect the provider from a remote URL by its host. A configured
-/// `stk.gitlabHost` widens GitLab detection to a self-hosted instance.
-fn detect_provider_from_url(url: &str, gitlab_host: Option<&str>) -> Option<ProviderKind> {
+/// `stk.gitlabHost`/`stk.giteaHost` widens GitLab/Gitea detection to a
+/// self-hosted instance.
+fn detect_provider_from_url(
+    url: &str,
+    gitlab_host: Option<&str>,
+    gitea_host: Option<&str>,
+) -> Option<ProviderKind> {
     let normalized = url.to_ascii_lowercase();
     let host = host_of(&normalized);
     // Match the host itself or a subdomain of it, never a look-alike that
@@ -269,17 +283,16 @@ fn detect_provider_from_url(url: &str, gitlab_host: Option<&str>) -> Option<Prov
 
     // The configured host goes through host_of too, so a full URL
     // (https://gitlab.example.com) works as well as a bare host.
-    let gitlab_self_hosted = || {
-        gitlab_host.is_some_and(|configured| {
-            let configured = configured.to_ascii_lowercase();
-            is(host_of(&configured))
-        })
+    let self_hosted = |configured: Option<&str>| {
+        configured.is_some_and(|configured| is(host_of(&configured.to_ascii_lowercase())))
     };
 
     if is("github.com") {
         Some(ProviderKind::GitHub)
-    } else if is("gitlab.com") || gitlab_self_hosted() {
+    } else if is("gitlab.com") || self_hosted(gitlab_host) {
         Some(ProviderKind::GitLab)
+    } else if is("gitea.com") || is("codeberg.org") || self_hosted(gitea_host) {
+        Some(ProviderKind::Gitea)
     } else {
         None
     }
@@ -334,6 +347,7 @@ pub(crate) fn review_provider(kind: ProviderKind) -> Box<dyn ReviewProvider> {
     match kind {
         ProviderKind::GitHub => Box::new(GitHubProvider),
         ProviderKind::GitLab => Box::new(GitLabProvider),
+        ProviderKind::Gitea => Box::new(GiteaProvider),
         ProviderKind::Demo => Box::new(DemoProvider),
     }
 }
@@ -347,6 +361,11 @@ fn provider_cli(program: &str) -> Option<(&'static str, &'static str, &'static s
             "GitLab CLI",
             "https://gitlab.com/gitlab-org/cli",
             "glab auth login",
+        )),
+        "tea" => Some((
+            "Gitea CLI (tea)",
+            "https://gitea.com/gitea/tea",
+            "tea login add",
         )),
         _ => None,
     }
@@ -728,14 +747,38 @@ mod tests {
         let remote = "git@gitlab.example.com:team/repo.git";
         for configured in ["gitlab.example.com", "https://gitlab.example.com"] {
             assert_eq!(
-                detect_provider_from_url(remote, Some(configured)),
+                detect_provider_from_url(remote, Some(configured), None),
                 Some(ProviderKind::GitLab),
                 "configured {configured:?} should detect the self-hosted host"
             );
         }
         // A look-alike host is still not matched.
         assert_eq!(
-            detect_provider_from_url("git@notgitlab.com:o/r", Some("gitlab.example.com")),
+            detect_provider_from_url("git@notgitlab.com:o/r", Some("gitlab.example.com"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn gitea_is_detected_for_gitea_com_codeberg_and_a_configured_host() {
+        assert_eq!(
+            detect_provider_from_url("git@gitea.com:o/r.git", None, None),
+            Some(ProviderKind::Gitea)
+        );
+        assert_eq!(
+            detect_provider_from_url("https://codeberg.org/o/r", None, None),
+            Some(ProviderKind::Gitea)
+        );
+        for configured in ["gitea.example.com", "https://gitea.example.com"] {
+            assert_eq!(
+                detect_provider_from_url("git@gitea.example.com:o/r.git", None, Some(configured)),
+                Some(ProviderKind::Gitea),
+                "configured {configured:?} should detect the self-hosted Gitea host"
+            );
+        }
+        // A look-alike host is not matched.
+        assert_eq!(
+            detect_provider_from_url("git@notgitea.com:o/r", None, Some("gitea.example.com")),
             None
         );
     }

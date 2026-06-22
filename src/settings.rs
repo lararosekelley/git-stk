@@ -19,6 +19,7 @@ pub const SUBMIT_DRAFT_KEY: &str = "stk.submitDraft";
 pub const NO_UPDATE_CHECK_KEY: &str = "stk.noUpdateCheck";
 pub const ABSORB_INCLUDE_UNSTAGED_KEY: &str = "stk.absorbIncludeUnstaged";
 pub const GITLAB_HOST_KEY: &str = "stk.gitlabHost";
+pub const GITEA_HOST_KEY: &str = "stk.giteaHost";
 pub const CHECK_TIMEOUT_KEY: &str = "stk.checkTimeout";
 pub const USE_PR_TEMPLATE_KEY: &str = "stk.usePrTemplate";
 pub const DEFAULT_REMOTE: &str = "origin";
@@ -43,6 +44,10 @@ pub const SETTINGS: &[(&str, &str)] = &[
     (NO_UPDATE_CHECK_KEY, "false"),
     (ABSORB_INCLUDE_UNSTAGED_KEY, "false"),
     (GITLAB_HOST_KEY, "none; gitlab.com is always detected"),
+    (
+        GITEA_HOST_KEY,
+        "none; gitea.com and codeberg.org are always detected",
+    ),
     (CHECK_TIMEOUT_KEY, "1800 (30m); 0 waits indefinitely"),
     (USE_PR_TEMPLATE_KEY, "true"),
 ];
@@ -57,6 +62,13 @@ pub fn remote() -> Result<String> {
 /// the git remote on its own, so this only widens stk's provider detection.
 pub fn gitlab_host() -> Result<Option<String>> {
     git::config_get(GITLAB_HOST_KEY)
+}
+
+/// A self-hosted Gitea/Forgejo host (e.g. `gitea.example.com`) to recognize as
+/// Gitea alongside gitea.com and codeberg.org (`stk.giteaHost`). `tea` reads
+/// the host from the git remote itself, so this only widens stk's detection.
+pub fn gitea_host() -> Result<Option<String>> {
+    git::config_get(GITEA_HOST_KEY)
 }
 
 /// The merge strategy for `git stk merge`: squash, rebase, or merge.

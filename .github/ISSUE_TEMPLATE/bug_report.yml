@@ -64,6 +64,7 @@ body:
       options:
         - GitHub (gh)
         - GitLab (glab)
+        - Gitea / Forgejo (tea)
         - demo / none (local only)
         - Not sure
     validations:

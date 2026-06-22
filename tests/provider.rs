@@ -126,6 +126,58 @@ fn provider_self_hosted_gitlab_unset_does_not_detect() {
 }
 
 #[test]
+fn provider_detects_gitea_and_codeberg_remotes() {
+    for (remote, host) in [
+        ("git@gitea.com:owner/repo.git", "gitea.com"),
+        ("https://codeberg.org/owner/repo.git", "codeberg.org"),
+    ] {
+        let repo = TestRepo::new();
+        repo.git(["remote", "add", "origin", remote]);
+        repo.stack()
+            .arg("provider")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("gitea (remote origin"))
+            .stdout(predicates::str::contains(host));
+    }
+}
+
+#[test]
+fn provider_detects_self_hosted_gitea_via_config() {
+    let repo = TestRepo::new();
+    repo.git([
+        "remote",
+        "add",
+        "origin",
+        "git@gitea.example.com:team/git-stk.git",
+    ]);
+    repo.git(["config", "stk.giteaHost", "gitea.example.com"]);
+
+    repo.stack()
+        .arg("provider")
+        .assert()
+        .success()
+        .stdout("gitea (remote origin (git@gitea.example.com:team/git-stk.git))\n");
+}
+
+#[test]
+fn provider_self_hosted_gitea_unset_does_not_detect() {
+    let repo = TestRepo::new();
+    repo.git([
+        "remote",
+        "add",
+        "origin",
+        "git@gitea.example.com:team/git-stk.git",
+    ]);
+
+    repo.stack()
+        .arg("provider")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("could not detect provider"));
+}
+
+#[test]
 fn provider_config_override_wins() {
     let repo = TestRepo::new();
     repo.git([
