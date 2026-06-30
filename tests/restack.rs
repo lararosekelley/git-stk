@@ -570,6 +570,80 @@ fn restack_freezing_a_branch_also_freezes_everything_below_it() {
 }
 
 #[test]
+fn continue_preserves_frozen_branches_read_back_from_the_state_file() {
+    // The freeze must survive `continue` reading it back from .git/stack-state
+    // (the `frozen=` round-trip). Build a branching stack where a queued branch
+    // (feature/b) freezes its base (feature/a), while a sibling line
+    // (feature/d) conflicts on rebase and forces a continue. After resolving,
+    // the post-continue push must still exclude the frozen branches - if the
+    // deserialization silently returned an empty set, continue would push them.
+    let repo = TestRepo::new();
+
+    repo.commit_file("conflict.txt", "base\n", "base");
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("conflict.txt", "parent\n", "a edits conflict file");
+
+    // feature/b: child of feature/a, reported as queued below.
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // feature/d: a sibling of feature/b under feature/a, editing the same file
+    // so its rebase onto a diverged feature/a conflicts.
+    repo.git(["switch", "feature/a"]);
+    repo.stack().args(["new", "feature/d"]).assert().success();
+    repo.commit_file("conflict.txt", "parent\nd\n", "d edits conflict file");
+
+    // Diverge feature/a so the rebase of feature/d onto it conflicts.
+    repo.git(["switch", "feature/a"]);
+    repo.git(["reset", "--hard", "HEAD~1"]);
+    repo.commit_file("conflict.txt", "updated parent\n", "a edits differently");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b", "feature/d"]);
+    let frozen_a = repo.remote_sha(&bare, "feature/a");
+    let frozen_b = repo.remote_sha(&bare, "feature/b");
+
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"higharc/product"}"#)
+        .on(
+            "head=feature/b",
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"#,
+        )
+        .on(
+            "graphql",
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":null}]}}}}"#,
+        )
+        .install(&repo);
+
+    // Initial restack: feature/a and feature/b freeze; feature/d conflicts and
+    // the state is saved with frozen=feature/a,feature/b.
+    repo.git(["switch", "feature/d"]);
+    repo.stack_faked(&fake)
+        .args(["restack", "--push"])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("frozen feature/a"))
+        .stdout(predicates::str::contains("frozen feature/b"));
+
+    // Resolve and continue - which reads the frozen set back from the file.
+    repo.write("conflict.txt", "updated parent\nd\n");
+    repo.git(["add", "conflict.txt"]);
+    repo.stack_faked(&fake)
+        .arg("continue")
+        .assert()
+        .success()
+        // Only the non-frozen branch lands; the frozen ones are still excluded.
+        .stdout(predicates::str::contains("pushed feature/d to origin"))
+        .stdout(predicates::str::contains("feature/a").not())
+        .stdout(predicates::str::contains("feature/b").not());
+
+    assert!(!repo.path().join(".git/stack-state").exists());
+    // The frozen branches' remotes were never force-updated by the continue.
+    assert_eq!(repo.remote_sha(&bare, "feature/a"), frozen_a);
+    assert_eq!(repo.remote_sha(&bare, "feature/b"), frozen_b);
+}
+
+#[test]
 fn restack_prints_push_hint_when_not_pushing() {
     let repo = TestRepo::new();
 

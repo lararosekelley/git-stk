@@ -109,38 +109,38 @@ pub fn pull_ff_only() -> Result<()> {
     status(&["pull", "--ff-only"]).context("failed to fast-forward from the remote")
 }
 
-pub fn push_force_with_lease(remote: &str, branches: &[String]) -> Result<()> {
+/// Force-push `branches` (with lease), returning the branches that actually
+/// landed. Normally that is all of them; the exception is the merge-queue
+/// backstop below, which drops a held-back branch from the returned set so the
+/// caller never reports a branch as both held and pushed.
+pub fn push_force_with_lease(remote: &str, branches: &[String]) -> Result<Vec<String>> {
     let mut args = vec!["push", "--force-with-lease", remote];
     args.extend(branches.iter().map(String::as_str));
 
-    push_tolerating_merge_queue(&args, remote)
-}
-
-/// Run a multi-ref push, downgrading a merge-queue rejection to a warning. A
-/// GitHub branch sitting in a merge queue is locked, so its ref is rejected
-/// with GH006 while its siblings push fine; git then exits non-zero even though
-/// the rest landed. `restack`/`sync` already freeze branches they know are
-/// queued, so this is the backstop for one enqueued mid-run: the queued ref is
-/// reported as held, the successful refs stand, and the push is not failed.
-/// Any rejection that is not purely the merge queue (a stale lease, a
-/// non-fast-forward) still surfaces as an error.
-fn push_tolerating_merge_queue(args: &[&str], remote: &str) -> Result<()> {
     // Verbose mode streams straight through, so there is no captured stderr to
     // classify; fall back to the plain path. (A queue rejection there still
     // shows git's own message, just without the friendlier downgrade.)
     if verbose() {
-        return status_passthrough(args)
-            .with_context(|| format!("failed to push branches to {remote}"));
+        status_passthrough(&args)
+            .with_context(|| format!("failed to push branches to {remote}"))?;
+        return Ok(branches.to_vec());
     }
 
     let output = Command::new("git")
-        .args(args)
+        .args(&args)
         .output()
         .context("failed to run git")?;
     if output.status.success() {
-        return Ok(());
+        return Ok(branches.to_vec());
     }
 
+    // A GitHub branch sitting in a merge queue is locked, so its ref is rejected
+    // with GH006 while its siblings push fine; git then exits non-zero even
+    // though the rest landed. `restack`/`sync` already freeze branches they know
+    // are queued, so this is the backstop for one enqueued mid-run: report the
+    // held ref, drop it from the landed set, and let the successful refs stand.
+    // Any rejection that is not purely the merge queue (a stale lease, a
+    // non-fast-forward) still surfaces as an error.
     let stderr = String::from_utf8_lossy(&output.stderr);
     if let Some(queued) = merge_queue_rejection(&stderr) {
         anstream::eprintln!(
@@ -151,7 +151,7 @@ fn push_tolerating_merge_queue(args: &[&str], remote: &str) -> Result<()> {
                 if queued.len() == 1 { "is" } else { "are" },
             ))
         );
-        return Ok(());
+        return Ok(landed_branches(branches, &queued));
     }
 
     let _ = std::io::stdout().write_all(&output.stdout);
@@ -160,6 +160,16 @@ fn push_tolerating_merge_queue(args: &[&str], remote: &str) -> Result<()> {
         "failed to push branches to {remote}: git exited with status {}",
         output.status
     )
+}
+
+/// The branches that landed: everything attempted except those held back by
+/// the merge queue, preserving the attempted order.
+fn landed_branches(attempted: &[String], held: &[String]) -> Vec<String> {
+    attempted
+        .iter()
+        .filter(|branch| !held.iter().any(|name| name == *branch))
+        .cloned()
+        .collect()
 }
 
 /// The rejected refs when a push failed *only* because they are in a merge
@@ -751,6 +761,25 @@ error: failed to push some refs";
     fn no_queue_mention_is_not_a_queue_rejection() {
         let stderr = " ! [remote rejected] feat/x -> feat/x (permission denied)";
         assert_eq!(merge_queue_rejection(stderr), None);
+    }
+
+    #[test]
+    fn landed_branches_drops_only_the_held_ones() {
+        let attempted = [
+            "feat/a".to_owned(),
+            "feat/b".to_owned(),
+            "feat/c".to_owned(),
+        ];
+        // A branch held back by the queue is dropped; order is preserved so the
+        // "pushed ..." line never names a branch warned as held.
+        assert_eq!(
+            landed_branches(&attempted, &["feat/b".to_owned()]),
+            vec!["feat/a".to_owned(), "feat/c".to_owned()]
+        );
+        // Nothing held: everything landed.
+        assert_eq!(landed_branches(&attempted, &[]), attempted.to_vec());
+        // Every branch held: nothing landed.
+        assert!(landed_branches(&attempted, &attempted).is_empty());
     }
 
     #[test]

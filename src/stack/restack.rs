@@ -411,10 +411,20 @@ fn finish_restack(branches: &[String], frozen: &BTreeSet<String>, push: bool) ->
     }
 
     if push {
-        git::push_force_with_lease(&remote, &pushable)?;
-        anstream::println!("pushed {} to {remote}", style::branch(&pushable.join(" ")));
-        // Keep the shared parent map in step with the pushed branches.
-        super::publish_metadata(&remote);
+        // Only the branches that actually landed: a branch enqueued between the
+        // freeze check and the push is held back, warned about, and dropped here
+        // so the "pushed ..." line never contradicts that warning.
+        let pushed = git::push_force_with_lease(&remote, &pushable)?;
+        if pushed.is_empty() {
+            anstream::println!(
+                "{}",
+                style::dim("nothing pushed: every branch is in a merge queue")
+            );
+        } else {
+            anstream::println!("pushed {} to {remote}", style::branch(&pushed.join(" ")));
+            // Keep the shared parent map in step with the pushed branches.
+            super::publish_metadata(&remote);
+        }
     } else {
         anstream::println!("remote branches may be stale; push them with:");
         anstream::println!(
