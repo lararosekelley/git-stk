@@ -233,35 +233,52 @@ fn merge_queue_rejection(stderr: &str) -> Option<Vec<String>> {
 /// the remote: a `--force-with-lease` lease mismatch (`stale info`), or a plain
 /// `non-fast-forward`/`fetch first`. This is the remote having moved on - in a
 /// stack, almost always a lower branch that merged - which `git stk sync`
-/// reconciles. None when no such marker is present, so unrelated failures
-/// (permissions, network) are not misreported as "run sync".
+/// reconciles.
+///
+/// Returns Some only when *every* rejected ref is stale: the friendly "run
+/// sync" message replaces git's raw output, so a non-stale rejection mixed in
+/// (a permission denial, a declined hook) - which sync would not fix - must
+/// fall through to git's own error instead of being hidden behind sync advice.
+/// None when nothing was rejected, or any rejection was for another reason.
 fn stale_rejection(stderr: &str) -> Option<Vec<String>> {
-    let lower = stderr.to_lowercase();
-    let moved = ["stale info", "non-fast-forward", "fetch first"]
-        .iter()
-        .any(|marker| lower.contains(marker));
-    if !moved {
+    let rejected: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("[remote rejected]") || line.contains("[rejected]"))
+        .collect();
+    if rejected.is_empty() || !rejected.iter().all(|line| line_is_stale(line)) {
         return None;
     }
-    let rejected = rejected_refs(stderr);
-    if rejected.is_empty() {
-        None
-    } else {
-        Some(rejected)
-    }
+    let names: Vec<String> = rejected
+        .iter()
+        .filter_map(|line| rejected_ref_name(line))
+        .collect();
+    if names.is_empty() { None } else { Some(names) }
 }
 
-/// The remote-side ref names from a push's `! [remote rejected]` lines, shaped
-/// `! [remote rejected] <local> -> <remote> (reason)`.
+/// Whether a rejected-ref line was refused because the local side is behind the
+/// remote (a `--force-with-lease` lease mismatch or a non-fast-forward), rather
+/// than a permission/hook refusal. The reason is in the line's trailing `(…)`.
+fn line_is_stale(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    ["stale info", "non-fast-forward", "fetch first"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+/// The remote-side ref name from a single `! [remote rejected] <local> ->
+/// <remote> (reason)` line.
+fn rejected_ref_name(line: &str) -> Option<String> {
+    let after = line.split("-> ").nth(1)?;
+    Some(after.split_whitespace().next()?.to_owned())
+}
+
+/// The remote-side ref names from a push's `! [remote rejected]`/`! [rejected]`
+/// lines, regardless of reason.
 fn rejected_refs(stderr: &str) -> Vec<String> {
     stderr
         .lines()
         .filter(|line| line.contains("[remote rejected]") || line.contains("[rejected]"))
-        .filter_map(|line| {
-            let after = line.split("-> ").nth(1)?;
-            let name = after.split_whitespace().next()?;
-            Some(name.to_owned())
-        })
+        .filter_map(rejected_ref_name)
         .collect()
 }
 
@@ -864,6 +881,18 @@ error: failed to push some refs to 'github.com:higharc/product'";
         let stderr = " ! [remote rejected] feat/x -> feat/x (permission denied)";
         assert_eq!(stale_rejection(stderr), None);
         assert_eq!(stale_rejection("fatal: could not read from remote"), None);
+    }
+
+    #[test]
+    fn a_mixed_stale_and_non_stale_rejection_is_not_classified_as_stale() {
+        // One ref is stale, another was refused for a reason `git stk sync`
+        // will not fix; the clean message replaces git's output, so it must not
+        // claim sync resolves the permission failure - fall through to raw git.
+        let stderr = "\
+ ! [rejected]                feat/tf-deploy -> feat/tf-deploy (stale info)
+ ! [remote rejected]         feat/locked -> feat/locked (permission denied)
+error: failed to push some refs";
+        assert_eq!(stale_rejection(stderr), None);
     }
 
     #[test]
