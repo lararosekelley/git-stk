@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -208,6 +209,95 @@ impl ReviewProvider for GitHubProvider {
     fn open_review(&self, review: &ReviewRequest) -> Result<String> {
         command_output("gh", &["pr", "view", review.id_value(), "--web"])
     }
+
+    fn enqueued_branches(&self, branches: &[String]) -> Result<BTreeSet<String>> {
+        Ok(github_enqueued_branches(branches))
+    }
+}
+
+/// `mergeQueueEntry` exposes merge-queue membership, but only over GraphQL -
+/// there is no `gh pr view --json` field for it. Query each branch's open PR by
+/// head ref; a non-null entry means it is queued and the branch is locked.
+const MERGE_QUEUE_QUERY: &str = "query($owner:String!,$repo:String!,$head:String!){\
+repository(owner:$owner,name:$repo){\
+pullRequests(headRefName:$head,states:OPEN,first:1){nodes{mergeQueueEntry{state}}}}}";
+
+/// GitHub merge-queue membership for `branches`. Best-effort: any failure (not
+/// a GitHub repo, an API hiccup, a query without queue access) warns once and
+/// leaves the remaining branches un-frozen rather than blocking the restack -
+/// the reactive push-rejection net (`git::push_force_with_lease`) is the
+/// backstop, since GitHub *rejects* a push to a queued branch.
+fn github_enqueued_branches(branches: &[String]) -> BTreeSet<String> {
+    let mut queued = BTreeSet::new();
+    if branches.is_empty() {
+        return queued;
+    }
+    let Some((owner, repo)) = repo_owner_name() else {
+        return queued;
+    };
+    for branch in branches {
+        match branch_in_merge_queue(&owner, &repo, branch) {
+            Ok(true) => {
+                queued.insert(branch.clone());
+            }
+            Ok(false) => {}
+            // A failed check is global (auth, network, no queue access) far more
+            // often than per-branch, so warn once and stop probing rather than
+            // repeating the same warning for every branch.
+            Err(error) => {
+                anstream::eprintln!(
+                    "{}",
+                    crate::style::warn(&format!(
+                        "could not check merge-queue status: {error}; treating remaining branches as not queued"
+                    ))
+                );
+                break;
+            }
+        }
+    }
+    queued
+}
+
+/// The current repository's `owner` and `name`, or None when gh cannot resolve
+/// them (not a GitHub repo, or gh unavailable).
+fn repo_owner_name() -> Option<(String, String)> {
+    let output = command_output("gh", &["repo", "view", "--json", "nameWithOwner"]).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&output).ok()?;
+    let full = value
+        .get("nameWithOwner")
+        .and_then(serde_json::Value::as_str)?;
+    let (owner, repo) = full.split_once('/')?;
+    Some((owner.to_owned(), repo.to_owned()))
+}
+
+fn branch_in_merge_queue(owner: &str, repo: &str, branch: &str) -> Result<bool> {
+    let owner_arg = format!("owner={owner}");
+    let repo_arg = format!("repo={repo}");
+    let head_arg = format!("head={branch}");
+    let query_arg = format!("query={MERGE_QUEUE_QUERY}");
+    let output = command_output(
+        "gh",
+        &[
+            "api", "graphql", "-f", &owner_arg, "-f", &repo_arg, "-f", &head_arg, "-f", &query_arg,
+        ],
+    )?;
+    Ok(parse_merge_queue_entry(&output))
+}
+
+/// True when the GraphQL response's single PR carries a non-null
+/// `mergeQueueEntry` - i.e. it sits in the merge queue. A null entry (not
+/// queued), an empty `nodes` list (no open PR for that head), or unparseable
+/// output all read as not queued.
+fn parse_merge_queue_entry(json: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return false;
+    };
+    value
+        .pointer("/data/repository/pullRequests/nodes")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|nodes| nodes.first())
+        .and_then(|node| node.get("mergeQueueEntry"))
+        .is_some_and(|entry| !entry.is_null())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -505,5 +595,28 @@ mod tests {
     fn classify_github_merge_unparseable_is_not_blocked() {
         assert_eq!(classify_github_merge("{}"), MergeBlocker::None);
         assert_eq!(classify_github_merge("not json"), MergeBlocker::None);
+    }
+
+    #[test]
+    fn merge_queue_entry_present_means_queued() {
+        // gh api graphql nests the data under data.repository.pullRequests.
+        assert!(parse_merge_queue_entry(
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"#
+        ));
+    }
+
+    #[test]
+    fn a_null_or_absent_merge_queue_entry_is_not_queued() {
+        // Open PR, just not in the queue.
+        assert!(!parse_merge_queue_entry(
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":null}]}}}}"#
+        ));
+        // No open PR for that head at all.
+        assert!(!parse_merge_queue_entry(
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[]}}}}"#
+        ));
+        // Unparseable / unexpected shapes never read as queued.
+        assert!(!parse_merge_queue_entry("{}"));
+        assert!(!parse_merge_queue_entry("not json"));
     }
 }

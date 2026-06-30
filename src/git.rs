@@ -109,11 +109,108 @@ pub fn pull_ff_only() -> Result<()> {
     status(&["pull", "--ff-only"]).context("failed to fast-forward from the remote")
 }
 
-pub fn push_force_with_lease(remote: &str, branches: &[String]) -> Result<()> {
+/// Force-push `branches` (with lease), returning the branches that actually
+/// landed. Normally that is all of them; the exception is the merge-queue
+/// backstop below, which drops a held-back branch from the returned set so the
+/// caller never reports a branch as both held and pushed.
+pub fn push_force_with_lease(remote: &str, branches: &[String]) -> Result<Vec<String>> {
     let mut args = vec!["push", "--force-with-lease", remote];
     args.extend(branches.iter().map(String::as_str));
 
-    status(&args).with_context(|| format!("failed to push branches to {remote}"))
+    // Verbose mode streams straight through, so there is no captured stderr to
+    // classify; fall back to the plain path. (A queue rejection there still
+    // shows git's own message, just without the friendlier downgrade.)
+    if verbose() {
+        status_passthrough(&args)
+            .with_context(|| format!("failed to push branches to {remote}"))?;
+        return Ok(branches.to_vec());
+    }
+
+    let output = Command::new("git")
+        .args(&args)
+        .output()
+        .context("failed to run git")?;
+    if output.status.success() {
+        return Ok(branches.to_vec());
+    }
+
+    // A GitHub branch sitting in a merge queue is locked, so its ref is rejected
+    // with GH006 while its siblings push fine; git then exits non-zero even
+    // though the rest landed. `restack`/`sync` already freeze branches they know
+    // are queued, so this is the backstop for one enqueued mid-run: report the
+    // held ref, drop it from the landed set, and let the successful refs stand.
+    // Any rejection that is not purely the merge queue (a stale lease, a
+    // non-fast-forward) still surfaces as an error.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if let Some(queued) = merge_queue_rejection(&stderr) {
+        anstream::eprintln!(
+            "{}",
+            crate::style::warn(&format!(
+                "{} {} in a merge queue and was not updated (dequeue its review to push it)",
+                queued.join(", "),
+                if queued.len() == 1 { "is" } else { "are" },
+            ))
+        );
+        return Ok(landed_branches(branches, &queued));
+    }
+
+    let _ = std::io::stdout().write_all(&output.stdout);
+    let _ = std::io::stderr().write_all(&output.stderr);
+    bail!(
+        "failed to push branches to {remote}: git exited with status {}",
+        output.status
+    )
+}
+
+/// The branches that landed: everything attempted except those held back by
+/// the merge queue, preserving the attempted order.
+fn landed_branches(attempted: &[String], held: &[String]) -> Vec<String> {
+    attempted
+        .iter()
+        .filter(|branch| !held.iter().any(|name| name == *branch))
+        .cloned()
+        .collect()
+}
+
+/// The rejected refs when a push failed *only* because they are in a merge
+/// queue, or None when any other failure is mixed in. A genuine lease/
+/// fast-forward rejection (`stale info`, `non-fast-forward`, `fetch first`)
+/// returns None so it still errors; a queue rejection with no such marker
+/// returns the branch names so the caller can report them and carry on.
+fn merge_queue_rejection(stderr: &str) -> Option<Vec<String>> {
+    let lower = stderr.to_lowercase();
+    let mentions_queue = lower.contains("merge queue") || lower.contains("queued for merging");
+    if !mentions_queue {
+        return None;
+    }
+    // A lease or fast-forward failure is a real problem, not a queue lock - do
+    // not swallow a push that failed for those reasons too.
+    if ["stale info", "non-fast-forward", "fetch first"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return None;
+    }
+    let rejected = rejected_refs(stderr);
+    if rejected.is_empty() {
+        None
+    } else {
+        Some(rejected)
+    }
+}
+
+/// The remote-side ref names from a push's `! [remote rejected]` lines, shaped
+/// `! [remote rejected] <local> -> <remote> (reason)`.
+fn rejected_refs(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter(|line| line.contains("[remote rejected]") || line.contains("[rejected]"))
+        .filter_map(|line| {
+            let after = line.split("-> ").nth(1)?;
+            let name = after.split_whitespace().next()?;
+            Some(name.to_owned())
+        })
+        .collect()
 }
 
 /// Push branches and set upstream tracking; used before submitting so new
@@ -629,6 +726,61 @@ fn command_error(command: &str, stderr: &[u8]) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_merge_queue_rejection_is_downgraded_to_the_queued_refs() {
+        // The exact shape git prints when one ref of a multi-ref push is locked
+        // by a GitHub merge queue while its sibling pushes fine.
+        let stderr = "\
+remote: error: GH006: Protected branch update failed for refs/heads/feat/tf-deploy.
+remote: - A pull request for this branch has been added to a merge queue. Branches that
+remote:   are queued for merging cannot be updated. To modify this branch, dequeue the
+remote:   associated pull request.
+To github.com:higharc/product
+ + 016bb37...3a94024 feat/spa-env -> feat/spa-env (forced update)
+ ! [remote rejected]         feat/tf-deploy -> feat/tf-deploy (protected branch hook declined)
+error: failed to push some refs to 'github.com:higharc/product'";
+        assert_eq!(
+            merge_queue_rejection(stderr),
+            Some(vec!["feat/tf-deploy".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_stale_lease_rejection_is_not_swallowed_even_with_a_queue_mention() {
+        // A force-with-lease failure is a real problem; the queue wording in the
+        // dependabot banner must not mask it.
+        let stderr = "\
+remote: GitHub found 270 vulnerabilities ... merge queue notes ...
+ ! [rejected]        feat/tf-deploy -> feat/tf-deploy (stale info)
+error: failed to push some refs";
+        assert_eq!(merge_queue_rejection(stderr), None);
+    }
+
+    #[test]
+    fn no_queue_mention_is_not_a_queue_rejection() {
+        let stderr = " ! [remote rejected] feat/x -> feat/x (permission denied)";
+        assert_eq!(merge_queue_rejection(stderr), None);
+    }
+
+    #[test]
+    fn landed_branches_drops_only_the_held_ones() {
+        let attempted = [
+            "feat/a".to_owned(),
+            "feat/b".to_owned(),
+            "feat/c".to_owned(),
+        ];
+        // A branch held back by the queue is dropped; order is preserved so the
+        // "pushed ..." line never names a branch warned as held.
+        assert_eq!(
+            landed_branches(&attempted, &["feat/b".to_owned()]),
+            vec!["feat/a".to_owned(), "feat/c".to_owned()]
+        );
+        // Nothing held: everything landed.
+        assert_eq!(landed_branches(&attempted, &[]), attempted.to_vec());
+        // Every branch held: nothing landed.
+        assert!(landed_branches(&attempted, &attempted).is_empty());
+    }
 
     #[test]
     fn help_mentions_update_refs_matches_pre_2_43_spelling() {

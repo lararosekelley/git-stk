@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 use std::{fmt, process::Command};
 
@@ -196,6 +197,17 @@ pub trait ReviewProvider {
 
     /// Open the review in the user's browser.
     fn open_review(&self, review: &ReviewRequest) -> Result<String>;
+
+    /// Of `branches`, those whose review is locked by a merge queue (GitHub)
+    /// or merge train (GitLab): they must be neither rebased nor force-pushed.
+    /// Rebasing would diverge from the frozen remote tip; a push is rejected
+    /// outright (GitHub locks the branch) or silently drops the review from the
+    /// queue (GitLab does not lock it). The default is empty - for providers
+    /// without a queue, and as the safe degradation when the lookup itself
+    /// fails (the reactive push-rejection net in `git` is the backstop).
+    fn enqueued_branches(&self, _branches: &[String]) -> Result<BTreeSet<String>> {
+        Ok(BTreeSet::new())
+    }
 }
 
 /// Detect the provider and build its review client together - the pair nearly

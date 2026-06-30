@@ -496,6 +496,14 @@ including after a conflicted restack finishes via `git stk continue`. Without it
 exact push command instead. `--no-push` overrides the config for one run; `stk.remote` picks the remote
 (default `origin`).
 
+A branch whose review is sitting in a **merge queue** (GitHub) or **merge train** (GitLab) is _frozen_:
+`restack` and `sync` skip both its rebase and its push, printing `frozen <branch>` instead. The queue is
+merging exactly the commits already on the remote, so force-pushing would be rejected outright (GitHub
+locks the branch) or silently drop the review from the queue (GitLab). Branches above a frozen one stay
+put too, since their parent has not moved. Once the queued review lands, the next `sync` cleans it up and
+restacks the rest as usual. If a branch is enqueued mid-run, the rejected push is reported as held rather
+than failing the whole command.
+
 ## Generated Assets
 
 Shell completions and a `man` page can be generated with:
