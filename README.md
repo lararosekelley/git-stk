@@ -231,7 +231,7 @@ git stk up [branch]   # towards the top of the stack (children; picker at forks)
 git stk down          # towards the trunk (parent)
 git stk top           # jump to the leaf of the stack
 git stk bottom        # jump to the branch just above the trunk
-git stk restack [--update-refs | --no-update-refs] [--push | --no-push] [--dry-run]
+git stk restack [--fetch | --no-fetch] [--update-refs | --no-update-refs] [--push | --no-push] [--dry-run]
 git stk run [--fail-fast] -- <command>   # run a command on each branch, bottom-up
 git stk absorb [--dry-run] [--include-unstaged]
 git stk continue
@@ -414,6 +414,9 @@ Everything is optional; defaults shown below:
     remote = origin
     ; Pass --update-refs to git rebase during restack. Default: false.
     updateRefs = true
+    ; Fetch the trunk from the remote before restacking, so branches rebase
+    ; onto its latest tip. Default: false.
+    fetchBeforeRestack = true
     ; Force-push (with lease) rebased branches after restack (also the restack
     ; step inside sync and merge). Default: false.
     pushOnRestack = true
@@ -476,6 +479,12 @@ to `gh`, GitLab support shells out to `glab`, and Gitea to `tea`. Authenticate t
 `restack` follows the `stk.updateRefs` config (default false). Use `--update-refs` or `--no-update-refs` to
 override that for one run. If a rebase conflicts, `git-stk` records state in `.git/stack-state`; resolve
 conflicts and run `git stk continue`, or run `git stk abort`.
+
+`restack` rebases onto the local trunk, so a branch can read as "up to date" while the trunk itself is
+behind its remote. When a base the stack sits on has moved on the remote, `restack` says so and points you
+at `--fetch`. Pass `--fetch` (or set `git config stk.fetchBeforeRestack true`) to fast-forward the trunk from
+the remote first, so branches rebase onto its latest tip; `--no-fetch` overrides the config for one run.
+(`sync` always fetches the trunk, so its restack step never needs this.)
 
 `git-stk` records each branch's fork point in `.gitconfig` as `branch.<name>.stkBase` and rebases with
 `--onto`, so only a branch's own commits are replayed. This makes restacking safe after a parent is

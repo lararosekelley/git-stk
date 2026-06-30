@@ -531,6 +531,75 @@ fn restack_push_respects_config_and_no_push_overrides_it() {
 }
 
 #[test]
+fn restack_fetch_updates_the_trunk_before_rebasing() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a"]);
+
+    // The trunk advances on the remote, then the local trunk rewinds behind it:
+    // the misleading setup where feature/a reads as up to date with main while
+    // origin/main has moved on.
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on the remote");
+    repo.git(["push", "origin", "main"]);
+    repo.git(["reset", "--hard", "HEAD~1"]);
+    repo.git(["switch", "feature/a"]);
+
+    let trunk_before = repo.git(["rev-parse", "main"]);
+
+    repo.stack()
+        .args(["restack", "--fetch"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("fetched main from origin"))
+        .stdout(predicates::str::contains("rebasing feature/a onto main"));
+
+    // The local trunk fast-forwarded to the remote tip, and feature/a now sits
+    // directly on top of it.
+    assert_ne!(repo.git(["rev-parse", "main"]), trunk_before);
+    assert_eq!(
+        repo.git(["rev-parse", "main"]),
+        repo.remote_sha(&bare, "main")
+    );
+    assert_eq!(
+        repo.git(["rev-parse", "feature/a~1"]),
+        repo.git(["rev-parse", "main"])
+    );
+}
+
+#[test]
+fn restack_warns_when_a_base_is_behind_its_remote() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let _bare = repo.add_bare_origin(&["main", "feature/a"]);
+
+    // Remote trunk advances; the local trunk rewinds behind it.
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on the remote");
+    repo.git(["push", "origin", "main"]);
+    repo.git(["reset", "--hard", "HEAD~1"]);
+    repo.git(["switch", "feature/a"]);
+
+    // Without --fetch the branch still reads as up to date with the stale local
+    // trunk, but the warning names origin/main as the real, moved-on base.
+    repo.stack()
+        .arg("restack")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("already up to date with main"))
+        .stderr(predicates::str::contains(
+            "main is 1 commit behind origin/main",
+        ))
+        .stderr(predicates::str::contains("git stk restack --fetch"));
+}
+
+#[test]
 fn continue_after_conflict_pushes_all_restacked_branches() {
     let repo = TestRepo::new();
 

@@ -96,3 +96,20 @@ impl PushMode {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FetchMode {
+    Config,
+    Enabled,
+    Disabled,
+}
+
+impl FetchMode {
+    pub fn from_flags(fetch: bool, no_fetch: bool) -> Self {
+        match (fetch, no_fetch) {
+            (true, false) => Self::Enabled,
+            (false, true) => Self::Disabled,
+            _ => Self::Config,
+        }
+    }
+}

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use clap::ArgAction;
 
-use crate::cli::{PushMode, UpdateRefsMode};
+use crate::cli::{FetchMode, PushMode, UpdateRefsMode};
 use crate::commands::Run;
 use crate::{git, settings, stack, style};
 
@@ -135,7 +135,12 @@ fn apply(current: &str, routes: Vec<Route>) -> Result<()> {
     // conflict here is resumable - `git stk continue`/`abort`, and `git stk
     // undo` reverts the whole absorb.
     if forked {
-        stack::restack(UpdateRefsMode::Enabled, PushMode::Disabled, false)
+        stack::restack(
+            FetchMode::Disabled,
+            UpdateRefsMode::Enabled,
+            PushMode::Disabled,
+            false,
+        )
     } else {
         report_push_hint(&path)
     }

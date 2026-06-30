@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use clap::ArgAction;
 
-use crate::cli::{PushMode, UpdateRefsMode};
+use crate::cli::{FetchMode, PushMode, UpdateRefsMode};
 use crate::commands::Run;
 use crate::commands::cleanup::{cleanup_branch_deletion, cleanup_merged_branch};
 use crate::providers::{ReviewState, detect_review_provider};
@@ -218,7 +218,13 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     if dry_run {
         anstream::println!("would restack the remaining stack");
     } else if !survivors.is_empty() {
-        stack::restack(UpdateRefsMode::Config, push_mode, false)?;
+        // sync already fetched the trunk in step 1, so the restack must not.
+        stack::restack(
+            FetchMode::Disabled,
+            UpdateRefsMode::Config,
+            push_mode,
+            false,
+        )?;
     }
 
     // 8. Where to look next.

@@ -96,6 +96,44 @@ fn submit_updates_gitlab_mr_target_when_parent_changed() {
 }
 
 #[test]
+fn submit_creates_github_pr_without_fill() {
+    // --fill turns a multi-commit branch into a bulleted dump of every commit
+    // subject, which then renders awkwardly under git-stk's template and stack
+    // overview. git-stk pushes the branch itself and overwrites the body, so it
+    // creates the PR with an explicit title and body from the tip commit.
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "the subject line");
+
+    let fake = FakeProvider::new()
+        .record(
+            "pr create",
+            "create-args.txt",
+            "https://github.com/owner/repo/pull/7",
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("created feature/a -> main"));
+
+    let args = fs::read_to_string(repo.path().join("create-args.txt")).expect("create args");
+    assert!(
+        !args.contains("--fill"),
+        "gh create must not use --fill: {args}"
+    );
+    assert!(
+        args.contains("--title the subject line"),
+        "missing title: {args}"
+    );
+    assert!(args.contains("--body"), "missing body: {args}");
+}
+
+#[test]
 fn submit_creates_gitlab_mr_without_fill() {
     // glab's --fill re-pushes the current checkout onto the source ref (gh
     // never pushes on create), which clobbers a sibling branch when submitting
@@ -175,7 +213,7 @@ fn submit_seeds_the_github_pr_template_above_the_managed_body() {
         .stdout(predicates::str::contains("created feature/b -> main"))
         .stdout(predicates::str::contains("seeded the PR template into #12"));
 
-    // The fresh body is the template, not the empty --fill body it replaced.
+    // The fresh body is the template, replacing whatever create set.
     let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("seeded body");
     assert_eq!(
         body.trim_end(),
@@ -368,10 +406,10 @@ fn submit_stack_creates_reviews_parent_first() {
 
     let log = fs::read_to_string(log_path).expect("read submit log");
     let create_a = log
-        .find("pr create --head feature/a --base main --fill")
+        .find("pr create --head feature/a --base main --title")
         .expect("feature/a create call");
     let create_b = log
-        .find("pr create --head feature/b --base feature/a --fill")
+        .find("pr create --head feature/b --base feature/a --title")
         .expect("feature/b create call");
     assert!(create_a < create_b, "parent should submit before child");
 }
@@ -930,14 +968,15 @@ fn submit_draft_flag_and_config_control_creation() {
         .assert()
         .success();
     let log = fs::read_to_string(&log_path).expect("submit log");
-    assert!(log.contains("pr create --head feature/b --base main --fill --draft"));
+    assert!(log.contains("pr create --head feature/b --base main --title"));
+    assert!(log.contains("--draft"));
 
     // The config makes drafts the default; --no-draft overrides it.
     fs::remove_file(&log_path).expect("reset log");
     repo.git(["config", "stk.submitDraft", "true"]);
     repo.stack_faked(&fake).arg("submit").assert().success();
     let log = fs::read_to_string(&log_path).expect("submit log");
-    assert!(log.contains("--fill --draft"));
+    assert!(log.contains("--draft"));
 
     fs::remove_file(&log_path).expect("reset log");
     repo.stack_faked(&fake)
@@ -945,7 +984,8 @@ fn submit_draft_flag_and_config_control_creation() {
         .assert()
         .success();
     let log = fs::read_to_string(&log_path).expect("submit log");
-    assert!(log.contains("pr create --head feature/b --base main --fill\n"));
+    assert!(log.contains("pr create --head feature/b --base main --title"));
+    assert!(!log.contains("--draft"));
 }
 
 #[test]
