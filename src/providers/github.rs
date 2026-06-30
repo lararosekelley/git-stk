@@ -2,6 +2,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
+use crate::git;
+
 use super::json::{
     all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_state,
     required_string,
@@ -32,7 +34,30 @@ impl ReviewProvider for GitHubProvider {
     }
 
     fn create_review(&self, branch: &str, base: &str, draft: bool) -> Result<String> {
-        let mut args = vec!["pr", "create", "--head", branch, "--base", base, "--fill"];
+        // Like the glab and tea paths: the branch is already pushed, so set the
+        // title and body explicitly from its tip commit. --fill would turn a
+        // multi-commit branch into a bulleted dump of every commit subject,
+        // which then renders awkwardly under git-stk's template and stack
+        // overview; git-stk overwrites the body afterward regardless.
+        let title = git::commit_subject(branch)?;
+        let body = git::commit_body(branch)?;
+        let description = if body.trim().is_empty() {
+            title.as_str()
+        } else {
+            body.as_str()
+        };
+        let mut args = vec![
+            "pr",
+            "create",
+            "--head",
+            branch,
+            "--base",
+            base,
+            "--title",
+            title.as_str(),
+            "--body",
+            description,
+        ];
         if draft {
             args.push("--draft");
         }

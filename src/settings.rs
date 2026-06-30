@@ -4,12 +4,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::cli::PushMode;
+use crate::cli::{FetchMode, PushMode};
 use crate::git;
 
 pub const PROVIDER_KEY: &str = "stk.provider";
 pub const REMOTE_KEY: &str = "stk.remote";
 pub const UPDATE_REFS_KEY: &str = "stk.updateRefs";
+pub const FETCH_BEFORE_RESTACK_KEY: &str = "stk.fetchBeforeRestack";
 pub const PUSH_ON_RESTACK_KEY: &str = "stk.pushOnRestack";
 pub const PUSH_ON_SUBMIT_KEY: &str = "stk.pushOnSubmit";
 pub const SUBMIT_STACK_KEY: &str = "stk.submitStack";
@@ -35,6 +36,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     (PROVIDER_KEY, "auto-detect from the remote URL"),
     (REMOTE_KEY, DEFAULT_REMOTE),
     (UPDATE_REFS_KEY, "false"),
+    (FETCH_BEFORE_RESTACK_KEY, "false"),
     (PUSH_ON_RESTACK_KEY, "false"),
     (PUSH_ON_SUBMIT_KEY, "false"),
     (SUBMIT_STACK_KEY, "false"),
@@ -121,6 +123,15 @@ pub fn push_enabled(mode: PushMode, key: &str) -> Result<bool> {
         PushMode::Config => Ok(git::config_get_bool(key)?.unwrap_or(false)),
         PushMode::Enabled => Ok(true),
         PushMode::Disabled => Ok(false),
+    }
+}
+
+/// Resolve a `--fetch`/`--no-fetch` flag pair against `stk.fetchBeforeRestack`.
+pub fn fetch_enabled(mode: FetchMode) -> Result<bool> {
+    match mode {
+        FetchMode::Config => Ok(git::config_get_bool(FETCH_BEFORE_RESTACK_KEY)?.unwrap_or(false)),
+        FetchMode::Enabled => Ok(true),
+        FetchMode::Disabled => Ok(false),
     }
 }
 

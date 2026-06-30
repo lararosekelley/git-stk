@@ -10,14 +10,19 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::{base_of, children_map, collect_descendants, line_base, parent_map, record_base};
-use crate::cli::{PushMode, UpdateRefsMode};
+use crate::cli::{FetchMode, PushMode, UpdateRefsMode};
 use crate::git;
 use crate::settings;
 use crate::style;
 
 const STATE_FILE: &str = "stack-state";
 
-pub fn restack(update_refs_mode: UpdateRefsMode, push_mode: PushMode, dry_run: bool) -> Result<()> {
+pub fn restack(
+    fetch_mode: FetchMode,
+    update_refs_mode: UpdateRefsMode,
+    push_mode: PushMode,
+    dry_run: bool,
+) -> Result<()> {
     let current = git::current_branch()?;
     let parents = parent_map()?;
     // Restack the stack containing the current branch, from anywhere in it:
@@ -32,6 +37,14 @@ pub fn restack(update_refs_mode: UpdateRefsMode, push_mode: PushMode, dry_run: b
         anstream::println!("{}", style::dim("nothing to restack"));
         return Ok(());
     }
+
+    // Update the trunk from the remote first so branches rebase onto its
+    // latest tip; otherwise warn when a base the stack sits on has moved on the
+    // remote, so "up to date" is never read off a stale local trunk.
+    if settings::fetch_enabled(fetch_mode)? {
+        fetch_trunk(dry_run)?;
+    }
+    warn_bases_behind_remote(&branches, &parents)?;
 
     let update_refs = resolve_update_refs(update_refs_mode)?;
     let push = settings::push_enabled(push_mode, settings::PUSH_ON_RESTACK_KEY)?;
@@ -102,6 +115,72 @@ fn up_to_date(branch: &str, parent: &str) -> Result<bool> {
     let parent_tip = git::rev_parse(parent)?;
     Ok(valid_base(branch)?.as_deref() == Some(parent_tip.as_str())
         && git::is_ancestor(parent, branch).unwrap_or(false))
+}
+
+/// Fast-forward the trunk from the remote before restacking. Fetching the
+/// branch in place (rather than the whole remote) keeps it cheap; on the trunk
+/// itself a plain fast-forward pull does the same. A missing remote is a no-op,
+/// not an error - there is simply nothing to pull.
+fn fetch_trunk(dry_run: bool) -> Result<()> {
+    let Some(trunk) = super::trunk_branch(&git::local_branches()?) else {
+        return Ok(());
+    };
+    let remote = settings::remote()?;
+    if git::remote_url(&remote)?.is_none() {
+        anstream::println!(
+            "{}",
+            style::dim(&format!("no remote {remote}; skipped fetch"))
+        );
+        return Ok(());
+    }
+    if dry_run {
+        anstream::println!("would fetch {} from {remote}", style::branch(&trunk));
+        return Ok(());
+    }
+    if git::current_branch()? == trunk {
+        git::pull_ff_only()?;
+    } else {
+        git::fetch_branch(&remote, &trunk)?;
+    }
+    anstream::println!("fetched {} from {remote}", style::branch(&trunk));
+    Ok(())
+}
+
+/// Warn when a base the stack rebases onto - the trunk, or any parent outside
+/// the restack set - is behind its remote-tracking branch. Without this, a
+/// branch sitting exactly on a stale local base reads as "up to date" while the
+/// base on the remote has moved on. Best-effort: no remote, or no
+/// remote-tracking ref to compare against, means nothing to warn about.
+fn warn_bases_behind_remote(branches: &[String], parents: &BTreeMap<String, String>) -> Result<()> {
+    let remote = settings::remote()?;
+    if git::remote_url(&remote)?.is_none() {
+        return Ok(());
+    }
+
+    let in_stack: BTreeSet<&String> = branches.iter().collect();
+    let external: BTreeSet<&String> = branches
+        .iter()
+        .filter_map(|branch| parents.get(branch))
+        .filter(|parent| !in_stack.contains(parent))
+        .collect();
+
+    for base in external {
+        let tracking = format!("{remote}/{base}");
+        if git::rev_parse(&tracking).is_err() {
+            continue;
+        }
+        let behind = git::commits_behind(base, &tracking).unwrap_or(0);
+        if behind > 0 {
+            anstream::eprintln!(
+                "{}",
+                style::warn(&format!(
+                    "{base} is {behind} commit{} behind {tracking}; run `git stk restack --fetch` or `git stk sync` to update it first",
+                    if behind == 1 { "" } else { "s" }
+                ))
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn continue_restack() -> Result<()> {
