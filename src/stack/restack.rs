@@ -49,7 +49,7 @@ pub fn restack(
 
     let update_refs = resolve_update_refs(update_refs_mode)?;
     let push = settings::push_enabled(push_mode, settings::PUSH_ON_RESTACK_KEY)?;
-    let frozen = frozen_branches(&branches);
+    let frozen = with_frozen_ancestors(frozen_branches(&branches), &branches, &parents);
 
     if dry_run {
         return print_restack_plan(&branches, &parents, &frozen, update_refs, push);
@@ -61,10 +61,11 @@ pub fn restack(
     restack_branches(branches, &parents, &frozen, update_refs, push, &all)
 }
 
-/// Branches in the restack set whose review is locked by a merge queue / merge
-/// train, and so must be frozen: neither rebased nor pushed. Resolves the
-/// provider best-effort - no remote, or an unrecognized host, means no provider
-/// and so nothing frozen, which is exactly right for a purely local restack.
+/// Branches in the restack set whose review is itself locked by a merge queue /
+/// merge train. Resolves the provider best-effort - no remote, or an
+/// unrecognized host, means no provider and so nothing frozen, which is exactly
+/// right for a purely local restack. [`with_frozen_ancestors`] then widens this
+/// to the branches that must move with them.
 fn frozen_branches(branches: &[String]) -> BTreeSet<String> {
     let Ok((_, provider)) = detect_review_provider() else {
         return BTreeSet::new();
@@ -72,11 +73,39 @@ fn frozen_branches(branches: &[String]) -> BTreeSet<String> {
     provider.enqueued_branches(branches).unwrap_or_default()
 }
 
-/// The line printed for a branch held out of the restack because its review
-/// sits in a merge queue / merge train.
+/// Widen the directly-queued set to every branch *below* a queued one in the
+/// restack set. A queued review is computed (and merged) against its base, so
+/// rebasing or force-pushing any ancestor would move that base out from under
+/// the frozen tip and invalidate the queue entry. Freezing therefore propagates
+/// down the parent chain to the line base; descendants need no such treatment,
+/// since their (frozen) parent does not move and they stay up to date.
+fn with_frozen_ancestors(
+    queued: BTreeSet<String>,
+    branches: &[String],
+    parents: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
+    let in_set: BTreeSet<&str> = branches.iter().map(String::as_str).collect();
+    let mut frozen = queued.clone();
+    for branch in &queued {
+        let mut current = branch.clone();
+        while let Some(parent) = parents.get(&current) {
+            // Stop at the line base (parent outside the set), and short-circuit
+            // when a shared ancestor was already frozen by an earlier branch.
+            if !in_set.contains(parent.as_str()) || !frozen.insert(parent.clone()) {
+                break;
+            }
+            current = parent.clone();
+        }
+    }
+    frozen
+}
+
+/// The line printed for a branch held out of the restack because a review in
+/// its stack sits in a merge queue / merge train - either this branch's own, or
+/// a descendant's, whose base this branch must not move.
 fn frozen_note(branch: &str) -> String {
     format!(
-        "{} {}: in a merge queue; not rebased or pushed (dequeue its review to update it)",
+        "{} {}: not rebased or pushed (a branch in this stack is in a merge queue; dequeue it to continue)",
         style::warn("frozen"),
         style::branch(branch),
     )
@@ -530,4 +559,57 @@ fn state_path() -> Result<PathBuf> {
 /// Whether a restack is paused on a conflict, awaiting continue/abort.
 pub(super) fn in_progress() -> bool {
     state_path().map(|path| path.exists()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `main -> a -> b -> c`, as the restack records it: each branch's parent
+    /// is the one below it. `main` (the trunk) is outside the restack set.
+    fn linear_parents() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("a".to_owned(), "main".to_owned()),
+            ("b".to_owned(), "a".to_owned()),
+            ("c".to_owned(), "b".to_owned()),
+        ])
+    }
+
+    fn set(branches: &[&str]) -> BTreeSet<String> {
+        branches.iter().map(|b| (*b).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_queued_middle_branch_freezes_everything_below_it() {
+        // b is in the queue; a (its base) must not move, or b's queue entry
+        // goes stale. c, above b, is left to its no-op rebase on a frozen b.
+        let branches = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        let frozen = with_frozen_ancestors(set(&["b"]), &branches, &linear_parents());
+        assert_eq!(frozen, set(&["a", "b"]));
+    }
+
+    #[test]
+    fn a_queued_bottom_branch_freezes_only_itself() {
+        // The common case: the bottom of the stack is queued, so there is no
+        // ancestor in the set to carry the freeze to.
+        let branches = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        let frozen = with_frozen_ancestors(set(&["a"]), &branches, &linear_parents());
+        assert_eq!(frozen, set(&["a"]));
+    }
+
+    #[test]
+    fn freeze_stops_at_the_line_base_not_the_trunk() {
+        // Restacking only the b..c subtree: a is the line base and not in the
+        // set, so freezing c must not try to reach past it to main.
+        let branches = vec!["b".to_owned(), "c".to_owned()];
+        let frozen = with_frozen_ancestors(set(&["c"]), &branches, &linear_parents());
+        assert_eq!(frozen, set(&["b", "c"]));
+    }
+
+    #[test]
+    fn nothing_queued_freezes_nothing() {
+        let branches = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        let frozen = with_frozen_ancestors(BTreeSet::new(), &branches, &linear_parents());
+        assert!(frozen.is_empty());
+    }
 }

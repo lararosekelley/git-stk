@@ -517,6 +517,59 @@ fn restack_freezes_a_branch_in_a_merge_queue() {
 }
 
 #[test]
+fn restack_freezing_a_branch_also_freezes_everything_below_it() {
+    // A non-bottom branch in the queue must freeze its base too: rebasing and
+    // pushing feature/a would move feature/b's base out from under its locked
+    // queue entry.
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "parent change");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "child change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+    let base_remote = repo.remote_sha(&bare, "feature/a");
+
+    // Advance the trunk so feature/a would normally rebase onto it.
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves");
+    repo.git(["push", "origin", "main"]);
+
+    // Only feature/b (the upper branch) is in the queue.
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"higharc/product"}"#)
+        .on(
+            "head=feature/b",
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"#,
+        )
+        .on(
+            "graphql",
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":null}]}}}}"#,
+        )
+        .install(&repo);
+
+    repo.git(["switch", "feature/a"]);
+    let base_local = repo.git(["rev-parse", "feature/a"]);
+
+    repo.stack_faked(&fake)
+        .args(["restack", "--push"])
+        .assert()
+        .success()
+        // The freeze propagates down: feature/a is held even though only
+        // feature/b is queued, and nothing is pushed.
+        .stdout(predicates::str::contains("frozen feature/a"))
+        .stdout(predicates::str::contains("frozen feature/b"))
+        .stdout(predicates::str::contains("rebasing feature/a").not())
+        .stdout(predicates::str::contains("pushed feature").not())
+        .stdout(predicates::str::contains("nothing to push"));
+
+    assert_eq!(repo.git(["rev-parse", "feature/a"]), base_local);
+    assert_eq!(repo.remote_sha(&bare, "feature/a"), base_remote);
+}
+
+#[test]
 fn restack_prints_push_hint_when_not_pushing() {
     let repo = TestRepo::new();
 

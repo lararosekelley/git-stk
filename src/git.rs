@@ -156,7 +156,10 @@ fn push_tolerating_merge_queue(args: &[&str], remote: &str) -> Result<()> {
 
     let _ = std::io::stdout().write_all(&output.stdout);
     let _ = std::io::stderr().write_all(&output.stderr);
-    bail!("failed to push branches to {remote}: git exited with status {}", output.status)
+    bail!(
+        "failed to push branches to {remote}: git exited with status {}",
+        output.status
+    )
 }
 
 /// The rejected refs when a push failed *only* because they are in a merge

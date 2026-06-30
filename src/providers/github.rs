@@ -263,7 +263,9 @@ fn github_enqueued_branches(branches: &[String]) -> BTreeSet<String> {
 fn repo_owner_name() -> Option<(String, String)> {
     let output = command_output("gh", &["repo", "view", "--json", "nameWithOwner"]).ok()?;
     let value: serde_json::Value = serde_json::from_str(&output).ok()?;
-    let full = value.get("nameWithOwner").and_then(serde_json::Value::as_str)?;
+    let full = value
+        .get("nameWithOwner")
+        .and_then(serde_json::Value::as_str)?;
     let (owner, repo) = full.split_once('/')?;
     Some((owner.to_owned(), repo.to_owned()))
 }
@@ -276,16 +278,7 @@ fn branch_in_merge_queue(owner: &str, repo: &str, branch: &str) -> Result<bool> 
     let output = command_output(
         "gh",
         &[
-            "api",
-            "graphql",
-            "-f",
-            &owner_arg,
-            "-f",
-            &repo_arg,
-            "-f",
-            &head_arg,
-            "-f",
-            &query_arg,
+            "api", "graphql", "-f", &owner_arg, "-f", &repo_arg, "-f", &head_arg, "-f", &query_arg,
         ],
     )?;
     Ok(parse_merge_queue_entry(&output))
