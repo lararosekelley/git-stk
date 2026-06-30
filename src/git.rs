@@ -117,17 +117,35 @@ pub fn push_force_with_lease(remote: &str, branches: &[String]) -> Result<Vec<St
     let mut args = vec!["push", "--force-with-lease", remote];
     args.extend(branches.iter().map(String::as_str));
 
+    run_lease_push(&args, remote, branches)
+}
+
+/// Run a force-with-lease push, returning the branches that actually landed,
+/// and classifying the two rejections git-stk can explain better than raw git
+/// output:
+///
+/// - **Merge queue** (GitHub locks a queued branch): the ref is rejected with
+///   GH006 while its siblings push fine. `restack`/`sync` already freeze
+///   branches they know are queued, so this is the backstop for one enqueued
+///   mid-run - the held ref is reported and dropped from the returned set, the
+///   successful refs stand, and the push is not failed.
+/// - **Stale lease** (the remote moved on, usually because a branch in the
+///   stack merged): the lease no longer matches, so git rejects with `stale
+///   info`/`non-fast-forward`. `git stk sync` reconciles it, so say so instead
+///   of leaving the user with git's plumbing error.
+///
+/// Anything else surfaces with git's own output, unchanged.
+fn run_lease_push(args: &[&str], remote: &str, branches: &[String]) -> Result<Vec<String>> {
     // Verbose mode streams straight through, so there is no captured stderr to
-    // classify; fall back to the plain path. (A queue rejection there still
-    // shows git's own message, just without the friendlier downgrade.)
+    // classify; fall back to the plain path. (A rejection there still shows
+    // git's own message, just without the friendlier translation.)
     if verbose() {
-        status_passthrough(&args)
-            .with_context(|| format!("failed to push branches to {remote}"))?;
+        status_passthrough(args).with_context(|| format!("failed to push branches to {remote}"))?;
         return Ok(branches.to_vec());
     }
 
     let output = Command::new("git")
-        .args(&args)
+        .args(args)
         .output()
         .context("failed to run git")?;
     if output.status.success() {
@@ -154,6 +172,17 @@ pub fn push_force_with_lease(remote: &str, branches: &[String]) -> Result<Vec<St
         return Ok(landed_branches(branches, &queued));
     }
 
+    if let Some(stale) = stale_rejection(&stderr) {
+        // The user asked for a clean message, not raw git/GitHub noise, so the
+        // captured output is dropped in favor of the actionable guidance.
+        bail!(
+            "could not push {} to {remote}: the remote has moved on \
+             (a branch in the stack was likely merged or updated upstream)\n\
+             run `git stk sync` to reconcile your local stack with the remote, then try again",
+            stale.join(", "),
+        );
+    }
+
     let _ = std::io::stdout().write_all(&output.stdout);
     let _ = std::io::stderr().write_all(&output.stderr);
     bail!(
@@ -175,8 +204,9 @@ fn landed_branches(attempted: &[String], held: &[String]) -> Vec<String> {
 /// The rejected refs when a push failed *only* because they are in a merge
 /// queue, or None when any other failure is mixed in. A genuine lease/
 /// fast-forward rejection (`stale info`, `non-fast-forward`, `fetch first`)
-/// returns None so it still errors; a queue rejection with no such marker
-/// returns the branch names so the caller can report them and carry on.
+/// returns None so it is classified as stale instead; a queue rejection with
+/// no such marker returns the branch names so the caller can report them and
+/// carry on.
 fn merge_queue_rejection(stderr: &str) -> Option<Vec<String>> {
     let lower = stderr.to_lowercase();
     let mentions_queue = lower.contains("merge queue") || lower.contains("queued for merging");
@@ -189,6 +219,28 @@ fn merge_queue_rejection(stderr: &str) -> Option<Vec<String>> {
         .iter()
         .any(|marker| lower.contains(marker))
     {
+        return None;
+    }
+    let rejected = rejected_refs(stderr);
+    if rejected.is_empty() {
+        None
+    } else {
+        Some(rejected)
+    }
+}
+
+/// The rejected refs when a push was refused because the local side is behind
+/// the remote: a `--force-with-lease` lease mismatch (`stale info`), or a plain
+/// `non-fast-forward`/`fetch first`. This is the remote having moved on - in a
+/// stack, almost always a lower branch that merged - which `git stk sync`
+/// reconciles. None when no such marker is present, so unrelated failures
+/// (permissions, network) are not misreported as "run sync".
+fn stale_rejection(stderr: &str) -> Option<Vec<String>> {
+    let lower = stderr.to_lowercase();
+    let moved = ["stale info", "non-fast-forward", "fetch first"]
+        .iter()
+        .any(|marker| lower.contains(marker));
+    if !moved {
         return None;
     }
     let rejected = rejected_refs(stderr);
@@ -219,7 +271,10 @@ pub fn push_set_upstream_force_with_lease(remote: &str, branches: &[String]) -> 
     let mut args = vec!["push", "--set-upstream", "--force-with-lease", remote];
     args.extend(branches.iter().map(String::as_str));
 
-    status(&args).with_context(|| format!("failed to push branches to {remote}"))
+    // submit does not need the landed set; a held-back branch is still warned
+    // about inside run_lease_push.
+    run_lease_push(&args, remote, branches)?;
+    Ok(())
 }
 
 /// Store `content` as a single-file commit and point `reference` at it, so the
@@ -780,6 +835,35 @@ error: failed to push some refs";
         assert_eq!(landed_branches(&attempted, &[]), attempted.to_vec());
         // Every branch held: nothing landed.
         assert!(landed_branches(&attempted, &attempted).is_empty());
+    }
+
+    #[test]
+    fn a_stale_lease_push_names_the_rejected_branch() {
+        // The exact shape from a submit after a lower branch merged: one ref
+        // pushes, the stale one is rejected by --force-with-lease.
+        let stderr = "\
+To github.com:higharc/product
+   3a94024..d63a2b2  feat/spa-env -> feat/spa-env
+ ! [rejected]                feat/tf-deploy -> feat/tf-deploy (stale info)
+error: failed to push some refs to 'github.com:higharc/product'";
+        assert_eq!(
+            stale_rejection(stderr),
+            Some(vec!["feat/tf-deploy".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_non_fast_forward_push_is_treated_as_stale() {
+        let stderr = " ! [rejected]  feat/x -> feat/x (non-fast-forward)";
+        assert_eq!(stale_rejection(stderr), Some(vec!["feat/x".to_owned()]));
+    }
+
+    #[test]
+    fn an_unrelated_push_failure_is_not_classified_as_stale() {
+        // Permission/network failures must keep their own error, not "run sync".
+        let stderr = " ! [remote rejected] feat/x -> feat/x (permission denied)";
+        assert_eq!(stale_rejection(stderr), None);
+        assert_eq!(stale_rejection("fatal: could not read from remote"), None);
     }
 
     #[test]

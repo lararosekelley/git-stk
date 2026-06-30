@@ -320,7 +320,9 @@ branches' existing drafts to ready for review.
 
 `submit --push` (or `git config stk.pushOnSubmit true`) pushes the submitted branches with
 `-u --force-with-lease` before creating or updating reviews, so new branches exist remotely and rebased
-ones are updated safely.
+ones are updated safely. If the lease is stale because the remote moved on — usually a lower branch in
+the stack merged — the push is rejected; `git-stk` reports that plainly and points you at `git stk sync`
+to reconcile, rather than surfacing git's raw rejection.
 
 `submit --stack` also maintains a stack overview at the end of every PR/MR description: the full stack as
 linked bullets (leaf-first, with a pointer on the PR being viewed) sitting on the trunk, plus a footer

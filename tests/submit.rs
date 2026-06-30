@@ -843,6 +843,38 @@ fn submit_stack_push_pushes_branches_before_provider_calls() {
 }
 
 #[test]
+fn submit_push_rejected_as_stale_points_at_sync() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "parent change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a"]);
+
+    // Simulate the remote moving on under the stack - the classic "a lower
+    // branch merged and the branch advanced upstream" - by rewinding the
+    // remote's feature/a out of band, so the local --force-with-lease lease is
+    // now stale and the push is rejected.
+    let remote_main = repo.remote_sha(&bare, "main");
+    let rewind = Command::new("git")
+        .args(["update-ref", "refs/heads/feature/a", &remote_main])
+        .current_dir(bare.path())
+        .output()
+        .expect("rewind remote ref");
+    assert!(rewind.status.success(), "failed to rewind the remote ref");
+
+    repo.git(["switch", "feature/a"]);
+    repo.stack()
+        .args(["submit", "--push"])
+        .assert()
+        .failure()
+        // The actionable guidance replaces git's raw plumbing error.
+        .stderr(predicates::str::contains("the remote has moved on"))
+        .stderr(predicates::str::contains("git stk sync"))
+        .stderr(predicates::str::contains("stale info").not());
+}
+
+#[test]
 fn submit_push_respects_config_and_no_push_overrides_it() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
