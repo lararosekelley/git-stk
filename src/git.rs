@@ -113,7 +113,91 @@ pub fn push_force_with_lease(remote: &str, branches: &[String]) -> Result<()> {
     let mut args = vec!["push", "--force-with-lease", remote];
     args.extend(branches.iter().map(String::as_str));
 
-    status(&args).with_context(|| format!("failed to push branches to {remote}"))
+    push_tolerating_merge_queue(&args, remote)
+}
+
+/// Run a multi-ref push, downgrading a merge-queue rejection to a warning. A
+/// GitHub branch sitting in a merge queue is locked, so its ref is rejected
+/// with GH006 while its siblings push fine; git then exits non-zero even though
+/// the rest landed. `restack`/`sync` already freeze branches they know are
+/// queued, so this is the backstop for one enqueued mid-run: the queued ref is
+/// reported as held, the successful refs stand, and the push is not failed.
+/// Any rejection that is not purely the merge queue (a stale lease, a
+/// non-fast-forward) still surfaces as an error.
+fn push_tolerating_merge_queue(args: &[&str], remote: &str) -> Result<()> {
+    // Verbose mode streams straight through, so there is no captured stderr to
+    // classify; fall back to the plain path. (A queue rejection there still
+    // shows git's own message, just without the friendlier downgrade.)
+    if verbose() {
+        return status_passthrough(args)
+            .with_context(|| format!("failed to push branches to {remote}"));
+    }
+
+    let output = Command::new("git")
+        .args(args)
+        .output()
+        .context("failed to run git")?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if let Some(queued) = merge_queue_rejection(&stderr) {
+        anstream::eprintln!(
+            "{}",
+            crate::style::warn(&format!(
+                "{} {} in a merge queue and was not updated (dequeue its review to push it)",
+                queued.join(", "),
+                if queued.len() == 1 { "is" } else { "are" },
+            ))
+        );
+        return Ok(());
+    }
+
+    let _ = std::io::stdout().write_all(&output.stdout);
+    let _ = std::io::stderr().write_all(&output.stderr);
+    bail!("failed to push branches to {remote}: git exited with status {}", output.status)
+}
+
+/// The rejected refs when a push failed *only* because they are in a merge
+/// queue, or None when any other failure is mixed in. A genuine lease/
+/// fast-forward rejection (`stale info`, `non-fast-forward`, `fetch first`)
+/// returns None so it still errors; a queue rejection with no such marker
+/// returns the branch names so the caller can report them and carry on.
+fn merge_queue_rejection(stderr: &str) -> Option<Vec<String>> {
+    let lower = stderr.to_lowercase();
+    let mentions_queue = lower.contains("merge queue") || lower.contains("queued for merging");
+    if !mentions_queue {
+        return None;
+    }
+    // A lease or fast-forward failure is a real problem, not a queue lock - do
+    // not swallow a push that failed for those reasons too.
+    if ["stale info", "non-fast-forward", "fetch first"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return None;
+    }
+    let rejected = rejected_refs(stderr);
+    if rejected.is_empty() {
+        None
+    } else {
+        Some(rejected)
+    }
+}
+
+/// The remote-side ref names from a push's `! [remote rejected]` lines, shaped
+/// `! [remote rejected] <local> -> <remote> (reason)`.
+fn rejected_refs(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter(|line| line.contains("[remote rejected]") || line.contains("[rejected]"))
+        .filter_map(|line| {
+            let after = line.split("-> ").nth(1)?;
+            let name = after.split_whitespace().next()?;
+            Some(name.to_owned())
+        })
+        .collect()
 }
 
 /// Push branches and set upstream tracking; used before submitting so new
@@ -629,6 +713,42 @@ fn command_error(command: &str, stderr: &[u8]) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_merge_queue_rejection_is_downgraded_to_the_queued_refs() {
+        // The exact shape git prints when one ref of a multi-ref push is locked
+        // by a GitHub merge queue while its sibling pushes fine.
+        let stderr = "\
+remote: error: GH006: Protected branch update failed for refs/heads/feat/tf-deploy.
+remote: - A pull request for this branch has been added to a merge queue. Branches that
+remote:   are queued for merging cannot be updated. To modify this branch, dequeue the
+remote:   associated pull request.
+To github.com:higharc/product
+ + 016bb37...3a94024 feat/spa-env -> feat/spa-env (forced update)
+ ! [remote rejected]         feat/tf-deploy -> feat/tf-deploy (protected branch hook declined)
+error: failed to push some refs to 'github.com:higharc/product'";
+        assert_eq!(
+            merge_queue_rejection(stderr),
+            Some(vec!["feat/tf-deploy".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_stale_lease_rejection_is_not_swallowed_even_with_a_queue_mention() {
+        // A force-with-lease failure is a real problem; the queue wording in the
+        // dependabot banner must not mask it.
+        let stderr = "\
+remote: GitHub found 270 vulnerabilities ... merge queue notes ...
+ ! [rejected]        feat/tf-deploy -> feat/tf-deploy (stale info)
+error: failed to push some refs";
+        assert_eq!(merge_queue_rejection(stderr), None);
+    }
+
+    #[test]
+    fn no_queue_mention_is_not_a_queue_rejection() {
+        let stderr = " ! [remote rejected] feat/x -> feat/x (permission denied)";
+        assert_eq!(merge_queue_rejection(stderr), None);
+    }
 
     #[test]
     fn help_mentions_update_refs_matches_pre_2_43_spelling() {

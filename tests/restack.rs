@@ -469,6 +469,54 @@ fn restack_leaves_sibling_stacks_sharing_the_trunk_alone() {
 }
 
 #[test]
+fn restack_freezes_a_branch_in_a_merge_queue() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "parent change");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "child change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+    let frozen_remote = repo.remote_sha(&bare, "feature/a");
+
+    // Advance the trunk so feature/a would normally be rebased onto it.
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves");
+    repo.git(["push", "origin", "main"]);
+
+    // GitHub provider, with feature/a reported as sitting in the merge queue.
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"higharc/product"}"#)
+        .on(
+            "head=feature/a",
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"#,
+        )
+        .on(
+            "graphql",
+            r#"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":null}]}}}}"#,
+        )
+        .install(&repo);
+
+    repo.git(["switch", "feature/a"]);
+    let frozen_local = repo.git(["rev-parse", "feature/a"]);
+
+    repo.stack_faked(&fake)
+        .args(["restack", "--push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("frozen feature/a"))
+        // Its rebase onto the moved trunk is skipped entirely.
+        .stdout(predicates::str::contains("rebasing feature/a").not())
+        .stdout(predicates::str::contains("pushed feature/a").not());
+
+    // The queued branch was neither rebased locally nor force-pushed.
+    assert_eq!(repo.git(["rev-parse", "feature/a"]), frozen_local);
+    assert_eq!(repo.remote_sha(&bare, "feature/a"), frozen_remote);
+}
+
+#[test]
 fn restack_prints_push_hint_when_not_pushing() {
     let repo = TestRepo::new();
 

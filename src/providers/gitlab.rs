@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result};
 
 use crate::git;
@@ -216,6 +218,61 @@ impl ReviewProvider for GitLabProvider {
     fn open_review(&self, review: &ReviewRequest) -> Result<String> {
         command_output("glab", &["mr", "view", review.id_value(), "--web"])
     }
+
+    fn enqueued_branches(&self, branches: &[String]) -> Result<BTreeSet<String>> {
+        Ok(gitlab_enqueued_branches(branches))
+    }
+}
+
+/// GitLab merge-train membership for `branches`. Unlike GitHub, pushing to a
+/// branch on a train is not rejected - it silently *removes* the MR from the
+/// train - so this pre-emptive check is the only thing that protects a queued
+/// GitLab branch, and it freezes the branch the same way. Lists the project's
+/// active trains once and intersects their source branches with `branches`.
+/// Silent on failure: merge trains are a Premium feature, so the endpoint 404s
+/// on most projects, which simply means nothing is queued.
+fn gitlab_enqueued_branches(branches: &[String]) -> BTreeSet<String> {
+    if branches.is_empty() {
+        return BTreeSet::new();
+    }
+    // `--method GET` keeps it a read: adding `-f`/`-F` fields would flip glab to
+    // POST. `--paginate` concatenates every page of cars into one JSON array.
+    let Ok(output) = command_output(
+        "glab",
+        &[
+            "api",
+            "--method",
+            "GET",
+            "--paginate",
+            "projects/:id/merge_trains?scope=active",
+        ],
+    ) else {
+        return BTreeSet::new();
+    };
+    let wanted: BTreeSet<&str> = branches.iter().map(String::as_str).collect();
+    active_train_source_branches(&output)
+        .into_iter()
+        .filter(|branch| wanted.contains(branch.as_str()))
+        .collect()
+}
+
+/// The source branches of the active merge-train cars in the API response.
+/// Each car carries its MR under `merge_request`, whose `source_branch` is the
+/// branch the train holds frozen. Unparseable output yields nothing.
+fn active_train_source_branches(json: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(cars) = value.as_array() else {
+        return Vec::new();
+    };
+    cars.iter()
+        .filter_map(|car| {
+            car.pointer("/merge_request/source_branch")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 fn list_review(branch: &str, state_flag: Option<&str>) -> Result<Option<ReviewRequest>> {
@@ -413,5 +470,26 @@ mod tests {
         );
         assert_eq!(classify_gitlab_merge("{}"), MergeBlocker::None);
         assert_eq!(classify_gitlab_merge("not json"), MergeBlocker::None);
+    }
+
+    #[test]
+    fn active_train_source_branches_reads_each_cars_source() {
+        let json = r#"[
+            {"id":1,"status":"idle","merge_request":{"iid":7,"source_branch":"feature/a"}},
+            {"id":2,"status":"fresh","merge_request":{"iid":9,"source_branch":"feature/b"}}
+        ]"#;
+        assert_eq!(
+            super::active_train_source_branches(json),
+            vec!["feature/a".to_owned(), "feature/b".to_owned()]
+        );
+    }
+
+    #[test]
+    fn no_active_trains_or_unparseable_yields_nothing() {
+        // Empty array: the project has trains enabled but none running.
+        assert!(super::active_train_source_branches("[]").is_empty());
+        // A 404 body / error text (trains are Premium) is not an array.
+        assert!(super::active_train_source_branches("not json").is_empty());
+        assert!(super::active_train_source_branches(r#"{"message":"404 Not Found"}"#).is_empty());
     }
 }
