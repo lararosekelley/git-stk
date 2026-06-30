@@ -21,10 +21,13 @@ concurrency:
 
 jobs:
   bot-code-review:
+    # Only the repo owner can trigger the bot, so a contributor's PR or a
+    # stray `@bot` comment never spends the API key. The association lives on a
+    # different payload field per event (the PR vs the comment).
     if: >-
-      (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@bot')) ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@bot review'))
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.author_association == 'OWNER') ||
+      (github.event_name == 'pull_request_review_comment' && github.event.comment.author_association == 'OWNER' && contains(github.event.comment.body, '@bot')) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.author_association == 'OWNER' && contains(github.event.comment.body, '@bot review'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
