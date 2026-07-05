@@ -59,6 +59,43 @@ fn setup_wires_powershell_when_no_posix_shell() {
 }
 
 #[test]
+fn setup_warns_and_skips_powershell_when_execution_policy_blocks_the_profile() {
+    let repo = TestRepo::new();
+    let profile = repo.path().join("Documents/PowerShell/profile.ps1");
+    let profile_path = profile.display().to_string();
+
+    // A fake PowerShell whose execution policy is Restricted: writing a profile
+    // would only produce a "not digitally signed" error on every shell start.
+    let fake = FakeProvider::new()
+        .commands(&["pwsh"])
+        .on("Get-ExecutionPolicy", "Restricted")
+        .on("$PROFILE", &profile_path)
+        .fallback(&profile_path)
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["setup", "--yes"])
+        .env_remove("SHELL")
+        .env_remove("XDG_DATA_HOME")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "execution policy (Restricted) blocks profile scripts",
+        ))
+        .stdout(predicates::str::contains(
+            "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned",
+        ))
+        // It must not claim to have wired anything up.
+        .stdout(predicates::str::contains("added PowerShell completion setup").not());
+
+    // No profile was written - the shell stays loadable.
+    assert!(
+        !profile.exists(),
+        "must not create a profile that can't run"
+    );
+}
+
+#[test]
 fn setup_is_idempotent_for_completions() {
     let repo = TestRepo::new();
     let home = repo.path().join("home");

@@ -90,6 +90,28 @@ fn wire_completions(yes: bool) -> Result<()> {
         return Ok(());
     }
 
+    // On Windows the default execution policy (Restricted, or AllSigned) blocks
+    // PowerShell from loading *any* $PROFILE, so writing one would only surface
+    // a "not digitally signed" error on every shell start. Guide the user to
+    // relax the policy (per-user, no admin) first, rather than leaving behind a
+    // profile that can't run.
+    if shell == "PowerShell"
+        && let Some(policy) = powershell_execution_policy()
+        && policy_blocks_profile(&policy)
+    {
+        anstream::println!(
+            "PowerShell's execution policy ({policy}) blocks profile scripts, so \
+             completions can't be enabled without breaking shell startup."
+        );
+        anstream::println!(
+            "allow your profile to run (per-user, no admin needed), then re-run `git stk setup`:"
+        );
+        anstream::println!("  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned");
+        anstream::println!("or add this line to {} yourself:", rc_path.display());
+        anstream::println!("  {line}");
+        return Ok(());
+    }
+
     // Only prompt at a real terminal. Piped in (e.g. `curl ... | bash` running
     // the installer), there is no one to answer, so prompting would just print
     // a question and immediately read EOF as "no" - skip cleanly instead. Pass
@@ -217,6 +239,35 @@ fn powershell_target() -> Option<(&'static str, PathBuf, &'static str)> {
         }
     }
     None
+}
+
+/// PowerShell's effective execution policy (`Get-ExecutionPolicy` resolves the
+/// per-scope stack to one value), or None when it can't be queried.
+fn powershell_execution_policy() -> Option<String> {
+    for exe in ["pwsh", "powershell"] {
+        let Ok(output) = Command::new(exe)
+            .args(["-NoProfile", "-Command", "Get-ExecutionPolicy"])
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let policy = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !policy.is_empty() {
+            return Some(policy);
+        }
+    }
+    None
+}
+
+/// Whether an execution policy stops an unsigned `$PROFILE` from loading.
+/// `Restricted` runs no scripts at all; `AllSigned` demands a digital signature
+/// the profile we write does not carry. Every other policy (`RemoteSigned`,
+/// `Unrestricted`, `Bypass`) runs a local profile fine.
+fn policy_blocks_profile(policy: &str) -> bool {
+    policy.eq_ignore_ascii_case("Restricted") || policy.eq_ignore_ascii_case("AllSigned")
 }
 
 /// Reverse `setup` and the installer: strip the completion line we added,
@@ -374,5 +425,20 @@ mod tests {
     #[test]
     fn strip_returns_none_without_the_marker() {
         assert_eq!(strip_completion_block("export PATH=/x\n"), None);
+    }
+
+    #[test]
+    fn blocking_policies_stop_an_unsigned_profile() {
+        // The two that reject the profile we would write, case-insensitively.
+        for policy in ["Restricted", "restricted", "AllSigned", "allsigned"] {
+            assert!(policy_blocks_profile(policy), "{policy} should block");
+        }
+    }
+
+    #[test]
+    fn permissive_policies_run_a_local_profile() {
+        for policy in ["RemoteSigned", "Unrestricted", "Bypass"] {
+            assert!(!policy_blocks_profile(policy), "{policy} should not block");
+        }
     }
 }
