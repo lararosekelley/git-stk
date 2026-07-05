@@ -175,8 +175,10 @@ fn print_restack_plan(
 /// Sitting exactly on the parent tip with a fresh fork point: nothing to do.
 fn up_to_date(branch: &str, parent: &str) -> Result<bool> {
     let parent_tip = git::rev_parse(parent)?;
-    Ok(fork_point(branch, parent)?.as_deref() == Some(parent_tip.as_str())
-        && git::is_ancestor(parent, branch).unwrap_or(false))
+    Ok(
+        fork_point(branch, parent)?.as_deref() == Some(parent_tip.as_str())
+            && git::is_ancestor(parent, branch).unwrap_or(false),
+    )
 }
 
 /// Fast-forward the trunk from the remote before restacking. Fetching the
