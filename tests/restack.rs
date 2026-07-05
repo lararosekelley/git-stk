@@ -405,6 +405,48 @@ fn restack_falls_back_to_plain_rebase_when_base_is_invalid() {
 }
 
 #[test]
+fn restack_no_ops_when_a_stale_base_still_sits_on_the_trunk_tip() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    // The fork point recorded at creation: main's tip back then.
+    let old_base = repo.git(["config", "--get", "branch.feature/a.stkBase"]);
+
+    // Trunk advances several commits.
+    repo.git(["switch", "main"]);
+    repo.commit_file("m1.txt", "m1\n", "trunk moves");
+    repo.commit_file("m2.txt", "m2\n", "trunk moves again");
+    let trunk_tip = repo.git(["rev-parse", "main"]);
+
+    // Move feature/a onto the new trunk *outside git-stk*, so stkBase is never
+    // refreshed and still points at the old, now-stale fork point.
+    repo.git(["switch", "feature/a"]);
+    repo.git(["rebase", "--onto", "main", &old_base, "feature/a"]);
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkBase"]),
+        old_base,
+        "precondition: stkBase is a stale-but-still-ancestor fork point"
+    );
+    let before = repo.git(["rev-parse", "feature/a"]);
+
+    // feature/a already sits on the trunk tip, so restack must no-op rather
+    // than replay the already-upstream trunk commits from the stale base.
+    repo.stack()
+        .arg("restack")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "feature/a already up to date with main",
+        ))
+        .stdout(predicates::str::contains("rebasing feature/a").not());
+
+    // Untouched: still exactly one commit above the current trunk tip.
+    assert_eq!(repo.git(["rev-parse", "feature/a"]), before);
+    assert_eq!(repo.git(["rev-parse", "feature/a~1"]), trunk_tip);
+}
+
+#[test]
 fn restack_push_flag_pushes_rewritten_branches() {
     let repo = TestRepo::new();
 

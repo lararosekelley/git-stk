@@ -269,6 +269,47 @@ pub fn record_base(branch: &str, parent: &str) {
     }
 }
 
+/// The commit to replay `branch` from when rebasing onto `parent`: the tighter
+/// of its recorded fork point and the live `merge_base(parent, branch)`. The
+/// recorded base is trusted only when it is a descendant of (or equal to) the
+/// live merge base - a fork point at least as recent, as after the parent is
+/// rewritten and its old commits leave the branch's history. A recorded base
+/// that is a proper *ancestor* of the live merge base is stale: the true fork
+/// point has moved past it (e.g. the branch was rebased onto a newer trunk out
+/// of band), so the merge base wins and only the branch's own commits replay.
+/// With neither available there is nothing to anchor on.
+pub(crate) fn fork_point(branch: &str, parent: &str) -> Result<Option<String>> {
+    let recorded =
+        base_of(branch)?.filter(|base| git::is_ancestor(base, branch).unwrap_or(false));
+    let merge_base = git::merge_base(parent, branch).ok();
+    Ok(match (recorded, merge_base) {
+        (Some(recorded), Some(merge_base)) => {
+            Some(if git::is_ancestor(&merge_base, &recorded).unwrap_or(false) {
+                recorded
+            } else {
+                merge_base
+            })
+        }
+        (recorded, merge_base) => recorded.or(merge_base),
+    })
+}
+
+/// Whether `branch`'s recorded fork point is still current: present, an
+/// ancestor of the branch, and not stale (not a proper ancestor of the live
+/// `merge_base(parent, branch)`). A stale one must be re-recorded.
+pub(crate) fn base_is_current(branch: &str, parent: &str) -> Result<bool> {
+    let Some(base) = base_of(branch)? else {
+        return Ok(false);
+    };
+    if !git::is_ancestor(&base, branch).unwrap_or(false) {
+        return Ok(false);
+    }
+    Ok(match git::merge_base(parent, branch) {
+        Ok(merge_base) => git::is_ancestor(&merge_base, &base).unwrap_or(false),
+        Err(_) => true,
+    })
+}
+
 /// The root of the stack containing `branch` (the base everything sits on).
 pub fn stack_root(branch: &str) -> Result<String> {
     let parents = parent_map()?;

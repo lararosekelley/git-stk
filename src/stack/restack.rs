@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::{base_of, children_map, collect_descendants, line_base, parent_map, record_base};
+use super::{children_map, collect_descendants, fork_point, line_base, parent_map, record_base};
 use crate::cli::{FetchMode, PushMode, UpdateRefsMode};
 use crate::git;
 use crate::providers::detect_review_provider;
@@ -172,18 +172,10 @@ fn print_restack_plan(
     Ok(())
 }
 
-/// The recorded fork point, when it is still an ancestor of the branch.
-fn valid_base(branch: &str) -> Result<Option<String>> {
-    Ok(match base_of(branch)? {
-        Some(base) if git::is_ancestor(&base, branch).unwrap_or(false) => Some(base),
-        _ => None,
-    })
-}
-
 /// Sitting exactly on the parent tip with a fresh fork point: nothing to do.
 fn up_to_date(branch: &str, parent: &str) -> Result<bool> {
     let parent_tip = git::rev_parse(parent)?;
-    Ok(valid_base(branch)?.as_deref() == Some(parent_tip.as_str())
+    Ok(fork_point(branch, parent)?.as_deref() == Some(parent_tip.as_str())
         && git::is_ancestor(parent, branch).unwrap_or(false))
 }
 
@@ -323,11 +315,11 @@ fn restack_branches(
             bail!("{branch} has no stack parent");
         };
 
-        // Replay only the commits after the recorded fork point so commits
-        // that landed upstream via squash or rebase merges are not repeated.
-        // A base that is no longer an ancestor (stale or garbage) falls back
-        // to a plain rebase.
-        let base = valid_base(branch)?;
+        // Replay only the branch's own commits, from its current fork point, so
+        // commits already upstream - landed via squash or rebase merges, or
+        // trunk commits behind a stale recorded base - are not repeated. With
+        // no fork point to anchor on, fall back to a plain rebase.
+        let base = fork_point(branch, parent)?;
 
         // Already sitting exactly on the parent tip with a fresh fork point:
         // skip the rebase entirely. (git rebase --update-refs would otherwise
