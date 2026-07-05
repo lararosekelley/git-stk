@@ -32,6 +32,7 @@ module.exports = {
         "restack",
         "repair",
         "adopt",
+        "run",
         "absorb",
         "security",
       ],
