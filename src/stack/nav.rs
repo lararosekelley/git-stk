@@ -209,59 +209,85 @@ pub fn print_stack(reviews: &BTreeMap<String, String>, commits: bool) -> Result<
     Ok(())
 }
 
-/// Print every stack, not just the current one: the trunk-rooted forest with
-/// a single trunk line at the bottom, and each rootless fragment as its own
-/// tree above it. The branch you are on is marked wherever it appears.
+/// Print every stack, not just the current one, each as its own block separated
+/// by a blank line. Stacks that merely share the trunk are drawn separately -
+/// one per direct trunk child - each repeating the trunk as its base, so they
+/// read as distinct piles rather than one tangled tree. Rootless fragments print
+/// above the trunk-anchored ones. The branch you are on is marked wherever it
+/// appears.
 pub fn print_all_stacks(reviews: &BTreeMap<String, String>, commits: bool) -> Result<()> {
     let current = git::current_branch()?;
     let parents = parent_map()?;
     let children = children_map(&parents);
     let trunk = trunk_branch(&git::local_branches()?);
 
-    // The root of every stack: each branch with a stack relationship, walked
-    // up to its topmost ancestor. Trunk-anchored stacks all resolve to the
-    // trunk; rootless fragments resolve to their own top. Lone branches with
-    // no parent or children never enter `parents`, so they are left out.
-    let mut roots = Vec::new();
+    // Rootless fragments: stacks not anchored on the trunk, each walked up to
+    // its own topmost ancestor. Lone branches with no parent or children never
+    // enter `parents`, so they are left out.
+    let mut rootless = Vec::new();
     let mut seen = BTreeSet::new();
     for branch in parents
         .iter()
         .flat_map(|(child, parent)| [child.clone(), parent.clone()])
     {
         let root = root_for(&branch, &parents);
-        if seen.insert(root.clone()) {
-            roots.push(root);
+        if Some(root.as_str()) != trunk.as_deref() && seen.insert(root.clone()) {
+            rootless.push(root);
         }
     }
+    rootless.sort();
 
-    if roots.is_empty() {
+    // Each direct child of the trunk is the base of a distinct stack sharing the
+    // trunk; a fork deeper in a stack shares a real branch, not just the trunk,
+    // so it stays within one block.
+    let trunk_bases: Vec<String> = trunk
+        .as_deref()
+        .and_then(|name| children.get(name))
+        .cloned()
+        .unwrap_or_default();
+
+    if rootless.is_empty() && trunk_bases.is_empty() {
         anstream::println!("no stacked branches");
         return Ok(());
     }
 
-    // Render the trunk-rooted forest last so its trunk line sits at the very
-    // bottom; rootless fragments stack above it.
-    roots.sort_by_key(|root| Some(root.as_str()) == trunk.as_deref());
-
     let sizes = diff_sizes(parents.keys().cloned(), &parents);
-    let ctx = TreeCtx {
-        current: &current,
-        trunk: trunk.as_deref(),
-        children: &children,
-        parents: &parents,
-        reviews,
-        sizes: &sizes,
-        commits,
-        width: term_width(),
-    };
-    for (index, root) in roots.iter().enumerate() {
-        if index > 0 {
+    let width = term_width();
+    let mut first = true;
+    let mut render = |root: &str, block_children: &BTreeMap<String, Vec<String>>| {
+        if !first {
             anstream::println!();
         }
+        first = false;
+        let ctx = TreeCtx {
+            current: &current,
+            trunk: trunk.as_deref(),
+            children: block_children,
+            parents: &parents,
+            reviews,
+            sizes: &sizes,
+            commits,
+            width,
+        };
         let mut lines = Vec::new();
         collect_tree_lines(&ctx, root, 0, &mut BTreeSet::new(), &mut lines);
         for line in lines.iter().rev() {
             anstream::println!("{line}");
+        }
+    };
+
+    // Rootless fragments first, trunk-anchored stacks last so their trunk lines
+    // sit at the bottom of the output.
+    for root in &rootless {
+        render(root, &children);
+    }
+    if let Some(name) = trunk.as_deref() {
+        for base in &trunk_bases {
+            // Restrict the trunk to this one base so the block shows a single
+            // stack sitting on its own trunk line.
+            let mut block_children = children.clone();
+            block_children.insert(name.to_owned(), vec![base.clone()]);
+            render(name, &block_children);
         }
     }
 

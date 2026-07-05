@@ -481,13 +481,57 @@ fn list_all_shows_every_stack() {
     for needle in ["feature/a", "feature/x", "feature/y", "main (trunk)"] {
         assert!(stdout.contains(needle), "missing {needle} in:\n{stdout}");
     }
-    // The trunk appears once, at the bottom of its forest.
+    // One trunk-anchored stack (feature/a) and one rootless fragment: the trunk
+    // is repeated once per trunk-sharing stack, so here it appears once.
     assert_eq!(stdout.matches("(trunk)").count(), 1);
     // The branch we are on is marked wherever it appears.
     assert!(
         stdout.contains("\u{25c9} feature/a"),
         "current marker:\n{stdout}"
     );
+}
+
+#[test]
+fn list_all_separates_stacks_sharing_the_trunk() {
+    let repo = TestRepo::new();
+
+    // Two independent stacks, both anchored on main; the second forks (c, d).
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.stack().args(["new", "feature/c"]).assert().success();
+    repo.commit_file("c.txt", "c\n", "c work");
+    repo.git(["switch", "feature/b"]);
+    repo.stack().args(["new", "feature/d"]).assert().success();
+    repo.commit_file("d.txt", "d\n", "d work");
+
+    let output = repo
+        .stack()
+        .args(["list", "--all"])
+        .output()
+        .expect("list --all");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Two stacks merely share the trunk (feature/a; and feature/b, forked into
+    // c and d), so the trunk is repeated as each one's base.
+    assert_eq!(
+        stdout.matches("(trunk)").count(),
+        2,
+        "trunk should repeat per trunk-sharing stack:\n{stdout}"
+    );
+    // The blocks are separated by a blank line.
+    assert!(
+        stdout.contains("\n\n"),
+        "stacks should be blank-line separated:\n{stdout}"
+    );
+    // The fork stays inside one block: feature/c and feature/d are siblings on
+    // feature/b, not split into separate trunk blocks.
+    for needle in ["feature/a", "feature/b", "feature/c", "feature/d"] {
+        assert!(stdout.contains(needle), "missing {needle} in:\n{stdout}");
+    }
 }
 
 #[test]

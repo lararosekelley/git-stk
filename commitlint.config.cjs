@@ -35,6 +35,7 @@ module.exports = {
         "run",
         "absorb",
         "security",
+        "list",
         "linux",
         "macos",
         "windows",
