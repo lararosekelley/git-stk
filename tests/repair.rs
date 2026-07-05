@@ -148,6 +148,58 @@ fn repair_re_records_stale_fork_point() {
 }
 
 #[test]
+fn repair_re_records_a_stale_but_still_ancestor_fork_point() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    let old_base = repo.git(["config", "--get", "branch.feature/a.stkBase"]);
+
+    // Trunk advances, then feature/a moves onto it *outside git-stk*: the
+    // recorded base is still an ancestor of feature/a, but the true fork point
+    // has advanced past it. The old "any ancestor" check called this verified;
+    // it must now be recognized as stale and re-recorded.
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves");
+    repo.git(["switch", "feature/a"]);
+    repo.git(["rebase", "--onto", "main", &old_base, "feature/a"]);
+
+    repo.stack()
+        .arg("repair")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "feature/a: re-recorded fork point from main",
+        ))
+        .stdout(predicates::str::contains("1 repaired, 0 verified"));
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkBase"]),
+        repo.git(["rev-parse", "main"])
+    );
+}
+
+#[test]
+fn repair_verifies_a_current_fork_point() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // A freshly built stack: both fork points are current, so repair verifies
+    // them and re-records nothing.
+    repo.stack()
+        .arg("repair")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "repair complete: 0 repaired, 2 verified, 0 unresolved",
+        ));
+}
+
+#[test]
 fn repair_dry_run_changes_nothing() {
     let repo = TestRepo::new();
 

@@ -78,11 +78,7 @@ pub fn repair(dry_run: bool) -> Result<()> {
                 continue;
             }
 
-            let base_valid = matches!(
-                stack::base_of(branch)?,
-                Some(base) if git::is_ancestor(&base, branch).unwrap_or(false)
-            );
-            if base_valid {
+            if stack::base_is_current(branch, &parent)? {
                 verified += 1;
             } else {
                 anstream::println!(
