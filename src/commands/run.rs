@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use clap::ArgAction;
 
 use crate::stack;
@@ -73,16 +73,34 @@ fn run_each(
         crate::git::checkout(branch)?;
         anstream::println!("{}", style::branch(branch));
         // Inherit stdio so the command's output streams through live.
-        let passed = Command::new(program)
-            .args(args)
-            .status()
-            .is_ok_and(|status| status.success());
+        let passed = match Command::new(program).args(args).status() {
+            Ok(status) => status.success(),
+            // The command never launched (e.g. not found). It would fail
+            // identically on every branch, so stop with a clear error rather
+            // than reporting a bogus FAIL down the whole stack - the branches
+            // are fine, the command is what's wrong.
+            Err(error) => return Err(spawn_error(program, args, &error)),
+        };
         results.push((branch.clone(), passed));
         if !passed && fail_fast {
             break;
         }
     }
     Ok(results)
+}
+
+/// A command that could not be spawned, distinguished from one that ran and
+/// exited non-zero. The common cause is passing the whole command as a single
+/// quoted string, so the "program" is really `cmd arg arg` and no such binary
+/// exists; hint at the unquoted form when that shape is detected.
+fn spawn_error(program: &str, args: &[String], error: &std::io::Error) -> anyhow::Error {
+    let mut message = format!("failed to run `{program}`: {error}");
+    if args.is_empty() && program.split_whitespace().count() > 1 {
+        message.push_str(&format!(
+            "\nhint: pass the command unquoted after `--`, e.g. `git stk run -- {program}`"
+        ));
+    }
+    anyhow!(message)
 }
 
 fn print_summary(results: &[(String, bool)]) {
