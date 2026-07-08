@@ -10,6 +10,7 @@ use super::{
 };
 use crate::git;
 use crate::prompt;
+use crate::providers::ReviewAnnotation;
 use crate::style;
 
 /// Offer a numbered pick of `children`; None when nothing was chosen
@@ -149,7 +150,7 @@ pub fn checkout_bottom() -> Result<()> {
     git::checkout(&bottom)
 }
 
-pub fn print_stack(reviews: &BTreeMap<String, String>, commits: bool) -> Result<()> {
+pub fn print_stack(reviews: &BTreeMap<String, ReviewAnnotation>, commits: bool) -> Result<()> {
     let current = git::current_branch()?;
     let parents = parent_map()?;
     let root = root_for(&current, &parents);
@@ -215,7 +216,7 @@ pub fn print_stack(reviews: &BTreeMap<String, String>, commits: bool) -> Result<
 /// read as distinct piles rather than one tangled tree. Rootless fragments print
 /// above the trunk-anchored ones. The branch you are on is marked wherever it
 /// appears.
-pub fn print_all_stacks(reviews: &BTreeMap<String, String>, commits: bool) -> Result<()> {
+pub fn print_all_stacks(reviews: &BTreeMap<String, ReviewAnnotation>, commits: bool) -> Result<()> {
     let current = git::current_branch()?;
     let parents = parent_map()?;
     let children = children_map(&parents);
@@ -319,7 +320,7 @@ struct TreeCtx<'a> {
     trunk: Option<&'a str>,
     children: &'a BTreeMap<String, Vec<String>>,
     parents: &'a BTreeMap<String, String>,
-    reviews: &'a BTreeMap<String, String>,
+    reviews: &'a BTreeMap<String, ReviewAnnotation>,
     sizes: &'a BTreeMap<String, (usize, usize)>,
     /// `--commits`: list each branch's own commits beneath it.
     commits: bool,
@@ -370,11 +371,19 @@ fn collect_tree_lines(
     if Some(branch) == ctx.trunk {
         line.push_str(&style::paint(style::DIM, " (trunk)"));
     }
-    // Optional annotations in one paren group: the dimmed open review number,
-    // then the diff size against the parent in faded green/red, like a diff.
+    // Optional annotations in one paren group: the CI dot and dimmed open
+    // review number, then the diff size against the parent in faded green/red,
+    // like a diff.
     let mut tags: Vec<String> = Vec::new();
-    if let Some(id) = ctx.reviews.get(branch) {
-        tags.push(style::paint(style::DIM, id));
+    if let Some(review) = ctx.reviews.get(branch) {
+        // A queued review shows just the clock - it is waiting to land, so its
+        // (usually pending) CI dot would only be noise alongside it.
+        let marker = if review.queued {
+            crate::providers::QUEUED_MARK
+        } else {
+            review.checks.dot()
+        };
+        tags.push(format!("{marker}{}", style::paint(style::DIM, &review.id)));
     }
     // An empty branch (same tip as its parent) shows no size rather than a
     // noisy "+0/-0".
@@ -425,6 +434,27 @@ fn collect_tree_lines(
                 style::paint(style::DIM, "(no commits)")
             )),
             Err(_) => {}
+        }
+    }
+
+    // With --reviews, list the review's tallies under it, like --commits. The
+    // annotation carries a summary only when the flag is set. `lines` is
+    // printed reversed, so push them in reverse display order (see above).
+    if Some(branch) != ctx.trunk
+        && let Some(review) = ctx.reviews.get(branch)
+        && let Some(summary) = &review.summary
+    {
+        let indent = "  ".repeat(depth + 1);
+        let summary_lines = summary.lines();
+        if summary_lines.is_empty() {
+            lines.push(format!(
+                "{indent}{}",
+                style::paint(style::DIM, "(no reviews)")
+            ));
+        } else {
+            for text in summary_lines.iter().rev() {
+                lines.push(format!("{indent}{}", style::paint(style::DIM, text)));
+            }
         }
     }
 

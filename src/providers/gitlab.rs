@@ -9,8 +9,8 @@ use super::json::{
     required_string,
 };
 use super::{
-    MergeBlocker, ReviewProvider, ReviewRequest, WaitOutcome, command_output, merge_with_resettle,
-    merge_with_retry,
+    CheckStatus, MergeBlocker, ReviewProvider, ReviewRequest, ReviewSummary, WaitOutcome,
+    command_output, merge_with_resettle, merge_with_retry,
 };
 
 pub(super) struct GitLabProvider;
@@ -191,6 +191,39 @@ impl ReviewProvider for GitLabProvider {
         }
     }
 
+    fn check_status(&self, review: &ReviewRequest) -> Result<CheckStatus> {
+        let output = command_output(
+            "glab",
+            &["mr", "view", review.id_value(), "--output", "json"],
+        )?;
+        let value: serde_json::Value =
+            serde_json::from_str(&output).context("failed to parse glab MR JSON")?;
+        Ok(gitlab_pipeline_status(&value))
+    }
+
+    fn review_summary(&self, review: &ReviewRequest) -> Result<ReviewSummary> {
+        let output = command_output(
+            "glab",
+            &["mr", "view", review.id_value(), "--output", "json"],
+        )?;
+        let mr: serde_json::Value =
+            serde_json::from_str(&output).context("failed to parse glab MR JSON")?;
+        // Approvals live on a separate endpoint; best-effort, so a project
+        // without approval access just reports zero.
+        let approvals = command_output(
+            "glab",
+            &[
+                "api",
+                &format!(
+                    "projects/:id/merge_requests/{}/approvals",
+                    review.id_value()
+                ),
+            ],
+        )
+        .ok();
+        Ok(gitlab_summary(&mr, approvals.as_deref()))
+    }
+
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {
         // No --opened: it is deprecated, and glab prints the deprecation notice
         // to stdout, which corrupts the JSON we parse. Listing without a state
@@ -306,6 +339,68 @@ fn gitlab_review_from(review: &serde_json::Value) -> Result<ReviewRequest> {
     })
 }
 
+/// A GitLab pipeline `status` from an MR object's `head_pipeline`/`pipeline`,
+/// mapped to a check dot. The MR list JSON does not always carry a pipeline;
+/// when it does not, there is simply no dot.
+fn gitlab_pipeline_status(value: &serde_json::Value) -> CheckStatus {
+    let status = value
+        .get("head_pipeline")
+        .or_else(|| value.get("pipeline"))
+        .and_then(|pipeline| pipeline.get("status"))
+        .and_then(serde_json::Value::as_str);
+    map_pipeline_status(status)
+}
+
+/// Map GitLab's pipeline status string to a check dot: a red pipeline fails, a
+/// green/skipped/manual one passes, anything else in flight is pending, and an
+/// absent pipeline shows nothing.
+fn map_pipeline_status(status: Option<&str>) -> CheckStatus {
+    match status {
+        Some("success" | "skipped" | "manual") => CheckStatus::Passing,
+        Some("failed" | "canceled") => CheckStatus::Failing,
+        Some(_) => CheckStatus::Pending,
+        None => CheckStatus::None,
+    }
+}
+
+/// A GitLab MR's review tallies. Comments come from the MR's `user_notes_count`;
+/// approvals from the separate approvals endpoint's `approved_by`; requested
+/// changes from any reviewer whose `state` is `requested_changes`. Each source
+/// is best-effort - a missing field simply counts as zero.
+fn gitlab_summary(mr: &serde_json::Value, approvals_json: Option<&str>) -> ReviewSummary {
+    let comments = mr
+        .get("user_notes_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    let approvals = approvals_json
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .and_then(|value| {
+            value
+                .get("approved_by")
+                .and_then(serde_json::Value::as_array)
+                .map(|list| list.len() as u32)
+        })
+        .unwrap_or(0);
+    let changes_requested = mr
+        .get("reviewers")
+        .and_then(serde_json::Value::as_array)
+        .map(|reviewers| {
+            reviewers
+                .iter()
+                .filter(|reviewer| {
+                    reviewer.get("state").and_then(serde_json::Value::as_str)
+                        == Some("requested_changes")
+                })
+                .count() as u32
+        })
+        .unwrap_or(0);
+    ReviewSummary {
+        approvals,
+        comments,
+        changes_requested,
+    }
+}
+
 /// Map GitLab's `detailed_merge_status` to a blocker. Only the precise
 /// detailed status is trusted: the older coarse `merge_status` can't tell a
 /// conflict from a failing pipeline, so it (and anything unrecognized) is
@@ -379,7 +474,7 @@ fn classify_gitlab_merge(json: &str) -> MergeBlocker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ReviewRequest, ReviewState};
+    use crate::providers::{CheckStatus, ReviewRequest, ReviewState};
 
     #[test]
     fn parse_gitlab_review_reads_snake_case_fields() {
@@ -491,5 +586,53 @@ mod tests {
         // A 404 body / error text (trains are Premium) is not an array.
         assert!(super::active_train_source_branches("not json").is_empty());
         assert!(super::active_train_source_branches(r#"{"message":"404 Not Found"}"#).is_empty());
+    }
+
+    #[test]
+    fn map_pipeline_status_maps_gitlab_states() {
+        assert_eq!(map_pipeline_status(Some("success")), CheckStatus::Passing);
+        assert_eq!(map_pipeline_status(Some("manual")), CheckStatus::Passing);
+        assert_eq!(map_pipeline_status(Some("failed")), CheckStatus::Failing);
+        assert_eq!(map_pipeline_status(Some("canceled")), CheckStatus::Failing);
+        assert_eq!(map_pipeline_status(Some("running")), CheckStatus::Pending);
+        assert_eq!(map_pipeline_status(None), CheckStatus::None);
+    }
+
+    #[test]
+    fn gitlab_pipeline_status_reads_head_pipeline_then_pipeline() {
+        let head = serde_json::json!({"head_pipeline": {"status": "failed"}});
+        assert_eq!(gitlab_pipeline_status(&head), CheckStatus::Failing);
+        let legacy = serde_json::json!({"pipeline": {"status": "success"}});
+        assert_eq!(gitlab_pipeline_status(&legacy), CheckStatus::Passing);
+        assert_eq!(
+            gitlab_pipeline_status(&serde_json::json!({})),
+            CheckStatus::None
+        );
+    }
+
+    #[test]
+    fn gitlab_summary_gathers_comments_approvals_and_changes() {
+        let mr = serde_json::json!({
+            "user_notes_count": 3,
+            "reviewers": [
+                {"username": "a", "state": "requested_changes"},
+                {"username": "b", "state": "reviewed"},
+            ],
+        });
+        let approvals = r#"{"approved_by":[{"user":{"username":"c"}},{"user":{"username":"d"}}]}"#;
+        let summary = gitlab_summary(&mr, Some(approvals));
+        assert_eq!(
+            summary,
+            ReviewSummary {
+                approvals: 2,
+                comments: 3,
+                changes_requested: 1,
+            }
+        );
+        // No approvals endpoint access and a bare MR -> everything zero.
+        assert_eq!(
+            gitlab_summary(&serde_json::json!({}), None),
+            ReviewSummary::default()
+        );
     }
 }

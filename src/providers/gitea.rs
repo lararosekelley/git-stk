@@ -5,9 +5,9 @@ use crate::git;
 
 use super::json::{all_reviews, optional_bool, optional_string, parse_state, required_string};
 use super::{
-    CHECK_GRACE_POLLS, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
-    check_poll_interval, checks_timed_out, command_output, merge_with_resettle,
-    review_merged_out_of_band,
+    CHECK_GRACE_POLLS, CheckStatus, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState,
+    ReviewSummary, WaitOutcome, check_poll_interval, checks_timed_out, command_output,
+    merge_with_resettle, review_merged_out_of_band,
 };
 
 pub(super) struct GiteaProvider;
@@ -157,6 +157,33 @@ impl ReviewProvider for GiteaProvider {
         list_pulls("open")
     }
 
+    fn check_status(&self, review: &ReviewRequest) -> Result<CheckStatus> {
+        let head_sha = api_pull(review.id_value())?
+            .get("head")
+            .and_then(|head| head.get("sha"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if head_sha.is_empty() {
+            return Ok(CheckStatus::None);
+        }
+        let endpoint = format!("repos/{}/commits/{head_sha}/status", repo_slug()?);
+        let value: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+            .context("failed to parse gitea status JSON")?;
+        let total = value
+            .get("total_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        Ok(map_gitea_state(&optional_string(&value, "state"), total))
+    }
+
+    fn review_summary(&self, review: &ReviewRequest) -> Result<ReviewSummary> {
+        let endpoint = format!("repos/{}/pulls/{}/reviews", repo_slug()?, review.id_value());
+        let value: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+            .context("failed to parse gitea reviews JSON")?;
+        Ok(count_gitea_reviews(&value))
+    }
+
     fn mark_ready(&self, review: &ReviewRequest) -> Result<String> {
         // Clearing the draft state means dropping the `WIP:` title prefix.
         let title = review
@@ -279,6 +306,37 @@ fn gitea_review_from(review: &Value) -> Result<ReviewRequest> {
     })
 }
 
+/// Map a Gitea combined commit `state` to a check dot. No statuses (an empty
+/// state or zero total) means no dot.
+fn map_gitea_state(state: &str, total: u64) -> CheckStatus {
+    if total == 0 || state.is_empty() {
+        return CheckStatus::None;
+    }
+    match state {
+        "success" => CheckStatus::Passing,
+        "failure" | "error" => CheckStatus::Failing,
+        // pending / warning: statuses exist and are still running.
+        _ => CheckStatus::Pending,
+    }
+}
+
+/// Tally a Gitea PR reviews array by state.
+fn count_gitea_reviews(value: &Value) -> ReviewSummary {
+    let mut summary = ReviewSummary::default();
+    let Some(items) = value.as_array() else {
+        return summary;
+    };
+    for item in items {
+        match item.get("state").and_then(Value::as_str) {
+            Some("APPROVED") => summary.approvals += 1,
+            Some("REQUEST_CHANGES") => summary.changes_requested += 1,
+            Some("COMMENT") => summary.comments += 1,
+            _ => {}
+        }
+    }
+    summary
+}
+
 /// A branch name from a PR's base/head, tolerating the shapes tea may emit: a
 /// bare string, a nested `{ "ref": ... }`/`{ "label": ... }` object.
 fn branch_ref(review: &Value, keys: &[&str]) -> Result<String> {
@@ -384,5 +442,39 @@ mod tests {
             Some("owner/repo")
         );
         assert_eq!(slug_from_url("https://gitea.com/").as_deref(), None);
+    }
+
+    #[test]
+    fn map_gitea_state_maps_combined_status() {
+        assert_eq!(map_gitea_state("success", 2), CheckStatus::Passing);
+        assert_eq!(map_gitea_state("failure", 1), CheckStatus::Failing);
+        assert_eq!(map_gitea_state("error", 1), CheckStatus::Failing);
+        assert_eq!(map_gitea_state("pending", 1), CheckStatus::Pending);
+        // No statuses at all -> no dot.
+        assert_eq!(map_gitea_state("", 0), CheckStatus::None);
+        assert_eq!(map_gitea_state("success", 0), CheckStatus::None);
+    }
+
+    #[test]
+    fn count_gitea_reviews_tallies_by_state() {
+        let reviews = serde_json::json!([
+            {"state": "APPROVED"},
+            {"state": "REQUEST_CHANGES"},
+            {"state": "COMMENT"},
+            {"state": "COMMENT"},
+            {"state": "PENDING"},
+        ]);
+        assert_eq!(
+            count_gitea_reviews(&reviews),
+            ReviewSummary {
+                approvals: 1,
+                comments: 2,
+                changes_requested: 1,
+            }
+        );
+        assert_eq!(
+            count_gitea_reviews(&serde_json::json!({})),
+            ReviewSummary::default()
+        );
     }
 }

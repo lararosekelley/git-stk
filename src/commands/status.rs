@@ -3,7 +3,7 @@ use clap_complete::engine::ArgValueCompleter;
 
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{ReviewState, detect_review_provider};
+use crate::providers::{CheckStatus, ReviewState, detect_review_provider};
 use crate::style;
 use crate::{git, stack};
 
@@ -54,8 +54,24 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
             let review = review_provider.review_for_branch_including_closed(&branch)?;
             match &review {
                 Some(review) => {
+                    // A queued review shows just the clock (it is waiting to
+                    // land); otherwise the CI dot. Both best-effort - a failed
+                    // lookup just omits the marker. When queued, the CI dot is
+                    // suppressed, so skip fetching it.
+                    let queued = review_provider
+                        .enqueued_branches(std::slice::from_ref(&review.branch))
+                        .map(|set| set.contains(&review.branch))
+                        .unwrap_or(false);
+                    let marker = if queued {
+                        crate::providers::QUEUED_MARK
+                    } else {
+                        review_provider
+                            .check_status(review)
+                            .unwrap_or(CheckStatus::None)
+                            .dot()
+                    };
                     anstream::println!(
-                        "review: {} {} {} -> {}",
+                        "review: {marker}{} {} {} -> {}",
                         review.id,
                         style::state(&review.state),
                         style::paint(style::BRANCH, &review.branch),
