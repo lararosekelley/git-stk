@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -10,7 +10,8 @@ use super::json::{
     required_string,
 };
 use super::{
-    MergeBlocker, ReviewProvider, ReviewRequest, WaitOutcome, command_output, merge_with_retry,
+    CheckStatus, MergeBlocker, ReviewAnnotation, ReviewProvider, ReviewRequest, ReviewSummary,
+    WaitOutcome, command_output, generic_annotate, merge_with_retry,
 };
 
 pub(super) struct GitHubProvider;
@@ -178,6 +179,9 @@ impl ReviewProvider for GitHubProvider {
     }
 
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {
+        // Deliberately lightweight - statusCheckRollup here would fetch every
+        // open PR's full check list (huge and slow on a busy repo), so the CI
+        // dots come from a per-branch check_status scoped to the shown stack.
         let output = command_output(
             "gh",
             &[
@@ -192,6 +196,50 @@ impl ReviewProvider for GitHubProvider {
             ],
         )?;
         parse_github_reviews(&output)
+    }
+
+    fn annotate_branches(
+        &self,
+        branches: &[String],
+        detail: bool,
+    ) -> Result<BTreeMap<String, ReviewAnnotation>> {
+        if branches.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        // One GraphQL query fetches number, CI rollup, merge-queue entry, and
+        // (with detail) reviews for every branch at once. On any trouble (not a
+        // GitHub repo, an over-large --all, a GraphQL hiccup) fall back to the
+        // generic per-branch path rather than dropping the annotations.
+        match batched_annotate(branches, detail) {
+            Ok(annotations) => Ok(annotations),
+            Err(_) => generic_annotate(self, branches, detail),
+        }
+    }
+
+    fn check_status(&self, review: &ReviewRequest) -> Result<CheckStatus> {
+        let output = command_output(
+            "gh",
+            &[
+                "pr",
+                "view",
+                review.id_value(),
+                "--json",
+                "statusCheckRollup",
+            ],
+        )?;
+        let value: serde_json::Value =
+            serde_json::from_str(&output).context("failed to parse gh checks JSON")?;
+        Ok(rollup_status(&value))
+    }
+
+    fn review_summary(&self, review: &ReviewRequest) -> Result<ReviewSummary> {
+        let output = command_output(
+            "gh",
+            &["pr", "view", review.id_value(), "--json", "latestReviews"],
+        )?;
+        let value: serde_json::Value =
+            serde_json::from_str(&output).context("failed to parse gh reviews JSON")?;
+        Ok(count_latest_reviews(value.get("latestReviews")))
     }
 
     fn mark_ready(&self, review: &ReviewRequest) -> Result<String> {
@@ -212,6 +260,110 @@ impl ReviewProvider for GitHubProvider {
 
     fn enqueued_branches(&self, branches: &[String]) -> Result<BTreeSet<String>> {
         Ok(github_enqueued_branches(branches))
+    }
+}
+
+/// Fetch review annotations for `branches` in a single GraphQL query: one
+/// aliased `pullRequests(headRefName:...)` lookup per branch, each returning
+/// the number, merge-queue entry, CI rollup state, and (with `detail`) the
+/// latest reviews. Collapses what would be ~2N provider calls into one.
+fn batched_annotate(
+    branches: &[String],
+    detail: bool,
+) -> Result<BTreeMap<String, ReviewAnnotation>> {
+    let (owner, repo) = repo_owner_name().context("could not resolve owner/repo")?;
+    let query = build_annotation_query(branches.len(), detail);
+    let owner_arg = format!("owner={owner}");
+    let repo_arg = format!("repo={repo}");
+    let query_arg = format!("query={query}");
+    let head_args: Vec<String> = branches
+        .iter()
+        .enumerate()
+        .map(|(index, branch)| format!("h{index}={branch}"))
+        .collect();
+
+    let mut args = vec!["api", "graphql", "-f", &owner_arg, "-f", &repo_arg];
+    for head_arg in &head_args {
+        args.extend(["-f", head_arg]);
+    }
+    args.extend(["-f", &query_arg]);
+
+    parse_annotation_batch(&command_output("gh", &args)?, detail)
+}
+
+/// Build the aliased GraphQL query for [`batched_annotate`]. Kept out of
+/// `format!` to dodge brace-escaping; the fields are exactly what
+/// [`ReviewAnnotation`] needs, no more.
+fn build_annotation_query(count: usize, detail: bool) -> String {
+    let reviews_field = if detail {
+        "latestReviews(first:100){nodes{state}} "
+    } else {
+        ""
+    };
+    let mut vars = String::from("$owner:String!,$repo:String!");
+    let mut aliases = String::new();
+    for index in 0..count {
+        vars.push_str(&format!(",$h{index}:String!"));
+        aliases.push_str(&format!(
+            "p{index}:pullRequests(headRefName:$h{index},states:OPEN,first:1)"
+        ));
+        aliases.push_str("{nodes{number headRefName mergeQueueEntry{state} ");
+        aliases.push_str(reviews_field);
+        aliases.push_str("commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}");
+    }
+    format!("query({vars}){{repository(owner:$owner,name:$repo){{{aliases}}}}}")
+}
+
+/// Parse [`batched_annotate`]'s response. Each aliased entry holds at most one
+/// PR node (the open PR for that head, if any); a head with no open PR yields
+/// an empty `nodes` list and is skipped.
+fn parse_annotation_batch(json: &str, detail: bool) -> Result<BTreeMap<String, ReviewAnnotation>> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).context("failed to parse gh graphql JSON")?;
+    let repository = value
+        .pointer("/data/repository")
+        .and_then(serde_json::Value::as_object)
+        .context("gh graphql response missing repository")?;
+    let mut annotations = BTreeMap::new();
+    for entry in repository.values() {
+        let Some(node) = entry.pointer("/nodes/0") else {
+            continue;
+        };
+        let (Some(branch), Some(number)) = (
+            node.get("headRefName").and_then(serde_json::Value::as_str),
+            node.get("number").and_then(serde_json::Value::as_i64),
+        ) else {
+            continue;
+        };
+        let checks = rollup_state_to_status(
+            node.pointer("/commits/nodes/0/commit/statusCheckRollup/state")
+                .and_then(serde_json::Value::as_str),
+        );
+        let queued = node
+            .get("mergeQueueEntry")
+            .is_some_and(|entry| !entry.is_null());
+        let summary = detail.then(|| count_latest_reviews(node.pointer("/latestReviews/nodes")));
+        annotations.insert(
+            branch.to_owned(),
+            ReviewAnnotation {
+                id: format!("#{number}"),
+                checks,
+                queued,
+                summary,
+            },
+        );
+    }
+    Ok(annotations)
+}
+
+/// Map GraphQL's aggregate `StatusState` to a check dot (the GraphQL rollup
+/// already reduces every check to one state, unlike the REST array).
+fn rollup_state_to_status(state: Option<&str>) -> CheckStatus {
+    match state {
+        Some("SUCCESS") => CheckStatus::Passing,
+        Some("FAILURE" | "ERROR") => CheckStatus::Failing,
+        Some("PENDING" | "EXPECTED") => CheckStatus::Pending,
+        _ => CheckStatus::None,
     }
 }
 
@@ -418,10 +570,75 @@ fn github_review_from(review: &serde_json::Value) -> Result<ReviewRequest> {
     })
 }
 
+/// The check status from a `gh pr view --json statusCheckRollup` object, or
+/// [`CheckStatus::None`] when the field is absent or empty.
+fn rollup_status(value: &serde_json::Value) -> CheckStatus {
+    match value.get("statusCheckRollup") {
+        Some(rollup) => aggregate_rollup(rollup),
+        None => CheckStatus::None,
+    }
+}
+
+/// Reduce GitHub's `statusCheckRollup` (a mix of CheckRun nodes, which carry a
+/// `status` and `conclusion`, and StatusContext nodes, which carry a `state`)
+/// to one status: any failure wins, then any check still in flight is pending,
+/// otherwise passing. An empty or absent rollup means there are no checks.
+fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
+    let Some(items) = rollup.as_array().filter(|items| !items.is_empty()) else {
+        return CheckStatus::None;
+    };
+    let mut pending = false;
+    for item in items {
+        let field = |name| {
+            item.get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+        };
+        let conclusion = field("conclusion");
+        let status = field("status");
+        let state = field("state");
+        if matches!(
+            conclusion,
+            "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
+        ) || matches!(state, "FAILURE" | "ERROR")
+        {
+            return CheckStatus::Failing;
+        }
+        // A CheckRun that has not COMPLETED, or a StatusContext still expecting
+        // a result, is running.
+        if (!status.is_empty() && status != "COMPLETED") || matches!(state, "PENDING" | "EXPECTED")
+        {
+            pending = true;
+        }
+    }
+    if pending {
+        CheckStatus::Pending
+    } else {
+        CheckStatus::Passing
+    }
+}
+
+/// Tally a `latestReviews` array (the latest review per reviewer) by state.
+fn count_latest_reviews(reviews: Option<&serde_json::Value>) -> ReviewSummary {
+    let mut summary = ReviewSummary::default();
+    let Some(items) = reviews.and_then(serde_json::Value::as_array) else {
+        return summary;
+    };
+    for item in items {
+        match item.get("state").and_then(serde_json::Value::as_str) {
+            Some("APPROVED") => summary.approvals += 1,
+            Some("CHANGES_REQUESTED") => summary.changes_requested += 1,
+            Some("COMMENTED") => summary.comments += 1,
+            _ => {}
+        }
+    }
+    summary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ReviewRequest, ReviewState};
+    use crate::providers::{CheckStatus, ReviewRequest, ReviewState};
 
     #[test]
     fn parse_github_review_reads_first_array_item() {
@@ -618,5 +835,140 @@ mod tests {
         // Unparseable / unexpected shapes never read as queued.
         assert!(!parse_merge_queue_entry("{}"));
         assert!(!parse_merge_queue_entry("not json"));
+    }
+
+    #[test]
+    fn aggregate_rollup_lets_any_failure_win() {
+        let rollup = serde_json::json!([
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]);
+        assert_eq!(aggregate_rollup(&rollup), CheckStatus::Failing);
+        // A red StatusContext counts too.
+        let context = serde_json::json!([{"__typename": "StatusContext", "state": "ERROR"}]);
+        assert_eq!(aggregate_rollup(&context), CheckStatus::Failing);
+    }
+
+    #[test]
+    fn aggregate_rollup_is_pending_while_a_check_runs() {
+        let rollup = serde_json::json!([
+            {"status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"status": "IN_PROGRESS", "conclusion": null},
+        ]);
+        assert_eq!(aggregate_rollup(&rollup), CheckStatus::Pending);
+        let context = serde_json::json!([{"state": "PENDING"}]);
+        assert_eq!(aggregate_rollup(&context), CheckStatus::Pending);
+    }
+
+    #[test]
+    fn aggregate_rollup_passes_when_all_green_and_none_when_empty() {
+        let green = serde_json::json!([
+            {"status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"status": "COMPLETED", "conclusion": "SKIPPED"},
+            {"state": "SUCCESS"},
+        ]);
+        assert_eq!(aggregate_rollup(&green), CheckStatus::Passing);
+        assert_eq!(aggregate_rollup(&serde_json::json!([])), CheckStatus::None);
+        assert_eq!(
+            aggregate_rollup(&serde_json::json!("nope")),
+            CheckStatus::None
+        );
+    }
+
+    #[test]
+    fn rollup_status_reads_the_view_json_field() {
+        // check_status feeds `gh pr view --json statusCheckRollup` here.
+        let value = serde_json::json!({
+            "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "FAILURE"}]
+        });
+        assert_eq!(rollup_status(&value), CheckStatus::Failing);
+        // No field (or empty) means no dot.
+        assert_eq!(rollup_status(&serde_json::json!({})), CheckStatus::None);
+    }
+
+    #[test]
+    fn rollup_state_to_status_maps_the_graphql_aggregate() {
+        assert_eq!(
+            rollup_state_to_status(Some("SUCCESS")),
+            CheckStatus::Passing
+        );
+        assert_eq!(
+            rollup_state_to_status(Some("FAILURE")),
+            CheckStatus::Failing
+        );
+        assert_eq!(rollup_state_to_status(Some("ERROR")), CheckStatus::Failing);
+        assert_eq!(
+            rollup_state_to_status(Some("PENDING")),
+            CheckStatus::Pending
+        );
+        assert_eq!(
+            rollup_state_to_status(Some("EXPECTED")),
+            CheckStatus::Pending
+        );
+        assert_eq!(rollup_state_to_status(None), CheckStatus::None);
+    }
+
+    #[test]
+    fn build_annotation_query_includes_reviews_only_with_detail() {
+        let plain = build_annotation_query(2, false);
+        assert!(plain.contains("$h0:String!") && plain.contains("$h1:String!"));
+        assert!(plain.contains("statusCheckRollup"));
+        assert!(plain.contains("mergeQueueEntry"));
+        assert!(!plain.contains("latestReviews"));
+        assert!(build_annotation_query(1, true).contains("latestReviews"));
+    }
+
+    #[test]
+    fn parse_annotation_batch_reads_each_prs_status_queue_and_reviews() {
+        let json = r#"{"data":{"repository":{
+            "p0":{"nodes":[{"number":9,"headRefName":"feature/a","mergeQueueEntry":null,
+                "latestReviews":{"nodes":[{"state":"APPROVED"},{"state":"APPROVED"}]},
+                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}]},
+            "p1":{"nodes":[{"number":10,"headRefName":"feature/b","mergeQueueEntry":{"state":"QUEUED"},
+                "latestReviews":{"nodes":[{"state":"CHANGES_REQUESTED"}]},
+                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}}]},
+            "p2":{"nodes":[]}
+        }}}"#;
+        let annotations = parse_annotation_batch(json, true).expect("parse");
+
+        // p2 had no open PR, so only two branches are annotated.
+        assert_eq!(annotations.len(), 2);
+        let a = &annotations["feature/a"];
+        assert_eq!(a.id, "#9");
+        assert_eq!(a.checks, CheckStatus::Passing);
+        assert!(!a.queued);
+        assert_eq!(a.summary.expect("summary").approvals, 2);
+        let b = &annotations["feature/b"];
+        assert_eq!(b.id, "#10");
+        assert_eq!(b.checks, CheckStatus::Failing);
+        assert!(b.queued, "a non-null mergeQueueEntry means queued");
+        assert_eq!(b.summary.expect("summary").changes_requested, 1);
+    }
+
+    #[test]
+    fn parse_annotation_batch_omits_summary_without_detail() {
+        let json = r#"{"data":{"repository":{"p0":{"nodes":[{"number":9,"headRefName":"feature/a",
+            "mergeQueueEntry":null,"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING"}}}]}}]}}}}"#;
+        let annotations = parse_annotation_batch(json, false).expect("parse");
+        let a = &annotations["feature/a"];
+        assert_eq!(a.checks, CheckStatus::Pending);
+        assert!(a.summary.is_none());
+    }
+
+    #[test]
+    fn count_latest_reviews_tallies_by_state() {
+        let reviews = serde_json::json!([
+            {"state": "APPROVED"},
+            {"state": "APPROVED"},
+            {"state": "CHANGES_REQUESTED"},
+            {"state": "COMMENTED"},
+            {"state": "DISMISSED"},
+        ]);
+        let summary = count_latest_reviews(Some(&reviews));
+        assert_eq!(summary.approvals, 2);
+        assert_eq!(summary.changes_requested, 1);
+        assert_eq!(summary.comments, 1);
+        // No reviews at all -> an empty summary.
+        assert_eq!(count_latest_reviews(None), ReviewSummary::default());
     }
 }

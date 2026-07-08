@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use std::{fmt, process::Command};
 
@@ -140,6 +140,78 @@ pub struct ReviewRequest {
     pub draft: bool,
 }
 
+/// A review's CI check rollup, reduced to one at-a-glance dot for `list` and
+/// `status`. `None` means no checks ran, or the provider could not report
+/// them - either way, no dot is shown.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum CheckStatus {
+    Passing,
+    Failing,
+    Pending,
+    None,
+}
+
+impl CheckStatus {
+    /// The status dot, with a trailing space so it sits before the review id -
+    /// or empty when there is nothing to show.
+    pub fn dot(self) -> &'static str {
+        match self {
+            Self::Passing => "🟢 ",
+            Self::Failing => "🔴 ",
+            Self::Pending => "🟡 ",
+            Self::None => "",
+        }
+    }
+}
+
+/// Tallies of a review's latest reviews, for `list --reviews`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+pub struct ReviewSummary {
+    pub approvals: u32,
+    pub comments: u32,
+    pub changes_requested: u32,
+}
+
+impl ReviewSummary {
+    /// One line per non-zero category (`"2 approvals"`, `"1 requested change"`),
+    /// mirroring the `--commits` list. Empty when nothing has been reviewed, so
+    /// the caller can show a `(no reviews)` placeholder instead.
+    pub fn lines(&self) -> Vec<String> {
+        let count =
+            |n: u32, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let mut lines = Vec::new();
+        if self.approvals > 0 {
+            lines.push(count(self.approvals, "approval", "approvals"));
+        }
+        if self.comments > 0 {
+            lines.push(count(self.comments, "comment", "comments"));
+        }
+        if self.changes_requested > 0 {
+            lines.push(count(
+                self.changes_requested,
+                "requested change",
+                "requested changes",
+            ));
+        }
+        lines
+    }
+}
+
+/// The marker shown before a review that sits in a merge queue (GitHub) or
+/// merge train (GitLab) - it is waiting its turn to land. Includes a trailing
+/// space so it sits before the CI dot / id.
+pub const QUEUED_MARK: &str = "🕑 ";
+
+/// Per-branch review data threaded into the `list` tree: the id (e.g. `#12`),
+/// its CI dot, whether it sits in a merge queue/train, and - only with
+/// `--reviews` - the review tallies.
+pub struct ReviewAnnotation {
+    pub id: String,
+    pub checks: CheckStatus,
+    pub queued: bool,
+    pub summary: Option<ReviewSummary>,
+}
+
 /// The result of waiting on a review's checks before merging it.
 pub enum WaitOutcome {
     /// Checks passed, or there are none - go ahead and merge.
@@ -185,8 +257,34 @@ pub trait ReviewProvider {
     fn wait_for_checks(&self, review: &ReviewRequest) -> Result<WaitOutcome>;
 
     /// Every open review, in one call - for annotating the stack with review
-    /// numbers without a lookup per branch.
+    /// numbers (and CI status) without a lookup per branch.
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>>;
+
+    /// Review annotations (id, CI dot, queue state, and - with `detail` -
+    /// review tallies) for the given branches, in as few calls as the provider
+    /// allows. The default is the generic per-branch path; a provider can
+    /// override to batch (GitHub folds it into a single GraphQL query). Only
+    /// branches with an open review appear in the result.
+    fn annotate_branches(
+        &self,
+        branches: &[String],
+        detail: bool,
+    ) -> Result<BTreeMap<String, ReviewAnnotation>> {
+        generic_annotate(self, branches, detail)
+    }
+
+    /// The CI check rollup for the review's head, for the `list`/`status` dot.
+    /// Best-effort display data: the default is [`CheckStatus::None`] (no dot),
+    /// which is also the right answer for a provider that cannot report it.
+    fn check_status(&self, _review: &ReviewRequest) -> Result<CheckStatus> {
+        Ok(CheckStatus::None)
+    }
+
+    /// The review's latest-review tallies, for `list --reviews`. Fetched per
+    /// branch only when the flag is set; the default is an empty summary.
+    fn review_summary(&self, _review: &ReviewRequest) -> Result<ReviewSummary> {
+        Ok(ReviewSummary::default())
+    }
 
     /// Mark a draft review as ready for review.
     fn mark_ready(&self, review: &ReviewRequest) -> Result<String>;
@@ -217,6 +315,50 @@ pub fn detect_review_provider() -> Result<(DetectedProvider, Box<dyn ReviewProvi
     let provider = detect_provider()?;
     let client = review_provider(provider.kind);
     Ok((provider, client))
+}
+
+/// The generic per-branch annotation path behind [`ReviewProvider::
+/// annotate_branches`]: list the open reviews, keep the wanted branches, then
+/// look up CI status, queue membership, and (with `detail`) review tallies.
+/// Every lookup is best-effort - a failure drops that branch's dot/tallies,
+/// not the whole map. A provider with a cheaper bulk API overrides the trait
+/// method instead of using this.
+fn generic_annotate<P: ReviewProvider + ?Sized>(
+    provider: &P,
+    branches: &[String],
+    detail: bool,
+) -> Result<BTreeMap<String, ReviewAnnotation>> {
+    let wanted: BTreeSet<&str> = branches.iter().map(String::as_str).collect();
+    let reviewed: Vec<ReviewRequest> = provider
+        .open_reviews()?
+        .into_iter()
+        .filter(|review| wanted.contains(review.branch.as_str()))
+        .collect();
+    let names: Vec<String> = reviewed
+        .iter()
+        .map(|review| review.branch.clone())
+        .collect();
+    let queued = provider.enqueued_branches(&names).unwrap_or_default();
+    let mut annotations = BTreeMap::new();
+    for review in reviewed {
+        let checks = provider.check_status(&review).unwrap_or(CheckStatus::None);
+        let summary = if detail {
+            provider.review_summary(&review).ok()
+        } else {
+            None
+        };
+        let is_queued = queued.contains(&review.branch);
+        annotations.insert(
+            review.branch.clone(),
+            ReviewAnnotation {
+                id: review.id,
+                checks,
+                queued: is_queued,
+                summary,
+            },
+        );
+    }
+    Ok(annotations)
 }
 
 /// The branch's review only when it actually heads that branch. A provider can

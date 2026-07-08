@@ -378,6 +378,22 @@ pub fn current_stack_branches(branch: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The branches `list` may annotate with review info: the current stack, or -
+/// with `all` - every stacked branch. A superset of what the tree actually
+/// draws is fine here; its only job is to bound which branches get a per-branch
+/// review lookup, so `list` never queries every open PR in the repo.
+pub fn listed_branches(all: bool) -> Result<BTreeSet<String>> {
+    if all {
+        Ok(parent_map()?
+            .into_iter()
+            .flat_map(|(child, parent)| [child, parent])
+            .collect())
+    } else {
+        let current = git::current_branch()?;
+        Ok(current_stack_branches(&current)?.into_iter().collect())
+    }
+}
+
 /// Publish the current stack's parent map to the shared metadata ref so
 /// another clone can rebuild it. Best effort: a failure warns but never aborts
 /// the push that triggered it.

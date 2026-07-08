@@ -1,28 +1,32 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 use clap::ValueEnum;
 
 use crate::commands::Run;
 use crate::providers::{
-    ReviewRequest, ReviewState, detect_review_provider, label, owned_review_for_branch,
+    ReviewAnnotation, ReviewRequest, ReviewState, detect_review_provider, label,
+    owned_review_for_branch,
 };
 use crate::{git, stack};
 
-/// Branch -> open-review id (e.g. `#12`), in one provider call. Best effort:
+/// Branch -> its open-review annotation (id, CI status, queue state, and -
+/// with `detail` - review tallies), scoped to the `listed` branches the tree
+/// draws so the provider never queries every open PR in the repo. The provider
+/// batches this as tightly as it can (GitHub: one GraphQL call). Best effort:
 /// an absent or failing provider (offline, no gh/glab) yields an empty map, so
-/// the tree still prints, just without numbers.
-fn review_numbers() -> BTreeMap<String, String> {
+/// the tree still prints, just without annotations.
+fn review_annotations(
+    listed: &BTreeSet<String>,
+    detail: bool,
+) -> BTreeMap<String, ReviewAnnotation> {
     let Some((_, provider)) = detect_review_provider().ok() else {
         return BTreeMap::new();
     };
-    let Ok(reviews) = provider.open_reviews() else {
-        return BTreeMap::new();
-    };
-    reviews
-        .into_iter()
-        .map(|review| (review.branch, review.id))
-        .collect()
+    let branches: Vec<String> = listed.iter().cloned().collect();
+    provider
+        .annotate_branches(&branches, detail)
+        .unwrap_or_default()
 }
 
 /// A shareable rendering of the stack.
@@ -47,14 +51,31 @@ pub struct List {
     /// List each branch's own commits (short SHA + subject) beneath it.
     #[arg(long, conflicts_with = "format")]
     commits: bool,
+    /// List each review's approvals, comments, and requested changes beneath it.
+    #[arg(long, conflicts_with_all = ["format", "commits", "local"])]
+    reviews: bool,
+    /// Skip all provider lookups: draw the tree from local metadata only, with
+    /// no review numbers, CI status, or queue info. Never touches the network.
+    #[arg(long, conflicts_with_all = ["format", "reviews"])]
+    local: bool,
 }
 
 impl Run for List {
     fn run(self) -> Result<()> {
-        match (self.format, self.all) {
-            (Some(format), _) => list_formatted(format),
-            (None, true) => crate::stack::print_all_stacks(&review_numbers(), self.commits),
-            (None, false) => crate::stack::print_stack(&review_numbers(), self.commits),
+        if let Some(format) = self.format {
+            return list_formatted(format);
+        }
+        // --local draws from git metadata alone; otherwise annotate, scoping the
+        // provider lookups to just the branches this tree draws.
+        let annotations = if self.local {
+            BTreeMap::new()
+        } else {
+            review_annotations(&stack::listed_branches(self.all)?, self.reviews)
+        };
+        if self.all {
+            stack::print_all_stacks(&annotations, self.commits)
+        } else {
+            stack::print_stack(&annotations, self.commits)
         }
     }
 }
