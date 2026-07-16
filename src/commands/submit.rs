@@ -186,22 +186,18 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     }
 
     // Seed freshly created reviews from the repo's PR template before the
-    // managed sections go in, so our content appends beneath it rather than
-    // replacing it. The flag per branch predicts whether a managed section
-    // (stack overview, description, or Closes #N) will follow - mirroring the
-    // writers below - so the template only grows a seam rule when something
-    // actually lands under it.
-    let writes_stack_overview = submit_stack || downstack;
-    let created: Vec<(String, bool)> = created
-        .into_iter()
-        .map(|branch| {
-            let managed = writes_stack_overview
-                || (desc.is_some() && branch == desc_branch)
-                || crate::notes::branch_references_issue(&branch);
-            (branch, managed)
-        })
-        .collect();
-    crate::notes::seed_template_notes(review_provider.as_ref(), provider.kind, &created, dry_run)?;
+    // managed sections go in, so our content joins it rather than replacing it.
+    // Without a user description the template is wrapped in the managed
+    // description block; the branch that gets `--desc` keeps the template
+    // freeform above a seam so the description reads as a distinct block below.
+    let desc_target = desc.as_ref().map(|_| desc_branch.as_str());
+    crate::notes::seed_template_notes(
+        review_provider.as_ref(),
+        provider.kind,
+        &created,
+        desc_target,
+        dry_run,
+    )?;
 
     // Flip drafts in scope to ready for review (the escape hatch for
     // stk.submitDraft users).
