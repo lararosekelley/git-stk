@@ -675,7 +675,10 @@ fn submit_desc_file_reads_the_description_from_a_file() {
 
     // A markdown doc, as an agent might hand off. Surrounding blank lines are
     // trimmed so the block reads cleanly.
-    repo.write("desc.md", "\n## What\n\nThe change.\n\n## Why\n\nBecause.\n\n");
+    repo.write(
+        "desc.md",
+        "\n## What\n\nThe change.\n\n## Why\n\nBecause.\n\n",
+    );
 
     let fake = FakeProvider::new()
         .on("pr view 12", r#"{"body":""}"#)
@@ -772,7 +775,9 @@ fn submit_desc_drops_the_subject_echo_when_no_template() {
         .args(["submit", "feature/b", "-d", "Real description."])
         .assert()
         .success()
-        .stdout(predicates::str::contains("dropped the commit subject from #12"))
+        .stdout(predicates::str::contains(
+            "dropped the commit subject from #12",
+        ))
         .stdout(predicates::str::contains("set description in #12"));
 
     // The seed's edit cleared the echoed subject, and the description landed in
