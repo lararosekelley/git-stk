@@ -131,18 +131,19 @@ pub fn update_description_note(
     Ok(())
 }
 
-/// Seed each freshly created review's body from the repo's PR/MR template, so
-/// the managed sections augment it instead of `--fill` replacing it.
-/// Create-only - existing reviews keep whatever body they have - and skipped
-/// when `stk.usePrTemplate` is off or the repo has no single template.
+/// Prepare each freshly created review's body before the managed sections go
+/// in. Create-only - existing reviews keep whatever body they have.
 ///
-/// `desc_branch` names the branch (if any) that will receive a `--desc`. That
-/// branch keeps the template freeform above a seam, so the user's description
-/// reads as a distinct block below it. Every other branch wraps the template in
-/// the managed description block, where it reads as the opening prose. Either
-/// way the template's source is the commit body, never the subject line
-/// `create_review` echoes when the commit has none - that echo would duplicate
-/// the title as a stray line under the template.
+/// With a repo PR/MR template (and `stk.usePrTemplate` on), the body is seeded
+/// from it: the `--desc` branch (named by `desc_branch`) keeps the template
+/// freeform above a seam so the description reads as a distinct block below,
+/// while every other branch wraps the template in the managed description block
+/// as the opening prose. Without a template the only cleanup is on the `--desc`
+/// branch, whose body `create_review` seeded with the commit subject when the
+/// commit had no body: that echo is dropped so the description does not sit
+/// beneath a redundant copy of the title. A branch with neither a template nor
+/// a description keeps its subject placeholder untouched. The template's source
+/// is always the commit body, never the subject echo.
 pub fn seed_template_notes(
     review_provider: &dyn ReviewProvider,
     kind: ProviderKind,
@@ -150,21 +151,30 @@ pub fn seed_template_notes(
     desc_branch: Option<&str>,
     dry_run: bool,
 ) -> Result<()> {
-    if created.is_empty() || !settings::use_pr_template()? {
+    if created.is_empty() {
         return Ok(());
     }
-    let Some(template) = template::discover(kind)? else {
-        return Ok(());
+    let template = if settings::use_pr_template()? {
+        template::discover(kind)?
+    } else {
+        None
     };
 
     for branch in created {
+        let is_desc = desc_branch == Some(branch.as_str());
+        // A branch with no template to seed and no description that would
+        // strand the subject echo needs no change - leave create_review's body,
+        // and make no provider call for it.
+        if template.is_none() && !is_desc {
+            continue;
+        }
         if dry_run {
-            anstream::println!("would seed the PR template into the review for {branch}");
+            anstream::println!("would seed the review body for {branch}");
             continue;
         }
 
         let Some(review) = review_provider.review_for_branch(branch)? else {
-            anstream::println!("skipped PR template: no review found for {branch}");
+            anstream::println!("skipped body seed: no review found for {branch}");
             continue;
         };
         if review.branch != *branch {
@@ -174,17 +184,26 @@ pub fn seed_template_notes(
         let body = review_provider.review_body(&review)?;
         let commit_body = crate::git::commit_body(branch)?;
         let prose = commit_body.trim();
-        let updated = if desc_branch == Some(branch.as_str()) {
-            body_with_template(prose, &template)
-        } else {
-            body_template_as_description(&template, prose)
+        let (updated, seeded_template) = match (&template, is_desc) {
+            // Template + description: template stays freeform above the seam.
+            (Some(template), true) => (body_with_template(prose, template), true),
+            // Template, no description: wrap it in the managed block.
+            (Some(template), false) => (body_template_as_description(template, prose), true),
+            // No template, description coming: drop create_review's subject echo,
+            // keeping a real commit body if the commit had one.
+            (None, true) => (prose.to_owned(), false),
+            (None, false) => continue,
         };
         if updated == body {
             continue;
         }
 
         review_provider.update_review_body(&review, &updated)?;
-        anstream::println!("seeded the PR template into {}", review.id);
+        if seeded_template {
+            anstream::println!("seeded the PR template into {}", review.id);
+        } else {
+            anstream::println!("dropped the commit subject from {}", review.id);
+        }
     }
 
     Ok(())
