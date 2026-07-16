@@ -740,6 +740,53 @@ fn submit_desc_file_expands_a_leading_tilde() {
 }
 
 #[test]
+fn submit_desc_drops_the_subject_echo_when_no_template() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    // No PR template in this repo.
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.git(["config", "branch.feature/b.stkParent", "main"]);
+    // A subject with no commit body: create_review would echo the subject as
+    // the PR body, which must not linger above a supplied description.
+    repo.commit_file("a.txt", "a\n", "the subject line");
+
+    let fake = FakeProvider::new()
+        .record(
+            "pr create",
+            "created.txt",
+            "https://github.com/owner/repo/pull/12",
+        )
+        // create_review seeded the body with the echoed subject.
+        .on("pr view 12", r#"{"body":"the subject line"}"#)
+        .record_append("pr edit 12 --body", "edits-12.log", "")
+        .on_after(
+            "feature/b",
+            "created.txt",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/12","title":"the subject line"}]"##,
+        )
+        .on("feature/b", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "feature/b", "-d", "Real description."])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dropped the commit subject from #12"))
+        .stdout(predicates::str::contains("set description in #12"));
+
+    // The seed's edit cleared the echoed subject, and the description landed in
+    // its own managed block.
+    let edits = fs::read_to_string(repo.path().join("edits-12.log")).expect("edits log");
+    assert!(
+        edits.contains(
+            "<!-- git-stk:description -->\nReal description.\n<!-- /git-stk:description -->"
+        ),
+        "description block missing:\n{edits}"
+    );
+}
+
+#[test]
 fn submit_desc_file_rejects_a_missing_file() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
