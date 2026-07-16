@@ -366,7 +366,8 @@ fn submit_desc_keeps_the_template_freeform_above_a_seam() {
         "seed should keep the template freeform above a seam:\n{edits}"
     );
     assert!(
-        edits.contains("<!-- git-stk:description -->\nWhat and why.\n<!-- /git-stk:description -->"),
+        edits
+            .contains("<!-- git-stk:description -->\nWhat and why.\n<!-- /git-stk:description -->"),
         "the --desc block should be written:\n{edits}"
     );
 }
