@@ -203,19 +203,16 @@ fn body_template_as_description(template: &str, prose: &str) -> String {
     body_with_description_note("", &content)
 }
 
-/// Place the template at the top of the body, above a horizontal-rule seam that
-/// separates it from the managed description block a `--desc` writes below. An
-/// empty body becomes the template and seam alone; a body already carrying the
-/// template is left untouched (so a re-seed is a no-op); otherwise the template
-/// is prepended above the commit body.
-fn body_with_template(body: &str, template: &str) -> String {
-    if body.contains(template) {
-        return body.to_owned();
-    }
-    let freeform = if body.trim().is_empty() {
+/// Seed the `--desc` branch's body: the template, with the commit body beneath
+/// it when the commit has one, above a horizontal-rule seam that separates it
+/// from the managed description block `--desc` writes below. Always seamed - a
+/// description always follows - and the caller's `updated == body` check is what
+/// makes a re-seed a no-op, not any guard here.
+fn body_with_template(prose: &str, template: &str) -> String {
+    let freeform = if prose.trim().is_empty() {
         template.to_owned()
     } else {
-        format!("{template}\n\n{}", body.trim_start())
+        format!("{template}\n\n{}", prose.trim_start())
     };
     format!("{freeform}\n\n---")
 }
@@ -309,11 +306,11 @@ mod tests {
     }
 
     #[test]
-    fn body_with_template_is_idempotent_when_already_present() {
-        // A body that already carries the template is left exactly as is - no
-        // second rule.
-        let seeded = "## Summary\n\nCommit body.";
-        assert_eq!(body_with_template(seeded, "## Summary"), seeded);
+    fn body_with_template_always_seams_even_when_the_commit_body_matches() {
+        // A commit body that opens with the template text must not suppress the
+        // seam: the `--desc` block always needs a rule above it.
+        let seeded = body_with_template("## Summary\n\ndetails", "## Summary");
+        assert_eq!(seeded, "## Summary\n\n## Summary\n\ndetails\n\n---");
     }
 
     #[test]
