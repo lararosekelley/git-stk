@@ -351,15 +351,20 @@ own `Closes #N` step stays inert on those shapes, so the two never collide.
 
 `submit --desc <text>` (or `-d`) writes a description block at the top of the review body, above the
 managed sections, for the current or named branch only. It sticks across resubmits until changed;
-`--desc ""` removes it.
+`--desc ""` removes it. `--desc-file <path>` reads the same block from a markdown or text file instead
+of an inline string (handy for agent-authored bodies); it is incompatible with `--desc`, and an empty
+file clears the block just like `--desc ""`. The path may be relative (to your working directory),
+absolute, or start with `~`/`~/` for your home directory - the tilde is expanded even when your shell
+did not (e.g. a quoted or script-supplied argument).
 
 When the repo carries a pull/merge request template - GitHub's `PULL_REQUEST_TEMPLATE` (in the root,
 `.github/`, or `docs/`), Gitea's/Forgejo's in those same spots or a `.gitea/` directory, or GitLab's
-`Default.md` under `.gitlab/merge_request_templates/` - a newly created review starts from it, with the managed sections
-(description, `Closes #N`, stack overview)
-appended beneath rather than replacing it, matching what opening the review on the web would give you.
-When those managed sections follow a template, a horizontal-rule (`---`) seam is inserted between the
-two, so the automated block reads as distinct from your template rather than blurring into it.
+`Default.md` under `.gitlab/merge_request_templates/` - a newly created review starts from it, matching
+what opening the review on the web would give you. Without a description the template is wrapped in the
+managed description block, so it reads as the opening prose with `Closes #N` and the stack overview
+beneath. When you pass `--desc`/`--desc-file`, the template stays freeform at the top and your
+description lands in its own block below a horizontal-rule (`---`) seam, so the automated content reads
+as distinct from your template rather than blurring into it.
 A `PULL_REQUEST_TEMPLATE/` directory of named choices has no single default, so it is skipped. Set
 `git config stk.usePrTemplate false` for a lean, git-stk-only body.
 
