@@ -667,6 +667,95 @@ fn submit_desc_sets_replaces_and_clears_the_description_block() {
 }
 
 #[test]
+fn submit_desc_file_reads_the_description_from_a_file() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.git(["config", "branch.feature/a.stkParent", "main"]);
+
+    // A markdown doc, as an agent might hand off. Surrounding blank lines are
+    // trimmed so the block reads cleanly.
+    repo.write("desc.md", "\n## What\n\nThe change.\n\n## Why\n\nBecause.\n\n");
+
+    let fake = FakeProvider::new()
+        .on("pr view 12", r#"{"body":""}"#)
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--desc-file", "desc.md"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("set description in #12"));
+
+    let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("edited body");
+    assert!(
+        body.contains(
+            "<!-- git-stk:description -->\n## What\n\nThe change.\n\n## Why\n\nBecause.\n<!-- /git-stk:description -->"
+        ),
+        "body: {body}"
+    );
+}
+
+#[test]
+fn submit_desc_file_expands_a_leading_tilde() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.git(["config", "branch.feature/a.stkParent", "main"]);
+
+    // The file lives at $HOME/pr.md; `~/pr.md` must resolve to it even though
+    // the shell never expanded the tilde (here it is a literal argument).
+    repo.write("pr.md", "From the tilde path.\n");
+
+    let fake = FakeProvider::new()
+        .on("pr view 12", r#"{"body":""}"#)
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .env("HOME", repo.path())
+        .args(["submit", "--desc-file", "~/pr.md"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("set description in #12"));
+
+    let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("edited body");
+    assert!(
+        body.contains(
+            "<!-- git-stk:description -->\nFrom the tilde path.\n<!-- /git-stk:description -->"
+        ),
+        "body: {body}"
+    );
+}
+
+#[test]
+fn submit_desc_file_rejects_a_missing_file() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.git(["config", "branch.feature/a.stkParent", "main"]);
+
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--desc-file", "nope.md"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("failed to read description file"));
+}
+
+#[test]
 fn submit_stack_desc_targets_only_the_current_branch() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);

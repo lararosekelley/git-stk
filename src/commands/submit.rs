@@ -1,4 +1,7 @@
-use anyhow::{Result, bail};
+use std::env;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result, bail};
 use clap::ArgAction;
 use clap_complete::engine::ArgValueCompleter;
 
@@ -43,6 +46,16 @@ pub struct Submit {
     /// string clears it. Applies to the current or named branch only.
     #[arg(long, short = 'd')]
     desc: Option<String>,
+    /// Read the description block from a markdown or text file instead of an
+    /// inline string, handy for agent-authored bodies. Incompatible with
+    /// --desc; an empty file clears the block, like `--desc ""`.
+    #[arg(
+        long = "desc-file",
+        value_name = "PATH",
+        value_hint = clap::ValueHint::FilePath,
+        conflicts_with = "desc",
+    )]
+    desc_file: Option<PathBuf>,
     /// Create new reviews as drafts.
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_draft")]
     draft: bool,
@@ -80,13 +93,26 @@ impl Run for Submit {
             settings::bool_setting(settings::SUBMIT_DRAFT_KEY)?
         };
 
+        // A file source resolves to the same description string; clap's
+        // conflicts_with guarantees at most one of the two is set.
+        let desc = match self.desc_file {
+            Some(path) => {
+                let path = expand_tilde(path);
+                let raw = std::fs::read_to_string(&path).with_context(|| {
+                    format!("failed to read description file {}", path.display())
+                })?;
+                Some(raw.trim().to_owned())
+            }
+            None => self.desc,
+        };
+
         submit(SubmitOptions {
             branch: self.branch,
             submit_stack,
             downstack: self.downstack,
             dry_run: self.dry_run,
             push_mode: PushMode::from_flags(self.push, self.no_push),
-            desc: self.desc,
+            desc,
             draft,
             ready: self.ready,
             rebuild_overview: self.rebuild_overview,
@@ -106,6 +132,39 @@ pub struct SubmitOptions {
     pub draft: bool,
     pub ready: bool,
     pub rebuild_overview: bool,
+}
+
+/// Expand a leading `~` in a `--desc-file` path to the user's home, since the
+/// path reaches us literally when the shell did not expand it (quoted, or
+/// handed over by a script or agent). Cross-platform: `HOME` on Unix (and
+/// Git Bash/WSL), falling back to `USERPROFILE` on native Windows.
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let home = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    expand_tilde_with(path, home)
+}
+
+fn expand_tilde_with(path: PathBuf, home: Option<PathBuf>) -> PathBuf {
+    let Some(rest) = path.to_str().and_then(|text| text.strip_prefix('~')) else {
+        return path;
+    };
+    // Only bare `~` and `~/...` (or `~\...` on Windows) expand; a `~user` form
+    // would need a passwd lookup we do not do, so leave it untouched.
+    let mut chars = rest.chars();
+    let tail = match chars.next() {
+        None => "",
+        Some(separator) if std::path::is_separator(separator) => chars.as_str(),
+        Some(_) => return path,
+    };
+    let Some(home) = home else {
+        return path;
+    };
+    if tail.is_empty() {
+        home
+    } else {
+        home.join(tail)
+    }
 }
 
 pub fn submit(options: SubmitOptions) -> Result<()> {
@@ -422,4 +481,54 @@ enum SubmitAction {
     Created,
     Updated,
     Skipped,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn home() -> Option<PathBuf> {
+        Some(PathBuf::from("/home/dev"))
+    }
+
+    #[test]
+    fn expand_tilde_resolves_a_bare_tilde_and_subpaths() {
+        assert_eq!(
+            expand_tilde_with(PathBuf::from("~"), home()),
+            PathBuf::from("/home/dev")
+        );
+        assert_eq!(
+            expand_tilde_with(PathBuf::from("~/notes/pr.md"), home()),
+            PathBuf::from("/home/dev/notes/pr.md")
+        );
+    }
+
+    #[test]
+    fn expand_tilde_leaves_other_paths_untouched() {
+        // Absolute, relative, `~user`, and an embedded (non-leading) tilde all
+        // pass through unchanged.
+        for raw in ["/etc/pr.md", "notes/pr.md", "~alice/pr.md", "docs/~x.md"] {
+            assert_eq!(
+                expand_tilde_with(PathBuf::from(raw), home()),
+                PathBuf::from(raw)
+            );
+        }
+    }
+
+    #[test]
+    fn expand_tilde_passes_through_when_home_is_unset() {
+        assert_eq!(
+            expand_tilde_with(PathBuf::from("~/pr.md"), None),
+            PathBuf::from("~/pr.md")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expand_tilde_accepts_a_backslash_on_windows() {
+        assert_eq!(
+            expand_tilde_with(PathBuf::from(r"~\notes\pr.md"), home()),
+            PathBuf::from("/home/dev").join(r"notes\pr.md")
+        );
+    }
 }
