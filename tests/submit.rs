@@ -172,7 +172,7 @@ fn submit_creates_gitlab_mr_without_fill() {
 }
 
 #[test]
-fn submit_seeds_the_github_pr_template_above_the_managed_body() {
+fn submit_wraps_the_github_pr_template_in_the_description_block() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     // The template is a committed working-tree file, like any repo would have.
@@ -213,11 +213,12 @@ fn submit_seeds_the_github_pr_template_above_the_managed_body() {
         .stdout(predicates::str::contains("created feature/b -> main"))
         .stdout(predicates::str::contains("seeded the PR template into #12"));
 
-    // The fresh body is the template, replacing whatever create set.
+    // No --desc, so the template is wrapped in the managed description block -
+    // no stray subject-as-body line, no seam.
     let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("seeded body");
     assert_eq!(
         body.trim_end(),
-        "pr edit 12 --body ## Summary\n\n- [ ] Tests pass"
+        "pr edit 12 --body <!-- git-stk:description -->\n## Summary\n\n- [ ] Tests pass\n<!-- /git-stk:description -->"
     );
 }
 
@@ -257,13 +258,15 @@ fn submit_seeds_the_gitlab_default_mr_template() {
 
     let body = fs::read_to_string(repo.path().join("update-7.txt")).expect("seeded body");
     assert!(
-        body.contains("--description ## What\n\n## Why"),
+        body.contains(
+            "--description <!-- git-stk:description -->\n## What\n\n## Why\n<!-- /git-stk:description -->"
+        ),
         "body: {body}"
     );
 }
 
 #[test]
-fn submit_seeds_a_seam_below_the_template_when_managed_content_follows() {
+fn submit_wraps_the_template_without_a_seam_when_no_desc() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     fs::create_dir_all(repo.path().join(".github")).unwrap();
@@ -274,8 +277,9 @@ fn submit_seeds_a_seam_below_the_template_when_managed_content_follows() {
     repo.git(["add", "."]);
     repo.git(["commit", "-m", "add PR template"]);
 
-    // The branch name references an issue, so a `Closes #5` note will follow
-    // the template - the seed should lay a horizontal-rule seam for it.
+    // The branch name references an issue, so a `Closes #5` note follows. With
+    // no --desc the template is wrapped in the description block, so there is no
+    // freeform region and no seam.
     repo.git(["switch", "-c", "5-fix"]);
     repo.git(["config", "branch.5-fix.stkParent", "main"]);
 
@@ -286,8 +290,8 @@ fn submit_seeds_a_seam_below_the_template_when_managed_content_follows() {
             "https://github.com/owner/repo/pull/12",
         )
         .on("pr view 12", r#"{"body":""}"#)
-        // Capture every body edit so the seed's own edit (with the seam) is
-        // visible even after the later Closes edit.
+        // Capture every body edit so the seed's own edit is visible even after
+        // the later Closes edit.
         .record_append("pr edit 12 --body", "edits-12.log", "")
         .on_after(
             "5-fix",
@@ -304,12 +308,66 @@ fn submit_seeds_a_seam_below_the_template_when_managed_content_follows() {
         .success()
         .stdout(predicates::str::contains("seeded the PR template into #12"));
 
-    // The seed wrote the template followed by a `---` seam, so the managed
-    // content that follows reads as a distinct block beneath it.
+    let edits = fs::read_to_string(repo.path().join("edits-12.log")).expect("edits log");
+    assert!(
+        edits.contains("pr edit 12 --body <!-- git-stk:description -->\n## Summary\n\n- [ ] Tests pass\n<!-- /git-stk:description -->"),
+        "seed should wrap the template in the description block:\n{edits}"
+    );
+    assert!(
+        !edits.contains("---"),
+        "the wrap path lays no seam:\n{edits}"
+    );
+}
+
+#[test]
+fn submit_desc_keeps_the_template_freeform_above_a_seam() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    fs::create_dir_all(repo.path().join(".github")).unwrap();
+    repo.write(
+        ".github/pull_request_template.md",
+        "## Summary\n\n- [ ] Tests pass\n",
+    );
+    repo.git(["add", "."]);
+    repo.git(["commit", "-m", "add PR template"]);
+
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.git(["config", "branch.feature/b.stkParent", "main"]);
+
+    let fake = FakeProvider::new()
+        .record(
+            "pr create",
+            "created.txt",
+            "https://github.com/owner/repo/pull/12",
+        )
+        .on("pr view 12", r#"{"body":""}"#)
+        .record_append("pr edit 12 --body", "edits-12.log", "")
+        .on_after(
+            "feature/b",
+            "created.txt",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/12","title":"B work"}]"##,
+        )
+        .on("feature/b", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "feature/b", "-d", "What and why."])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("seeded the PR template into #12"))
+        .stdout(predicates::str::contains("set description in #12"));
+
+    // The branch takes a --desc, so the template stays freeform above a `---`
+    // seam and the description lands in its own block below.
     let edits = fs::read_to_string(repo.path().join("edits-12.log")).expect("edits log");
     assert!(
         edits.contains("pr edit 12 --body ## Summary\n\n- [ ] Tests pass\n\n---"),
-        "seed should append a seam rule:\n{edits}"
+        "seed should keep the template freeform above a seam:\n{edits}"
+    );
+    assert!(
+        edits.contains("<!-- git-stk:description -->\nWhat and why.\n<!-- /git-stk:description -->"),
+        "the --desc block should be written:\n{edits}"
     );
 }
 
