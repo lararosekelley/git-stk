@@ -706,6 +706,42 @@ fn submit_desc_file_reads_the_description_from_a_file() {
 }
 
 #[test]
+fn submit_desc_file_clears_the_block_when_the_file_is_blank() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.git(["config", "branch.feature/a.stkParent", "main"]);
+
+    // A whitespace-only file trims to "", the same as `--desc ""`, so it clears
+    // an existing description block and leaves the rest of the body alone.
+    repo.write("desc.md", "   \n\n\t\n");
+
+    let fake = FakeProvider::new()
+        .on(
+            "pr view 12",
+            r##"{"body":"Intro.\n\n<!-- git-stk:description -->\nStale.\n<!-- /git-stk:description -->"}"##,
+        )
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--desc-file", "desc.md"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("cleared description in #12"));
+
+    let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("edited body");
+    assert!(body.contains("Intro."));
+    assert!(!body.contains("git-stk:description"));
+    assert!(!body.contains("Stale."));
+}
+
+#[test]
 fn submit_desc_file_expands_a_leading_tilde() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
