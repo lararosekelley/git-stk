@@ -948,6 +948,59 @@ fn submit_stack_preserves_merged_ledger_entries() {
 }
 
 #[test]
+fn submit_stack_refreshes_a_carried_forward_row_that_has_since_merged() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    // The bottom PR's ledger remembers #11 as OPEN - it was open when last
+    // written - but #11 has since merged. Its branch is gone from the local
+    // stack, so only a re-fetch by id can catch the state change. The
+    // `--json state` rule is more specific and precedes the generic body rule.
+    let fake = FakeProvider::new()
+        .on("pr view 11 --json state", r##"{"state":"MERGED"}"##)
+        .on("pr view 11", r##"{"body":"Old description."}"##)
+        .on(
+            "pr view 12",
+            r##"{"body":"Intro.\n\n<!-- git-stk:stack -->\n<!-- git-stk:data [{\"id\":\"#11\",\"url\":\"https://github.com/owner/repo/pull/11\",\"title\":\"Landed\",\"state\":\"open\"}] -->\n- stale bullets\n<!-- /git-stk:stack -->"}"##,
+        )
+        .on("pr view 13", r##"{"body":""}"##)
+        .record("pr edit 11 --body", "edit-body-11.txt", "")
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        .record("pr edit 13 --body", "edit-body-13.txt", "")
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"Bottom change"}]"##,
+        )
+        .on(
+            "feature/b",
+            r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/13","title":"Top change"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.git(["switch", "feature/a"]);
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success();
+
+    // The carried-forward row is now rendered merged, not the stale open green.
+    let bottom = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("bottom body");
+    assert!(bottom.contains(
+        "- \u{1F7E3} ~~[Landed (#11)](https://github.com/owner/repo/pull/11)~~ (merged)"
+    ));
+    assert!(
+        !bottom.contains("- \u{1F7E2} [Landed (#11)]"),
+        "the stale open styling must be gone"
+    );
+    // And the refreshed state is persisted in the machine-readable data line,
+    // so later runs see it as terminal and stop re-fetching it.
+    assert!(bottom.contains(r#""state":"merged""#));
+}
+
+#[test]
 fn submit_stack_repairs_mangled_note_markup() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);

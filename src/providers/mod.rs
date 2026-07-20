@@ -241,6 +241,17 @@ pub trait ReviewProvider {
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String>;
 
+    /// A carried-forward ledger row's current state, re-fetched by id after its
+    /// branch has left the local stack. Nothing else re-queries such a row, so
+    /// one that merged or closed since it was last recorded keeps rendering as
+    /// open in the overview without this. Default None: a provider that cannot
+    /// resolve a review by id alone leaves the recorded state untouched, and
+    /// the caller treats any error as "leave it as-is" (best-effort refresh).
+    fn review_state(&self, review: &ReviewRequest) -> Result<Option<ReviewState>> {
+        let _ = review;
+        Ok(None)
+    }
+
     /// Merge the review with the given strategy: squash, rebase, or merge.
     /// With `auto`, schedule the merge for when required checks pass
     /// instead of merging now.
