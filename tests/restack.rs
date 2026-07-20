@@ -949,3 +949,126 @@ fn restack_skips_branches_already_on_their_parent() {
     assert_eq!(repo.git(["rev-parse", "feature/a"]), a_sha);
     assert_eq!(repo.git(["rev-parse", "feature/b"]), b_sha);
 }
+
+/// Helper: push a commit onto `branch`'s remote that the local branch will not
+/// have, mimicking a commit made straight on the host (web UI, committed
+/// suggestion, a bot). Leaves local `branch` one commit behind its remote, with
+/// a genuinely distinct change so it has no local patch-equivalent.
+fn add_remote_only_commit(repo: &TestRepo, branch: &str, file: &str, message: &str) {
+    repo.git(["switch", branch]);
+    repo.commit_file(file, "from the web\n", message);
+    repo.git(["push", "origin", branch]);
+    repo.git(["reset", "--hard", "HEAD~1"]);
+}
+
+#[test]
+fn restack_offers_to_incorporate_remote_only_commits_then_pushes() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "parent change");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "child change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+
+    // A commit lands on feature/a's remote that the local stack never saw.
+    add_remote_only_commit(&repo, "feature/a", "web.txt", "web edit on feature/a");
+    repo.git(["switch", "feature/b"]);
+
+    // Answer the incorporate prompt with yes.
+    repo.stack()
+        .args(["restack", "--push"])
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "origin/feature/a has 1 commit not in your local feature/a",
+        ))
+        .stderr(predicates::str::contains("web edit on feature/a"))
+        .stdout(predicates::str::contains(
+            "incorporated remote commits into feature/a",
+        ))
+        .stdout(predicates::str::contains("pushed"));
+
+    // The web commit is now on the local branch and preserved on the remote,
+    // and the descendant rebased onto the reconciled tip.
+    assert!(
+        repo.path().join("web.txt").exists() || {
+            repo.git(["switch", "feature/a"]);
+            repo.path().join("web.txt").exists()
+        }
+    );
+    assert_eq!(
+        repo.remote_sha(&bare, "feature/a"),
+        repo.git(["rev-parse", "feature/a"])
+    );
+    assert_eq!(
+        repo.remote_sha(&bare, "feature/b"),
+        repo.git(["rev-parse", "feature/b"])
+    );
+    // feature/b now contains the incorporated web change through its parent.
+    assert!(
+        repo.git(["log", "--format=%s", "feature/b"])
+            .contains("web edit on feature/a")
+    );
+}
+
+#[test]
+fn restack_declining_remote_only_commits_bails_without_pushing() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "parent change");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "child change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+    add_remote_only_commit(&repo, "feature/a", "web.txt", "web edit on feature/a");
+    let remote_a = repo.remote_sha(&bare, "feature/a");
+    let remote_b = repo.remote_sha(&bare, "feature/b");
+    repo.git(["switch", "feature/b"]);
+
+    // Decline the prompt: fail with actionable guidance, no "run sync" loop,
+    // and nothing pushed.
+    repo.stack()
+        .args(["restack", "--push"])
+        .write_stdin("n\n")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "remote branches have commits not in your local stack",
+        ))
+        .stderr(predicates::str::contains("run `git stk sync`").not());
+
+    assert_eq!(repo.remote_sha(&bare, "feature/a"), remote_a);
+    assert_eq!(repo.remote_sha(&bare, "feature/b"), remote_b);
+    assert!(!repo.path().join("web.txt").exists());
+}
+
+#[test]
+fn restack_dry_run_reports_remote_only_commits() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "parent change");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "child change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+    add_remote_only_commit(&repo, "feature/a", "web.txt", "web edit on feature/a");
+    let remote_a = repo.remote_sha(&bare, "feature/a");
+    repo.git(["switch", "feature/b"]);
+
+    repo.stack()
+        .args(["restack", "--push", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would offer to cherry-pick these into your local branches",
+        ));
+
+    // Dry run changed nothing.
+    assert_eq!(repo.remote_sha(&bare, "feature/a"), remote_a);
+    assert!(!repo.path().join("web.txt").exists());
+}
