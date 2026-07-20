@@ -639,6 +639,78 @@ pub fn rebase_abort() -> Result<()> {
     status(&["rebase", "--abort"]).context("failed to abort rebase")
 }
 
+/// Cherry-pick a commit onto the current branch. On conflict git leaves the
+/// cherry-pick in progress, so the error surfaces for the caller to tell the
+/// user to resolve and `git cherry-pick --continue`.
+pub fn cherry_pick(commit: &str) -> Result<()> {
+    status(&["cherry-pick", commit]).with_context(|| format!("failed to cherry-pick {commit}"))
+}
+
+/// Refresh the remote-tracking refs (`<remote>/<branch>`) for `branches` that
+/// exist on `remote`, in a single fetch. Branches absent from the remote (a
+/// freshly created top of stack that was never pushed) are dropped rather than
+/// failing the whole fetch. A no-op when none of them are on the remote.
+pub fn fetch_tracking(remote: &str, branches: &[String]) -> Result<()> {
+    let present = remote_branches_present(remote, branches)?;
+    if present.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec!["fetch", remote];
+    args.extend(present.iter().map(String::as_str));
+    status(&args).with_context(|| format!("failed to fetch branches from {remote}"))
+}
+
+/// The subset of `branches` that exist as heads on `remote`, learned in one
+/// `ls-remote` so a targeted fetch does not abort on a branch the remote has
+/// never seen.
+fn remote_branches_present(remote: &str, branches: &[String]) -> Result<Vec<String>> {
+    if branches.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["ls-remote", "--heads", remote];
+    args.extend(branches.iter().map(String::as_str));
+    let listing =
+        output(&args).with_context(|| format!("failed to query {remote} for branch heads"))?;
+    let present: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter_map(|(_, name)| name.strip_prefix("refs/heads/"))
+        .collect();
+    Ok(branches
+        .iter()
+        .filter(|branch| present.contains(&branch.as_str()))
+        .cloned()
+        .collect())
+}
+
+/// The commits `tracking` (a `<remote>/<branch>` ref) has that `branch` lacks
+/// *and* that have no patch-equivalent already on `branch` - the commits a
+/// force-push would silently drop, e.g. one committed straight on the host's
+/// web UI. `(short-sha, subject)` oldest-first, the order to cherry-pick them.
+/// Empty in the normal post-rebase case, where every remote commit is
+/// reproduced locally under a new hash.
+pub fn remote_only_commits(branch: &str, tracking: &str) -> Result<Vec<(String, String)>> {
+    let range = format!("{branch}...{tracking}");
+    let mut commits: Vec<(String, String)> = output(&[
+        "log",
+        "--cherry-pick",
+        "--right-only",
+        "--no-merges",
+        "--format=%h%x09%s",
+        &range,
+    ])
+    .with_context(|| format!("failed to list remote-only commits in {range}"))?
+    .lines()
+    .filter_map(|line| {
+        line.split_once('\t')
+            .map(|(sha, subject)| (sha.to_owned(), subject.to_owned()))
+    })
+    .collect();
+    // log is newest-first; cherry-pick wants oldest-first.
+    commits.reverse();
+    Ok(commits)
+}
+
 pub fn config_get(key: &str) -> Result<Option<String>> {
     // git config --get exits 1 when the key is unset.
     output_codes(&["config", "--get", key], &[1], "git config --get")

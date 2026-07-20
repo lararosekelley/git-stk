@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use super::{children_map, collect_descendants, fork_point, line_base, parent_map, record_base};
 use crate::cli::{FetchMode, PushMode, UpdateRefsMode};
 use crate::git;
+use crate::prompt;
 use crate::providers::detect_review_provider;
 use crate::settings;
 use crate::style;
@@ -52,10 +53,15 @@ pub fn restack(
     let frozen = with_frozen_ancestors(frozen_branches(&branches), &branches, &parents);
 
     if dry_run {
+        reconcile_diverged_remotes(&branches, &frozen, push, true)?;
         return print_restack_plan(&branches, &parents, &frozen, update_refs, push);
     }
 
     super::snapshot("restack");
+    // Pull in any commits the remote branches have but the local stack lacks
+    // before the rebase loop, so descendants replay onto the reconciled tips
+    // and the later force-push lease matches instead of looping on "run sync".
+    reconcile_diverged_remotes(&branches, &frozen, push, false)?;
     clear_state()?;
     let all = branches.clone();
     restack_branches(branches, &parents, &frozen, update_refs, push, &all)
@@ -244,6 +250,132 @@ fn warn_bases_behind_remote(branches: &[String], parents: &BTreeMap<String, Stri
             );
         }
     }
+    Ok(())
+}
+
+/// Before the rebase-and-force-push, reconcile any branch whose remote tip
+/// carries commits the local branch lacks - a commit made straight on the
+/// host's web UI, a committed review suggestion, a bot's edit. A blind
+/// force-push would drop them and `--force-with-lease` rightly refuses, which
+/// left `sync` looping on "the remote has moved on - run sync" with no way to
+/// pull those commits in. Offer to cherry-pick them onto the local branch; the
+/// rebase loop that follows replays descendants onto the reconciled tip, and
+/// the push lease then matches.
+///
+/// Only runs when we are about to push (a no-push restack leaves the remote
+/// untouched, so a divergence is not yet fatal) and a remote exists. Under
+/// `--dry-run` it reports without fetching or changing anything.
+fn reconcile_diverged_remotes(
+    branches: &[String],
+    frozen: &BTreeSet<String>,
+    push: bool,
+    dry_run: bool,
+) -> Result<()> {
+    if !push {
+        return Ok(());
+    }
+    let remote = settings::remote()?;
+    if git::remote_url(&remote)?.is_none() {
+        return Ok(());
+    }
+
+    // Frozen branches are held back from the push, so their remote is not
+    // touched and any divergence there is not this run's problem.
+    let pushable: Vec<String> = branches
+        .iter()
+        .filter(|branch| !frozen.contains(*branch))
+        .cloned()
+        .collect();
+    if pushable.is_empty() {
+        return Ok(());
+    }
+
+    // restack/sync only fetched the trunk, so origin/<branch> can be stale
+    // here; refresh the stack branches' tracking refs so the check (and the
+    // lease that follows) see the true remote. A dry run must touch nothing,
+    // so it compares against whatever is already known locally.
+    if !dry_run {
+        git::fetch_tracking(&remote, &pushable)?;
+    }
+
+    let mut diverged: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    for branch in &pushable {
+        let tracking = format!("{remote}/{branch}");
+        // No tracking ref means the branch was never pushed - nothing upstream
+        // to reconcile against.
+        if git::rev_parse(&tracking).is_err() {
+            continue;
+        }
+        let extra = git::remote_only_commits(branch, &tracking)?;
+        if !extra.is_empty() {
+            diverged.push((branch.clone(), extra));
+        }
+    }
+
+    if diverged.is_empty() {
+        return Ok(());
+    }
+
+    for (branch, commits) in &diverged {
+        anstream::eprintln!(
+            "{}",
+            style::warn(&format!(
+                "{remote}/{branch} has {} commit{} not in your local {branch}:",
+                commits.len(),
+                if commits.len() == 1 { "" } else { "s" },
+            ))
+        );
+        for (sha, subject) in commits {
+            anstream::eprintln!("  {} {subject}", style::dim(sha));
+        }
+    }
+
+    if dry_run {
+        anstream::println!(
+            "{}",
+            style::dim("would offer to cherry-pick these into your local branches before pushing")
+        );
+        return Ok(());
+    }
+
+    if !prompt::confirm("cherry-pick these into your local branches before pushing? [y/N] ")? {
+        bail!(
+            "remote branches have commits not in your local stack\n\
+             incorporate them (`git switch <branch> && git cherry-pick <sha>`) and re-run, \
+             or discard them with `git push --force {remote} <branch>`"
+        );
+    }
+
+    // Cherry-pick oldest-first onto each diverged branch. The branch's relation
+    // to its parent is unchanged, so the rebase loop leaves it "up to date" and
+    // keeps the picked commits, while its descendants rebase onto the new tip.
+    let start = git::current_branch()?;
+    for (branch, commits) in &diverged {
+        git::checkout(branch)?;
+        for (sha, _) in commits {
+            if let Err(error) = git::cherry_pick(sha) {
+                anstream::eprintln!(
+                    "{}",
+                    style::warn(&format!("conflict cherry-picking {sha} onto {branch}"))
+                );
+                eprintln!("resolve conflicts, run `git cherry-pick --continue`, then re-run");
+                eprintln!("or run `git cherry-pick --abort` to bail out");
+                return Err(error);
+            }
+        }
+    }
+    git::checkout(&start)?;
+    anstream::println!(
+        "{}",
+        style::success(&format!(
+            "incorporated remote commits into {}",
+            diverged
+                .iter()
+                .map(|(branch, _)| branch.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ))
+    );
     Ok(())
 }
 
