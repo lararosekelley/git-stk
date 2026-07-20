@@ -10,8 +10,8 @@ use super::json::{
     required_string,
 };
 use super::{
-    CheckStatus, MergeBlocker, ReviewAnnotation, ReviewProvider, ReviewRequest, ReviewSummary,
-    WaitOutcome, command_output, generic_annotate, merge_with_retry,
+    CheckStatus, MergeBlocker, ReviewAnnotation, ReviewProvider, ReviewRequest, ReviewState,
+    ReviewSummary, WaitOutcome, command_output, generic_annotate, merge_with_retry,
 };
 
 pub(super) struct GitHubProvider;
@@ -77,6 +77,16 @@ impl ReviewProvider for GitHubProvider {
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {
         command_output("gh", &["pr", "edit", review.id_value(), "--body", body])
+    }
+
+    fn review_state(&self, review: &ReviewRequest) -> Result<Option<ReviewState>> {
+        let output = command_output("gh", &["pr", "view", review.id_value(), "--json", "state"])?;
+        let value: serde_json::Value =
+            serde_json::from_str(&output).context("failed to parse gh pr view state")?;
+        Ok(value
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .map(parse_state))
     }
 
     fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {

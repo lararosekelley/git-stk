@@ -196,6 +196,20 @@ fn update_one_stack(
         return Ok(());
     }
 
+    // Refresh carried-forward rows still recorded as open: their branch is gone
+    // from the local stack, so nothing else re-queries them, and one may have
+    // merged or closed since it was last written. Terminal (merged/closed) rows
+    // never change, so leave them be. Best-effort: a lookup that fails keeps the
+    // recorded state rather than dropping the row.
+    for entry in &mut historical {
+        if entry.state != "open" || entry.id.is_empty() {
+            continue;
+        }
+        if let Ok(Some(state)) = review_provider.review_state(&entry.to_review()) {
+            entry.state = state.to_string();
+        }
+    }
+
     // Bottom-first, like the stack itself: already-landed history below,
     // the live stack on top of it.
     let mut entries = historical.clone();
