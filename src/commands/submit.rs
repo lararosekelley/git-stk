@@ -8,7 +8,7 @@ use clap_complete::engine::ArgValueCompleter;
 use crate::cli::PushMode;
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{ReviewProvider, detect_review_provider};
+use crate::providers::{ReviewProvider, ReviewState, detect_review_provider};
 use crate::settings;
 use crate::style;
 use crate::{git, stack};
@@ -56,6 +56,12 @@ pub struct Submit {
         conflicts_with = "desc",
     )]
     desc_file: Option<PathBuf>,
+    /// Request reviews from these users or teams on every submitted review
+    /// (comma-separated, or repeat the flag). A leading `@` is optional and
+    /// stripped, so `@foo,@bar` and `foo,bar` mean the same. GitHub/Gitea team
+    /// reviewers use the `org/team` form (`@my-org/backend`).
+    #[arg(long, value_name = "CSV", value_delimiter = ',')]
+    reviewers: Vec<String>,
     /// Create new reviews as drafts.
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_draft")]
     draft: bool,
@@ -113,11 +119,36 @@ impl Run for Submit {
             dry_run: self.dry_run,
             push_mode: PushMode::from_flags(self.push, self.no_push),
             desc,
+            reviewers: normalize_reviewers(&self.reviewers),
             draft,
             ready: self.ready,
             rebuild_overview: self.rebuild_overview,
         })
     }
+}
+
+/// Clean a raw `--reviewers` list: trim each entry, drop one optional leading
+/// `@` (so `@foo` and `foo` are the same), discard blanks, and de-duplicate
+/// while preserving order. A team keeps its `org/team` form - only the `@`
+/// prefix is stripped, never the slash. GitHub's Copilot reviewer is the one
+/// login that *needs* its `@` (`@copilot`), so it is preserved (and a bare
+/// `copilot` is canonicalized to it) rather than stripped like a username.
+fn normalize_reviewers(raw: &[String]) -> Vec<String> {
+    let mut reviewers: Vec<String> = Vec::new();
+    for entry in raw {
+        let trimmed = entry.trim();
+        let stripped = trimmed.strip_prefix('@').unwrap_or(trimmed).trim();
+        let name = if stripped.eq_ignore_ascii_case("copilot") {
+            "@copilot"
+        } else {
+            stripped
+        };
+        if name.is_empty() || reviewers.iter().any(|seen| seen == name) {
+            continue;
+        }
+        reviewers.push(name.to_owned());
+    }
+    reviewers
 }
 
 /// The resolved inputs for [`submit`] - one bundle instead of nine positional
@@ -129,6 +160,7 @@ pub struct SubmitOptions {
     pub dry_run: bool,
     pub push_mode: crate::cli::PushMode,
     pub desc: Option<String>,
+    pub reviewers: Vec<String>,
     pub draft: bool,
     pub ready: bool,
     pub rebuild_overview: bool,
@@ -175,6 +207,7 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
         dry_run,
         push_mode,
         desc,
+        reviewers,
         draft,
         ready,
         rebuild_overview,
@@ -329,6 +362,7 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
             rebuild_overview,
         )?;
     }
+    apply_reviewers(review_provider.as_ref(), &branches, &reviewers, dry_run)?;
 
     // The ledger has now pruned the superseded entries, so drop the markers -
     // but only for reviews that were retired, not ones the user kept.
@@ -382,6 +416,47 @@ fn close_superseded_review(
     review_provider.close_review(&review, true)?;
     anstream::println!("closed superseded review {} for {old}", review.id);
     Ok(true)
+}
+
+/// Request reviews from `reviewers` on every submitted branch's review. A
+/// merged review is skipped - there is nothing left to review - and a branch
+/// whose review is missing (or heads a different branch) is passed over with a
+/// note, mirroring the description and closes steps. No-op with no reviewers.
+fn apply_reviewers(
+    review_provider: &dyn ReviewProvider,
+    branches: &[String],
+    reviewers: &[String],
+    dry_run: bool,
+) -> Result<()> {
+    if reviewers.is_empty() {
+        return Ok(());
+    }
+    let list = reviewers.join(", ");
+    for branch in branches {
+        let Some(review) = review_provider.review_for_branch(branch)? else {
+            // On a dry run the review was likely never created; for real the
+            // submit just failed to produce one, which deserves a mention.
+            if dry_run {
+                anstream::println!("would request reviews from {list} for {branch}");
+            } else {
+                anstream::println!("skipped reviewers: no review found for {branch}");
+            }
+            continue;
+        };
+        if review.branch != *branch || review.state == ReviewState::Merged {
+            continue;
+        }
+        if dry_run {
+            anstream::println!("would request reviews from {list} in {}", review.id);
+            continue;
+        }
+        let output = review_provider.request_reviewers(&review, reviewers)?;
+        anstream::println!("requested reviews from {list} in {}", review.id);
+        if !output.is_empty() {
+            println!("{output}");
+        }
+    }
+    Ok(())
 }
 
 fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {
@@ -521,6 +596,44 @@ mod tests {
             expand_tilde_with(PathBuf::from("~/pr.md"), None),
             PathBuf::from("~/pr.md")
         );
+    }
+
+    fn reviewers(raw: &[&str]) -> Vec<String> {
+        normalize_reviewers(&raw.iter().map(|entry| (*entry).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn normalize_reviewers_strips_at_and_trims() {
+        // A leading `@` is optional, so both spellings normalize alike.
+        assert_eq!(reviewers(&["@foo", "@bar"]), vec!["foo", "bar"]);
+        assert_eq!(reviewers(&["foo", "bar"]), vec!["foo", "bar"]);
+        assert_eq!(reviewers(&[" @foo ", "  bar"]), vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn normalize_reviewers_keeps_team_paths_but_drops_the_at() {
+        // Only the `@` prefix is stripped; the `org/team` slug stays intact.
+        assert_eq!(
+            reviewers(&["@my-org/backend", "acme/team"]),
+            vec!["my-org/backend", "acme/team"]
+        );
+    }
+
+    #[test]
+    fn normalize_reviewers_drops_blanks_and_dedupes_in_order() {
+        assert_eq!(
+            reviewers(&["foo", "", "  ", "@foo", "bar", "@bar"]),
+            vec!["foo", "bar"]
+        );
+    }
+
+    #[test]
+    fn normalize_reviewers_preserves_the_copilot_at_prefix() {
+        // gh needs the literal `@copilot`; a bare `copilot` canonicalizes to it,
+        // and both spellings collapse to one entry.
+        assert_eq!(reviewers(&["@copilot"]), vec!["@copilot"]);
+        assert_eq!(reviewers(&["copilot"]), vec!["@copilot"]);
+        assert_eq!(reviewers(&["@Copilot", "copilot"]), vec!["@copilot"]);
     }
 
     #[cfg(windows)]

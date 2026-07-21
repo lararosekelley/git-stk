@@ -320,7 +320,7 @@ fn submit_wraps_the_template_without_a_seam_when_no_desc() {
 }
 
 #[test]
-fn submit_desc_keeps_the_template_freeform_above_a_seam() {
+fn submit_desc_replaces_the_template() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     fs::create_dir_all(repo.path().join(".github")).unwrap();
@@ -334,13 +334,15 @@ fn submit_desc_keeps_the_template_freeform_above_a_seam() {
     repo.git(["switch", "-c", "feature/b"]);
     repo.git(["config", "branch.feature/b.stkParent", "main"]);
 
+    // create_review would seed the body with the commit's subject echo; model
+    // that so the seed step has something to drop rather than a no-op.
     let fake = FakeProvider::new()
         .record(
             "pr create",
             "created.txt",
             "https://github.com/owner/repo/pull/12",
         )
-        .on("pr view 12", r#"{"body":""}"#)
+        .on("pr view 12", r#"{"body":"add PR template"}"#)
         .record_append("pr edit 12 --body", "edits-12.log", "")
         .on_after(
             "feature/b",
@@ -355,20 +357,62 @@ fn submit_desc_keeps_the_template_freeform_above_a_seam() {
         .args(["submit", "feature/b", "-d", "What and why."])
         .assert()
         .success()
-        .stdout(predicates::str::contains("seeded the PR template into #12"))
+        // The template is ignored on a --desc branch, so it is never seeded.
+        .stdout(predicates::str::contains("seeded the PR template").not())
         .stdout(predicates::str::contains("set description in #12"));
 
-    // The branch takes a --desc, so the template stays freeform above a `---`
-    // seam and the description lands in its own block below.
+    // The description replaces the template: no template text, no seam - only
+    // the managed description block ends up in the body.
     let edits = fs::read_to_string(repo.path().join("edits-12.log")).expect("edits log");
     assert!(
-        edits.contains("pr edit 12 --body ## Summary\n\n- [ ] Tests pass\n\n---"),
-        "seed should keep the template freeform above a seam:\n{edits}"
+        !edits.contains("## Summary") && !edits.contains("- [ ] Tests pass"),
+        "the template must not be seeded on a --desc branch:\n{edits}"
     );
+    assert!(!edits.contains("---"), "no template means no seam:\n{edits}");
     assert!(
         edits
             .contains("<!-- git-stk:description -->\nWhat and why.\n<!-- /git-stk:description -->"),
         "the --desc block should be written:\n{edits}"
+    );
+}
+
+#[test]
+fn submit_reviewers_requests_reviews_stripping_the_at_prefix() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.git(["config", "branch.feature/b.stkParent", "main"]);
+
+    let fake = FakeProvider::new()
+        .record(
+            "pr create",
+            "created.txt",
+            "https://github.com/owner/repo/pull/12",
+        )
+        .record("pr edit 12 --add-reviewer", "reviewer-args.txt", "")
+        .on_after(
+            "feature/b",
+            "created.txt",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/12","title":"B work"}]"##,
+        )
+        .on("feature/b", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        // A team (org/team) rides alongside the users; the `@` is optional.
+        .args(["submit", "feature/b", "--reviewers", "@foo,bar,@my-org/backend"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "requested reviews from foo, bar, my-org/backend in #12",
+        ));
+
+    // gh gets the cleaned, comma-joined list: no `@`, team path intact.
+    let args = fs::read_to_string(repo.path().join("reviewer-args.txt")).expect("reviewer args");
+    assert!(
+        args.contains("--add-reviewer foo,bar,my-org/backend"),
+        "reviewers should be passed cleaned and comma-joined:\n{args}"
     );
 }
 

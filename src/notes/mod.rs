@@ -134,16 +134,15 @@ pub fn update_description_note(
 /// Prepare each freshly created review's body before the managed sections go
 /// in. Create-only - existing reviews keep whatever body they have.
 ///
-/// With a repo PR/MR template (and `stk.usePrTemplate` on), the body is seeded
-/// from it: the `--desc` branch (named by `desc_branch`) keeps the template
-/// freeform above a seam so the description reads as a distinct block below,
-/// while every other branch wraps the template in the managed description block
-/// as the opening prose. Without a template the only cleanup is on the `--desc`
-/// branch, whose body `create_review` seeded with the commit subject when the
-/// commit had no body: that echo is dropped so the description does not sit
-/// beneath a redundant copy of the title. A branch with neither a template nor
-/// a description keeps its subject placeholder untouched. The template's source
-/// is always the commit body, never the subject echo.
+/// With a repo PR/MR template (and `stk.usePrTemplate` on), a branch with no
+/// `--desc` wraps the template in the managed description block as its opening
+/// prose. The `--desc` branch (named by `desc_branch`) ignores the template
+/// entirely - the description replaces it - so all that happens there is
+/// `create_review`'s subject echo (seeded when the commit had no body) is
+/// dropped, leaving the description clear of a redundant copy of the title. A
+/// branch with neither a template nor a description keeps its subject
+/// placeholder untouched. The template's source is always the commit body,
+/// never the subject echo.
 pub fn seed_template_notes(
     review_provider: &dyn ReviewProvider,
     kind: ProviderKind,
@@ -184,15 +183,17 @@ pub fn seed_template_notes(
         let body = review_provider.review_body(&review)?;
         let commit_body = crate::git::commit_body(branch)?;
         let prose = commit_body.trim();
-        let (updated, seeded_template) = match (&template, is_desc) {
-            // Template + description: template stays freeform above the seam.
-            (Some(template), true) => (body_with_template(prose, template), true),
-            // Template, no description: wrap it in the managed block.
-            (Some(template), false) => (body_template_as_description(template, prose), true),
-            // No template, description coming: drop create_review's subject echo,
-            // keeping a real commit body if the commit had one.
-            (None, true) => (prose.to_owned(), false),
-            (None, false) => continue,
+        let (updated, seeded_template) = if is_desc {
+            // The description replaces the template on this branch, so ignore it
+            // and only drop create_review's subject echo, keeping a real commit
+            // body if the commit had one.
+            (prose.to_owned(), false)
+        } else {
+            match &template {
+                // No description: wrap the template in the managed block.
+                Some(template) => (body_template_as_description(template, prose), true),
+                None => continue,
+            }
         };
         if updated == body {
             continue;
@@ -220,20 +221,6 @@ fn body_template_as_description(template: &str, prose: &str) -> String {
         format!("{template}\n\n{prose}")
     };
     body_with_description_note("", &content)
-}
-
-/// Seed the `--desc` branch's body: the template, with the commit body beneath
-/// it when the commit has one, above a horizontal-rule seam that separates it
-/// from the managed description block `--desc` writes below. Always seamed - a
-/// description always follows - and the caller's `updated == body` check is what
-/// makes a re-seed a no-op, not any guard here.
-fn body_with_template(prose: &str, template: &str) -> String {
-    let freeform = if prose.trim().is_empty() {
-        template.to_owned()
-    } else {
-        format!("{template}\n\n{}", prose.trim_start())
-    };
-    format!("{freeform}\n\n---")
 }
 
 /// The issue number a branch name refers to, if any. A path segment that
@@ -308,31 +295,6 @@ mod tests {
     }
 
     #[test]
-    fn body_with_template_fills_an_empty_body() {
-        assert_eq!(body_with_template("", "## Summary"), "## Summary\n\n---");
-        assert_eq!(
-            body_with_template("   \n", "## Summary"),
-            "## Summary\n\n---"
-        );
-    }
-
-    #[test]
-    fn body_with_template_prepends_above_the_commit_body() {
-        assert_eq!(
-            body_with_template("Commit body.", "## Summary"),
-            "## Summary\n\nCommit body.\n\n---"
-        );
-    }
-
-    #[test]
-    fn body_with_template_always_seams_even_when_the_commit_body_matches() {
-        // A commit body that opens with the template text must not suppress the
-        // seam: the `--desc` block always needs a rule above it.
-        let seeded = body_with_template("## Summary\n\ndetails", "## Summary");
-        assert_eq!(seeded, "## Summary\n\n## Summary\n\ndetails\n\n---");
-    }
-
-    #[test]
     fn body_template_as_description_wraps_the_template() {
         assert_eq!(
             body_template_as_description("## Summary", ""),
@@ -346,27 +308,6 @@ mod tests {
             body_template_as_description("## Summary", "Commit body."),
             "<!-- git-stk:description -->\n## Summary\n\nCommit body.\n<!-- /git-stk:description -->"
         );
-    }
-
-    #[test]
-    fn seam_separates_the_template_from_the_managed_sections() {
-        // Seed with a seam, then let the managed sections append below it -
-        // they must land under the rule, not above or onto it.
-        let seeded = body_with_template("", "## Summary\n\n- [ ] Tests");
-        let with_desc = body_with_description_note(&seeded, "What and why.");
-        let body = body_with_closes_note(&with_desc, "Closes #5");
-
-        let template = body.find("- [ ] Tests").expect("template present");
-        let rule = body.find("\n\n---\n\n").expect("seam rule present");
-        let description = body.find("What and why.").expect("description below seam");
-        let closes = body.find("Closes #5").expect("closes below seam");
-        assert!(template < rule, "template sits above the seam");
-        assert!(
-            rule < description && rule < closes,
-            "managed sections sit below the seam"
-        );
-        // Exactly one rule - the seam - not one per managed section.
-        assert_eq!(body.matches("\n\n---\n\n").count(), 1, "{body}");
     }
 
     #[test]

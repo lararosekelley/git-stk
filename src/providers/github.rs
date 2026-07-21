@@ -256,6 +256,16 @@ impl ReviewProvider for GitHubProvider {
         command_output("gh", &["pr", "ready", review.id_value()])
     }
 
+    fn request_reviewers(&self, review: &ReviewRequest, reviewers: &[String]) -> Result<String> {
+        // gh takes users and `org/team` reviewers alike, comma-separated;
+        // --add-reviewer re-requests without clearing anyone already on the PR.
+        let list = reviewers.join(",");
+        command_output(
+            "gh",
+            &["pr", "edit", review.id_value(), "--add-reviewer", &list],
+        )
+    }
+
     fn close_review(&self, review: &ReviewRequest, delete_branch: bool) -> Result<String> {
         let mut args = vec!["pr", "close", review.id_value()];
         if delete_branch {

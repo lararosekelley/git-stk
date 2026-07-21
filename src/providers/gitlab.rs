@@ -242,6 +242,21 @@ impl ReviewProvider for GitLabProvider {
         )
     }
 
+    fn request_reviewers(&self, review: &ReviewRequest, reviewers: &[String]) -> Result<String> {
+        // Bare `--reviewer` replaces the set; a `+` prefix on each name adds
+        // without dropping anyone already requested. GitLab has no team
+        // reviewers, so every entry is a username.
+        let list = reviewers
+            .iter()
+            .map(|name| format!("+{name}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        command_output(
+            "glab",
+            &["mr", "update", review.id_value(), "--reviewer", &list],
+        )
+    }
+
     fn close_review(&self, review: &ReviewRequest, _delete_branch: bool) -> Result<String> {
         // glab has no delete-source-branch flag on close, so the remote branch
         // may linger; closing the MR is what retires the superseded review.
