@@ -368,7 +368,10 @@ fn submit_desc_replaces_the_template() {
         !edits.contains("## Summary") && !edits.contains("- [ ] Tests pass"),
         "the template must not be seeded on a --desc branch:\n{edits}"
     );
-    assert!(!edits.contains("---"), "no template means no seam:\n{edits}");
+    assert!(
+        !edits.contains("---"),
+        "no template means no seam:\n{edits}"
+    );
     assert!(
         edits
             .contains("<!-- git-stk:description -->\nWhat and why.\n<!-- /git-stk:description -->"),
@@ -401,7 +404,12 @@ fn submit_reviewers_requests_reviews_stripping_the_at_prefix() {
 
     repo.stack_faked(&fake)
         // A team (org/team) rides alongside the users; the `@` is optional.
-        .args(["submit", "feature/b", "--reviewers", "@foo,bar,@my-org/backend"])
+        .args([
+            "submit",
+            "feature/b",
+            "--reviewers",
+            "@foo,bar,@my-org/backend",
+        ])
         .assert()
         .success()
         .stdout(predicates::str::contains(

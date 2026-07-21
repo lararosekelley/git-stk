@@ -599,7 +599,11 @@ mod tests {
     }
 
     fn reviewers(raw: &[&str]) -> Vec<String> {
-        normalize_reviewers(&raw.iter().map(|entry| (*entry).to_owned()).collect::<Vec<_>>())
+        normalize_reviewers(
+            &raw.iter()
+                .map(|entry| (*entry).to_owned())
+                .collect::<Vec<_>>(),
+        )
     }
 
     #[test]
