@@ -300,6 +300,14 @@ pub trait ReviewProvider {
     /// Mark a draft review as ready for review.
     fn mark_ready(&self, review: &ReviewRequest) -> Result<String>;
 
+    /// Request reviews from the given users or teams on the review, additively
+    /// (anyone already requested stays). Team reviewers use the provider's own
+    /// form (GitHub/Gitea `org/team`). The default errors, so a provider
+    /// without reviewer support surfaces that rather than dropping the request.
+    fn request_reviewers(&self, _review: &ReviewRequest, _reviewers: &[String]) -> Result<String> {
+        bail!("requesting reviewers is not supported by this provider")
+    }
+
     /// Close the review without merging, deleting its source branch when
     /// `delete_branch`. Used to retire a review superseded by a branch rename.
     fn close_review(&self, review: &ReviewRequest, delete_branch: bool) -> Result<String>;

@@ -193,6 +193,35 @@ impl ReviewProvider for GiteaProvider {
         command_output("tea", &["pr", "edit", review.id_value(), "--title", title])
     }
 
+    fn request_reviewers(&self, review: &ReviewRequest, reviewers: &[String]) -> Result<String> {
+        // tea has no reviewer flag, so request through the API passthrough
+        // (which still uses tea's stored auth). Gitea keeps user and team
+        // reviewers in separate arrays; an `org/team` entry is a team, its slug
+        // the part after the last slash.
+        let mut users = Vec::new();
+        let mut teams = Vec::new();
+        for name in reviewers {
+            match name.rsplit_once('/') {
+                Some((_, team)) => teams.push(team),
+                None => users.push(name.as_str()),
+            }
+        }
+        let endpoint = format!(
+            "repos/{}/pulls/{}/requested_reviewers",
+            repo_slug()?,
+            review.id_value()
+        );
+        let data = serde_json::json!({
+            "reviewers": users,
+            "team_reviewers": teams,
+        })
+        .to_string();
+        command_output(
+            "tea",
+            &["api", "--method", "POST", &endpoint, "--data", &data],
+        )
+    }
+
     fn close_review(&self, review: &ReviewRequest, _delete_branch: bool) -> Result<String> {
         // tea's close has no delete-source-branch flag, so the remote branch may
         // linger; closing is what retires the superseded review.

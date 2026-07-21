@@ -271,8 +271,8 @@ git stk view [branch]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
 git stk repair [--dry-run | --from-remote]
-git stk submit [branch] [--no-stack] [-d <desc>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
-git stk submit [--stack | --no-stack | --downstack] [-d <desc>] [--draft | --no-draft] [--ready] [--rebuild-overview] [--dry-run] [--push | --no-push]
+git stk submit [branch] [--no-stack] [-d <desc>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
+git stk submit [--stack | --no-stack | --downstack] [-d <desc>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--rebuild-overview] [--dry-run] [--push | --no-push]
 git stk cleanup [branch] [--dry-run] [--keep-branch]
 ```
 
@@ -362,11 +362,16 @@ When the repo carries a pull/merge request template - GitHub's `PULL_REQUEST_TEM
 `Default.md` under `.gitlab/merge_request_templates/` - a newly created review starts from it, matching
 what opening the review on the web would give you. Without a description the template is wrapped in the
 managed description block, so it reads as the opening prose with `Closes #N` and the stack overview
-beneath. When you pass `--desc`/`--desc-file`, the template stays freeform at the top and your
-description lands in its own block below a horizontal-rule (`---`) seam, so the automated content reads
-as distinct from your template rather than blurring into it.
-A `PULL_REQUEST_TEMPLATE/` directory of named choices has no single default, so it is skipped. Set
-`git config stk.usePrTemplate false` for a lean, git-stk-only body.
+beneath. When you pass `--desc`/`--desc-file` on a branch, your description takes the template's place on
+that branch's review - the description is what you wrote, so it replaces the boilerplate rather than
+sitting beneath it. A `PULL_REQUEST_TEMPLATE/` directory of named choices has no single default, so it is
+skipped. Set `git config stk.usePrTemplate false` for a lean, git-stk-only body.
+
+`submit --reviewers <csv>` requests reviews on every submitted review from a comma-separated list of
+users or teams (or repeat the flag). A leading `@` is optional and stripped, so `--reviewers @foo,@bar`
+and `--reviewers foo,bar` mean the same. GitHub and Gitea team reviewers use the `org/team` form
+(`@my-org/backend`); GitLab has no team reviewers, so its entries are usernames. Reviewers are added, not
+replaced, so a later submit never drops anyone already requested.
 
 Upgrading:
 
