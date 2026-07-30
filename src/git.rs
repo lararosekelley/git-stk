@@ -61,6 +61,85 @@ pub fn git_common_path(path: &str) -> Result<String> {
         .into_owned())
 }
 
+/// Branches checked out in linked worktrees *other than this one*, paired with
+/// the directory holding each. Git refuses to switch to, rebase, or delete a
+/// branch another worktree holds, so callers check this before those.
+pub fn worktree_branches() -> Result<Vec<(String, std::path::PathBuf)>> {
+    let porcelain = output(&["worktree", "list", "--porcelain"])?;
+    Ok(parse_worktree_branches(
+        &porcelain,
+        repo_root().ok().as_deref(),
+    ))
+}
+
+/// The worktree holding `branch`, if one other than this one does.
+pub fn worktree_holding(branch: &str) -> Result<Option<std::path::PathBuf>> {
+    Ok(worktree_branches()?
+        .into_iter()
+        .find(|(name, _)| name == branch)
+        .map(|(_, path)| path))
+}
+
+/// Parse `git worktree list --porcelain` into (branch, path) pairs. Records are
+/// blank-line separated, each opening with `worktree <path>`; only those with a
+/// `branch` line hold a branch, so bare and detached ones drop out. The record
+/// rooted at `current` is excluded, letting callers read a hit as "someone else
+/// holds this".
+fn parse_worktree_branches(
+    porcelain: &str,
+    current: Option<&std::path::Path>,
+) -> Vec<(String, std::path::PathBuf)> {
+    let current = current.map(canonical);
+    let mut held = Vec::new();
+    let mut path: Option<std::path::PathBuf> = None;
+
+    for line in porcelain.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            path = Some(std::path::PathBuf::from(rest));
+        } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+            // take() so a record without a branch line cannot borrow the next
+            // record's path.
+            if let Some(path) = path.take()
+                && current.as_deref() != Some(canonical(&path).as_path())
+            {
+                held.push((branch.to_owned(), path));
+            }
+        }
+    }
+
+    held
+}
+
+/// Resolve a worktree path for comparison. Symlinked or `/tmp`-style paths
+/// otherwise read as a different worktree than the one we are standing in.
+fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Render a worktree path for a message the user may paste back as a command.
+/// Sibling worktrees are the common layout and `../wt-a` reads better than a
+/// long absolute path. Only exact prefix matches are shortened, so the result is
+/// always a usable path - never a guess.
+pub fn display_path(path: &std::path::Path) -> String {
+    let Ok(cwd) = std::env::current_dir() else {
+        return path.display().to_string();
+    };
+
+    if let Ok(rest) = path.strip_prefix(&cwd)
+        && rest.components().next().is_some()
+    {
+        return format!("./{}", rest.display());
+    }
+    if let Some(up) = cwd.parent()
+        && let Ok(rest) = path.strip_prefix(up)
+        && rest.components().next().is_some()
+    {
+        return format!("../{}", rest.display());
+    }
+
+    path.display().to_string()
+}
+
 pub fn remote_url(remote: &str) -> Result<Option<String>> {
     // git remote get-url exits 2 when the remote does not exist.
     output_codes(&["remote", "get-url", remote], &[2], "git remote get-url")
@@ -870,6 +949,94 @@ fn command_error(command: &str, stderr: &[u8]) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape `git worktree list --porcelain` prints for a main worktree, a
+    /// linked one, a detached one, and a bare repo.
+    const PORCELAIN: &str = "\
+worktree /repo
+HEAD f7cff917cf874d0c6ff3108260fda91ac3271baf
+branch refs/heads/feat/b
+
+worktree /repo/../wt-a
+HEAD 0700673acebfe459d480fa3bd616b2ecf6249fe1
+branch refs/heads/feat/a
+
+worktree /repo/../wt-detached
+HEAD 25fb6254b4b1cd5cbe2b0d4b1f5b1cf6e7d8a9b0
+detached
+";
+
+    #[test]
+    fn worktree_parsing_keeps_branches_and_drops_detached_ones() {
+        // No current worktree to exclude: every branch-holding record survives,
+        // and the detached one - which holds no branch and so blocks nothing -
+        // does not.
+        let held = parse_worktree_branches(PORCELAIN, None);
+        assert_eq!(
+            held,
+            vec![
+                ("feat/b".to_owned(), std::path::PathBuf::from("/repo")),
+                (
+                    "feat/a".to_owned(),
+                    std::path::PathBuf::from("/repo/../wt-a")
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn worktree_parsing_excludes_the_worktree_we_are_standing_in() {
+        // The point of the exclusion: a caller must be able to read a hit as
+        // "another worktree holds this", never as its own checkout.
+        let held = parse_worktree_branches(PORCELAIN, Some(std::path::Path::new("/repo")));
+        assert_eq!(
+            held,
+            vec![(
+                "feat/a".to_owned(),
+                std::path::PathBuf::from("/repo/../wt-a")
+            )]
+        );
+    }
+
+    #[test]
+    fn a_bare_record_does_not_lend_its_path_to_the_next_branch() {
+        // A bare repo opens a record with no branch line. The following
+        // worktree's branch must not be attributed to the bare path.
+        let porcelain = "\
+worktree /repo/.bare
+bare
+
+worktree /repo/wt-a
+HEAD 0700673acebfe459d480fa3bd616b2ecf6249fe1
+branch refs/heads/feat/a
+";
+        assert_eq!(
+            parse_worktree_branches(porcelain, None),
+            vec![("feat/a".to_owned(), std::path::PathBuf::from("/repo/wt-a"))]
+        );
+    }
+
+    #[test]
+    fn branch_names_containing_slashes_survive_the_refs_heads_strip() {
+        // Only the refs/heads/ prefix comes off - the rest of the name is the
+        // branch, slashes and all.
+        let porcelain = "\
+worktree /repo/wt
+HEAD 0700673acebfe459d480fa3bd616b2ecf6249fe1
+branch refs/heads/feat/deep/nested/name
+";
+        assert_eq!(
+            parse_worktree_branches(porcelain, None)
+                .first()
+                .map(|(branch, _)| branch.as_str()),
+            Some("feat/deep/nested/name")
+        );
+    }
+
+    #[test]
+    fn empty_porcelain_holds_nothing() {
+        assert!(parse_worktree_branches("", None).is_empty());
+    }
 
     #[test]
     fn a_merge_queue_rejection_is_downgraded_to_the_queued_refs() {
