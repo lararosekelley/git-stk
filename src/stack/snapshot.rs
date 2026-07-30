@@ -83,6 +83,14 @@ pub fn undo() -> Result<()> {
     let head = snapshot["head"].as_str().unwrap_or_default().to_owned();
     let branches = snapshot["branches"].as_array().cloned().unwrap_or_default();
 
+    // Before the first ref moves: nothing here is recoverable per-branch, so a
+    // blocked restore has to fail whole. The snapshot survives the bail, so
+    // freeing the worktree and re-running works.
+    let blocked = blocked_by_other_worktrees(&branches, &head)?;
+    if !blocked.is_empty() {
+        anyhow::bail!(blocked_message(&blocked));
+    }
+
     let mut restored = 0;
     for entry in &branches {
         let name = entry["name"].as_str().unwrap_or_default();
@@ -121,6 +129,67 @@ pub fn undo() -> Result<()> {
         style::dim("local refs and metadata only; pushes and merged reviews are not reverted")
     );
     Ok(())
+}
+
+/// Snapshot branches the restore would move that another worktree holds.
+/// `update_ref` succeeds on those without complaint, leaving that worktree's
+/// index and working tree describing a commit its branch no longer points at -
+/// it silently acquires staged changes nobody made. Refusing keeps `undo` as
+/// conservative as its clean-tree precondition already implies: the other
+/// worktree may hold uncommitted work, and the snapshot does not cover it.
+fn blocked_by_other_worktrees(
+    branches: &[Value],
+    head: &str,
+) -> Result<Vec<(String, std::path::PathBuf)>> {
+    let held = git::worktree_branches()?;
+    if held.is_empty() {
+        return Ok(Vec::new());
+    }
+    let holder = |branch: &str| {
+        held.iter()
+            .find(|(name, _)| name == branch)
+            .map(|(_, path)| path.clone())
+    };
+
+    let mut blocked = Vec::new();
+    for entry in branches {
+        let name = entry["name"].as_str().unwrap_or_default();
+        // Only refs that actually move: one already at its recorded sha changes
+        // nothing in the worktree holding it.
+        let Some(sha) = entry["sha"].as_str() else {
+            continue;
+        };
+        if name.is_empty() || git::branch_sha(name).as_deref() == Some(sha) {
+            continue;
+        }
+        if let Some(path) = holder(name) {
+            blocked.push((name.to_owned(), path));
+        }
+    }
+
+    // The restore ends by checking `head` out. Another worktree holding it
+    // fails that checkout too - after every ref has already been rewound.
+    if !head.is_empty()
+        && git::current_branch().ok().as_deref() != Some(head)
+        && !blocked.iter().any(|(name, _)| name == head)
+        && let Some(path) = holder(head)
+    {
+        blocked.push((head.to_owned(), path));
+    }
+
+    Ok(blocked)
+}
+
+fn blocked_message(blocked: &[(String, std::path::PathBuf)]) -> String {
+    let mut message = String::from("undo would rewind branches checked out in other worktrees:\n");
+    for (branch, path) in blocked {
+        message.push_str(&format!("  {branch} in {}\n", git::display_path(path)));
+    }
+    message.push_str(
+        "those worktrees would keep an index and working tree the branch no longer matches; \
+         free them with `git worktree remove <path>` and re-run",
+    );
+    message
 }
 
 fn restore_config(branch: &str, key: &str, value: Option<&str>) -> Result<()> {
