@@ -709,6 +709,18 @@ fn help_mentions_update_refs(help: &str) -> bool {
     help.contains("update-refs")
 }
 
+/// Whether a rebase is actually paused in this worktree. Distinguishes a real
+/// conflict from git-stk merely having left state on file - git refuses to
+/// rebase a branch another worktree holds, which fails the run without ever
+/// starting a rebase to continue or abort.
+pub fn rebase_in_progress() -> bool {
+    ["rebase-merge", "rebase-apply"].iter().any(|dir| {
+        git_path(dir)
+            .map(|path| std::path::Path::new(&path).exists())
+            .unwrap_or(false)
+    })
+}
+
 pub fn rebase_continue() -> Result<()> {
     // Passthrough: continuing a rebase can open the user's editor.
     status_passthrough(&["rebase", "--continue"]).context("failed to continue rebase")
