@@ -256,17 +256,27 @@ git stk down          # towards the trunk (parent)
 git stk top           # jump to the leaf of the stack
 git stk bottom        # jump to the branch just above the trunk
 git stk restack [--fetch | --no-fetch] [--update-refs | --no-update-refs] [--push | --no-push] [--dry-run]
-git stk run [--fail-fast] -- <command>   # run a command on each branch, bottom-up
+git stk run [--fail-fast] [--no-worktree] -- <command>   # run a command on each branch, bottom-up
 git stk absorb [--dry-run] [--include-unstaged]
 git stk continue
 git stk abort
 git stk undo
 ```
 
-`run` checks out each branch bottom-up and runs the command (e.g. `git stk run -- cargo test`), printing a
+`run` executes the command against each branch bottom-up (e.g. `git stk run -- cargo test`), printing a
 per-branch pass/fail summary and exiting non-zero if any branch failed - a quick way to confirm each PR is
-independently green before submitting. `--fail-fast` stops at the first failure. It refuses a dirty
-worktree and returns you to the branch you started on.
+independently green before submitting. `--fail-fast` stops at the first failure.
+
+By default it does this in a throwaway worktree under `.git`, so your own checkout never moves: uncommitted
+work is fine, your HEAD stays put, and nothing retriggers the file watchers and rebuilds in the directory
+you are sitting in. **The tradeoff is that a fresh worktree has no untracked build output** - no
+`node_modules`, no `target/` - so a command that depends on those may fail there having passed in your
+checkout. `--no-worktree` runs the old way instead, walking your own checkout across the stack; that needs
+a clean tree and returns you to the branch you started on.
+
+Either way the command runs in the directory you started in: from `packages/web`, the scratch worktree runs
+it in its own `packages/web` (falling back to the worktree root on a branch where that directory does not
+exist yet).
 
 `absorb` takes review fixes scattered across the stack and folds each into the commit that introduced the
 lines it touches: stage the fixes (`git add`), then `git stk absorb` blames each hunk, amends it into its

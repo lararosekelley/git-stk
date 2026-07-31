@@ -72,6 +72,47 @@ pub fn worktree_branches() -> Result<Vec<(String, std::path::PathBuf)>> {
     ))
 }
 
+/// Add a detached worktree at `path`, parked on `commit`. Detached on purpose:
+/// it holds no branch, so it cannot collide with the user's checkout or any
+/// other worktree.
+///
+/// `--force` because `path` is a scratch directory git-stk owns outright: a
+/// killed run can leave the directory gone but still registered, and git then
+/// refuses the path as "a missing but already registered worktree". Forcing is
+/// scoped to that one path - `git worktree prune` would also clear entries for
+/// the user's own worktrees that happen to be on unmounted volumes.
+pub fn worktree_add_detached(path: &std::path::Path, commit: &str) -> Result<()> {
+    let path = path.to_string_lossy().into_owned();
+    status(&[
+        "worktree", "add", "--detach", "--force", "--quiet", &path, commit,
+    ])
+    .with_context(|| format!("failed to create a worktree at {path}"))
+}
+
+/// Remove a worktree, discarding anything in it. Only for worktrees git-stk
+/// created and owns.
+pub fn worktree_remove(path: &std::path::Path) -> Result<()> {
+    let path = path.to_string_lossy().into_owned();
+    status(&["worktree", "remove", "--force", &path])
+        .with_context(|| format!("failed to remove the worktree at {path}"))
+}
+
+/// Move an existing worktree's detached HEAD to `commit`, without touching any
+/// branch.
+pub fn checkout_detached_in(worktree: &std::path::Path, commit: &str) -> Result<()> {
+    let dir = worktree.to_string_lossy().into_owned();
+    status(&["-C", &dir, "checkout", "--detach", "--quiet", commit])
+        .with_context(|| format!("failed to check out {commit} in {dir}"))
+}
+
+/// An absolute path under the repo's common git dir. Callers that hand a path to
+/// another process (a worktree location, a command's working directory) need it
+/// absolute, since a relative one would be read against the wrong directory.
+pub fn git_common_path_absolute(path: &str) -> Result<std::path::PathBuf> {
+    let joined = git_common_path(path)?;
+    std::path::absolute(&joined).with_context(|| format!("failed to resolve {joined}"))
+}
+
 /// The worktree holding `branch`, if one other than this one does.
 pub fn worktree_holding(branch: &str) -> Result<Option<std::path::PathBuf>> {
     Ok(worktree_branches()?
