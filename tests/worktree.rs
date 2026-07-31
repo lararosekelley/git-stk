@@ -7,8 +7,11 @@ mod common;
 
 use std::path::Path;
 
-use common::TestRepo;
+use common::{FakeProvider, TestRepo};
 use predicates::prelude::PredicateBooleanExt;
+
+const MERGED_A: &str = r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12"}]"##;
+const MERGED_B: &str = r##"[{"number":13,"state":"MERGED","baseRefName":"feature/a","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/13"}]"##;
 
 /// Somewhere outside the repo to put a linked worktree. Adding one *inside*
 /// the repo leaves an untracked directory, which trips the clean-tree
@@ -329,6 +332,79 @@ fn abort_with_nothing_to_abort_still_reports_that() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("no restack to abort"));
+}
+
+/// A landed two-branch stack with a worktree parked on `feature/a`, viewed from
+/// `main` so the worktree can hold it. Returns the worktree's parent tempdir,
+/// which must stay alive for the worktree to exist.
+fn landed_stack_with_worktree_on_a(repo: &TestRepo) -> (tempfile::TempDir, std::path::PathBuf) {
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-a");
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/a"]);
+    (parent, worktree)
+}
+
+fn merged_both(repo: &TestRepo) -> common::FakeProviderEnv {
+    FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .on("feature/b --state merged", MERGED_B)
+        .on("pr edit", "updated child review")
+        .fallback("[]")
+        .install(repo)
+}
+
+#[test]
+fn cleanup_keeps_a_worktree_held_branch_and_finishes_the_rest() {
+    let repo = TestRepo::new();
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    let fake = merged_both(&repo);
+
+    // `git branch -D` exits 1 on a worktree-held branch. Propagating that would
+    // abandon feature/b and its metadata partway through the run.
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: checked out in the worktree at",
+        ))
+        .stdout(predicates::str::contains("will delete branch feature/b"));
+
+    // The held branch survives; the rest of the cleanup still happened.
+    repo.git(["rev-parse", "--verify", "feature/a"]);
+    assert_eq!(
+        repo.git_status(["rev-parse", "--verify", "feature/b"])
+            .status
+            .code(),
+        Some(128),
+        "feature/b should still have been deleted"
+    );
+    assert!(is_clean(&repo, &worktree));
+}
+
+#[test]
+fn cleanup_dry_run_predicts_the_worktree_skip() {
+    let repo = TestRepo::new();
+    let (_parent, _worktree) = landed_stack_with_worktree_on_a(&repo);
+    let fake = merged_both(&repo);
+
+    // A preview that promised "would delete branch feature/a" would be lying
+    // about what the real run does.
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: checked out in the worktree at",
+        ))
+        .stdout(predicates::str::contains("would delete branch feature/a").not());
 }
 
 #[test]

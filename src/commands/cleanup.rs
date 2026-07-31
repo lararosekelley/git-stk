@@ -243,6 +243,21 @@ pub(crate) fn cleanup_branch_deletion(
         return Ok(());
     }
 
+    // Nor can a branch another worktree holds. Naming where it lives keeps the
+    // rest of the cleanup running - a landed stack should not stop halfway
+    // because one branch has a worktree parked on it. The worktree is the
+    // user's to remove.
+    if let Some(path) = git::worktree_holding(branch)? {
+        anstream::println!(
+            "{}",
+            style::dim(&format!(
+                "kept {branch}: checked out in the worktree at {}",
+                path.display()
+            ))
+        );
+        return Ok(());
+    }
+
     anstream::println!(
         "{} delete branch {}",
         if dry_run { "would" } else { "will" },
