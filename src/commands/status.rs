@@ -29,6 +29,11 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
     let children = stack::children_of(&branch)?;
 
     anstream::println!("branch: {}", style::paint(style::CURRENT, &branch));
+    // Where the branch actually lives, when that is not here. Best effort: a
+    // failed listing just omits the line.
+    if let Some(path) = git::worktree_holding(&branch).ok().flatten() {
+        anstream::println!("worktree: {}", git::display_path(&path));
+    }
     match parent.as_deref() {
         Some(parent) => anstream::println!("parent: {}", style::paint(style::BRANCH, parent)),
         None => anstream::println!("parent: none"),

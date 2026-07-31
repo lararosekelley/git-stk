@@ -181,6 +181,7 @@ pub fn print_stack(reviews: &BTreeMap<String, ReviewAnnotation>, commits: bool) 
         .collect();
 
     let sizes = diff_sizes(stack.iter().cloned(), &parents);
+    let worktrees = worktree_map();
     let ctx = TreeCtx {
         current: &current,
         trunk: trunk.as_deref(),
@@ -188,6 +189,7 @@ pub fn print_stack(reviews: &BTreeMap<String, ReviewAnnotation>, commits: bool) 
         parents: &parents,
         reviews,
         sizes: &sizes,
+        worktrees: &worktrees,
         commits,
         width: term_width(),
     };
@@ -253,6 +255,7 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, ReviewAnnotation>, commits: b
     }
 
     let sizes = diff_sizes(parents.keys().cloned(), &parents);
+    let worktrees = worktree_map();
     let width = term_width();
     let mut first = true;
     let mut render = |root: &str, block_children: &BTreeMap<String, Vec<String>>| {
@@ -267,6 +270,7 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, ReviewAnnotation>, commits: b
             parents: &parents,
             reviews,
             sizes: &sizes,
+            worktrees: &worktrees,
             commits,
             width,
         };
@@ -322,10 +326,23 @@ struct TreeCtx<'a> {
     parents: &'a BTreeMap<String, String>,
     reviews: &'a BTreeMap<String, ReviewAnnotation>,
     sizes: &'a BTreeMap<String, (usize, usize)>,
+    /// Branches checked out in other worktrees, and where. Answers "where does
+    /// this branch actually live" - the one thing a multi-worktree user cannot
+    /// get from the tree otherwise.
+    worktrees: &'a BTreeMap<String, std::path::PathBuf>,
     /// `--commits`: list each branch's own commits beneath it.
     commits: bool,
     /// Terminal width, for truncating commit subjects.
     width: usize,
+}
+
+/// Branches held by other worktrees, keyed for lookup while drawing. Best
+/// effort: a failed listing just means no annotations, never a failed `list`.
+fn worktree_map() -> BTreeMap<String, std::path::PathBuf> {
+    git::worktree_branches()
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
 }
 
 /// Terminal width for truncation, defaulting to 80 when not a terminal.
@@ -402,6 +419,14 @@ fn collect_tree_lines(
         line.push_str(&style::paint(style::DIM, " ("));
         line.push_str(&tags.join(&separator));
         line.push_str(&style::paint(style::DIM, ")"));
+    }
+    // Outside the metrics group and dimmed: a location, not a measurement, and
+    // scannable down the column when several branches live elsewhere.
+    if let Some(path) = ctx.worktrees.get(branch) {
+        line.push_str(&style::paint(
+            style::DIM,
+            &format!("  {}", git::display_path(path)),
+        ));
     }
 
     // With --commits, list the branch's own commits (parent..branch) under it.

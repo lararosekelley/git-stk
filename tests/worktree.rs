@@ -487,6 +487,92 @@ fn a_free_branch_still_checks_out_normally() {
 }
 
 #[test]
+fn list_annotates_a_branch_living_in_another_worktree() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "feature/a"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+
+    let basename = worktree.file_name().unwrap().to_str().unwrap().to_owned();
+    let stdout = String::from_utf8(repo.stack_output(["list", "--local"]).stdout).expect("utf8");
+
+    let line_for = |branch: &str| {
+        stdout
+            .lines()
+            .find(|line| line.contains(branch))
+            .unwrap_or_else(|| panic!("no line for {branch} in:\n{stdout}"))
+    };
+
+    // feature/b is annotated with where it lives. feature/a is checked out
+    // right here, so it gets no annotation - that is what makes the column
+    // meaningful rather than noise on every row.
+    assert!(
+        line_for("feature/b").contains(&basename),
+        "feature/b should name its worktree:\n{stdout}"
+    );
+    assert!(
+        !line_for("feature/a").contains(&basename),
+        "the branch checked out here must not be annotated:\n{stdout}"
+    );
+}
+
+#[test]
+fn status_names_the_worktree_holding_the_branch() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "feature/a"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+
+    repo.stack()
+        .args(["status", "feature/b"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("worktree: "));
+
+    // The branch we are standing on is not "elsewhere", so no line for it.
+    repo.stack()
+        .args(["status", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("worktree: ").not());
+}
+
+#[test]
+fn shareable_formats_leave_out_local_worktree_paths() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "feature/a"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+
+    // markdown/plain output gets pasted into PRs and Slack, where another
+    // machine's local paths are noise.
+    let basename = worktree.file_name().unwrap().to_str().unwrap().to_owned();
+    repo.stack()
+        .args(["list", "--format", "markdown"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(basename).not());
+}
+
+#[test]
 fn undo_ignores_a_worktree_holding_a_branch_it_would_not_move() {
     let repo = TestRepo::new();
 
