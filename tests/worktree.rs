@@ -8,6 +8,7 @@ mod common;
 use std::path::Path;
 
 use common::TestRepo;
+use predicates::prelude::PredicateBooleanExt;
 
 /// Somewhere outside the repo to put a linked worktree. Adding one *inside*
 /// the repo leaves an untracked directory, which trips the clean-tree
@@ -139,6 +140,195 @@ fn undo_refuses_when_only_the_head_it_would_return_to_is_held() {
         "the refusal must come before the first ref moves"
     );
     assert!(is_clean(&repo, &worktree));
+}
+
+#[test]
+fn restack_refuses_before_rewriting_anything_when_a_branch_is_held() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["switch", "feature/a"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+
+    let a_before = repo.git(["rev-parse", "feature/a"]);
+    let b_before = repo.git(["rev-parse", "feature/b"]);
+
+    repo.stack()
+        .arg("restack")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "restack would rebase branches checked out in other worktrees",
+        ))
+        .stderr(predicates::str::contains("feature/b"))
+        // Not a conflict, so it must not offer the conflict recovery path.
+        .stderr(predicates::str::contains("git stk continue").not());
+
+    // The point of a preflight: feature/a is untouched. Failing mid-loop would
+    // have rewritten it before hitting feature/b.
+    assert_eq!(repo.git(["rev-parse", "feature/a"]), a_before);
+    assert_eq!(repo.git(["rev-parse", "feature/b"]), b_before);
+}
+
+#[test]
+fn a_worktree_blocked_restack_leaves_no_state_that_wedges_undo() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+    let tip = stack_with_worktree_on_b(&repo, &worktree);
+
+    // Give the restack real work to do: without this the stack is already up to
+    // date and the preflight rightly lets it through.
+    repo.git(["switch", "main"]);
+    repo.commit_file("m2.txt", "m2\n", "trunk moves again");
+    repo.git(["switch", "feature/a"]);
+
+    // Refused by the preflight, which records nothing - so undo is still
+    // reachable, and it is only the worktree standing in the way.
+    repo.stack().arg("restack").assert().failure();
+    repo.stack()
+        .arg("undo")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("undo would rewind"));
+
+    repo.git(["worktree", "remove", worktree.to_str().unwrap()]);
+    repo.stack().arg("undo").assert().success();
+    assert_ne!(repo.git(["rev-parse", "feature/b"]), tip);
+}
+
+#[test]
+fn restack_is_not_blocked_by_a_held_branch_it_would_not_rebase() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+
+    // The helper leaves the stack fully restacked, so a second restack has
+    // nothing to rebase. The preflight must let that through: refusing a no-op
+    // would make a worktree-per-branch layout unusable, since `restack` is run
+    // reflexively and would fail every time.
+    stack_with_worktree_on_b(&repo, &worktree);
+
+    repo.stack()
+        .arg("restack")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("already up to date"));
+    assert!(is_clean(&repo, &worktree));
+}
+
+#[test]
+fn continue_refuses_when_a_worktree_appeared_while_the_restack_was_paused() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-c");
+
+    // A stack where rebasing B conflicts, with C above it.
+    repo.commit_file("file.txt", "base\n", "base");
+    repo.stack().args(["new", "a"]).assert().success();
+    repo.commit_file("file.txt", "a\n", "a");
+    repo.stack().args(["new", "b"]).assert().success();
+    repo.commit_file("file.txt", "b\n", "b");
+    repo.stack().args(["new", "c"]).assert().success();
+    repo.commit_file("other.txt", "c\n", "c");
+    repo.git(["switch", "main"]);
+    repo.commit_file("file.txt", "moved\n", "trunk moves on");
+    repo.git(["switch", "a"]);
+
+    // Conflicts on a, then on b. Resolve a and continue to reach the state that
+    // matters: paused mid-rebase on b, with c still to come.
+    repo.stack().arg("restack").assert().failure();
+    repo.write("file.txt", "resolved a\n");
+    repo.git(["add", "file.txt"]);
+    repo.stack().arg("continue").assert().failure();
+
+    // The worktree appears while the restack is paused - the only way to reach
+    // this, since the initial preflight would have caught it up front.
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "c"]);
+    repo.write("file.txt", "resolved b\n");
+    repo.git(["add", "file.txt"]);
+
+    let b_before = repo.git(["rev-parse", "b"]);
+    let c_before = repo.git(["rev-parse", "c"]);
+
+    // b's ref is still at its pre-rebase tip while the rebase is paused, so c
+    // reads as "up to date" unless the preflight knows b is mid-flight. Without
+    // that seed, b gets rewritten and c is stranded behind it.
+    repo.stack()
+        .arg("continue")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "restack would rebase branches checked out in other worktrees",
+        ))
+        .stderr(predicates::str::contains("c"));
+
+    assert_eq!(repo.git(["rev-parse", "b"]), b_before, "b must not move");
+    assert_eq!(repo.git(["rev-parse", "c"]), c_before, "c must not move");
+}
+
+#[test]
+fn continue_clears_leftover_state_when_no_rebase_is_in_progress() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    // Stand in for a run that died before any rebase started: state on file,
+    // nothing to continue. This is what used to trap `continue`, `abort` *and*
+    // `undo` with no advertised way out.
+    let state = repo.git(["rev-parse", "--git-path", "stack-state"]);
+    std::fs::write(
+        repo.path().join(&state),
+        "branch=feature/a\nparent=main\nremaining=\nupdateRefs=false\npush=false\nall=feature/a\nfrozen=\n",
+    )
+    .expect("write leftover state");
+
+    repo.stack()
+        .arg("continue")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("nothing to continue"));
+
+    // Cleared, so the stack is usable again rather than permanently wedged.
+    assert!(!repo.path().join(&state).exists());
+}
+
+#[test]
+fn abort_clears_leftover_state_when_no_rebase_is_in_progress() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let state = repo.git(["rev-parse", "--git-path", "stack-state"]);
+    std::fs::write(
+        repo.path().join(&state),
+        "branch=feature/a\nparent=main\nremaining=\nupdateRefs=false\npush=false\nall=feature/a\nfrozen=\n",
+    )
+    .expect("write leftover state");
+
+    repo.stack()
+        .arg("abort")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("cleared leftover restack state"));
+    assert!(!repo.path().join(&state).exists());
+}
+
+#[test]
+fn abort_with_nothing_to_abort_still_reports_that() {
+    let repo = TestRepo::new();
+    repo.stack()
+        .arg("abort")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no restack to abort"));
 }
 
 #[test]

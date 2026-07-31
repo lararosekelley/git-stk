@@ -52,6 +52,11 @@ pub fn restack(
     let push = settings::push_enabled(push_mode, settings::PUSH_ON_RESTACK_KEY)?;
     let frozen = with_frozen_ancestors(frozen_branches(&branches), &branches, &parents);
 
+    // Before anything is mutated - the snapshot, the diverged-remote
+    // cherry-picks, the first rebase. A branch held elsewhere cannot be rebased,
+    // and finding out mid-loop leaves the stack half-rewritten.
+    ensure_no_worktree_blocks(&branches, &parents, &frozen, &BTreeSet::new())?;
+
     if dry_run {
         reconcile_diverged_remotes(&branches, &frozen, push, true)?;
         return print_restack_plan(&branches, &parents, &frozen, update_refs, push);
@@ -176,6 +181,65 @@ fn print_restack_plan(
         }
     }
     Ok(())
+}
+
+/// Refuse the restack if a branch it would rebase is checked out in another
+/// worktree. Two failures this heads off: git refuses to rebase such a branch
+/// outright, aborting the run with earlier branches already rewritten; and
+/// `git rebase --update-refs` *silently* skips refs it cannot move, which would
+/// leave a parent behind while its child is rewritten and quietly break the
+/// ancestry the stack depends on.
+fn ensure_no_worktree_blocks(
+    branches: &[String],
+    parents: &BTreeMap<String, String>,
+    frozen: &BTreeSet<String>,
+    already_moving: &BTreeSet<String>,
+) -> Result<()> {
+    let held = git::worktree_branches()?;
+    if held.is_empty() {
+        return Ok(());
+    }
+
+    // Which branches the loop will actually rebase. `branches` is ordered
+    // parent-first, so a parent's fate is known before its children are asked.
+    // `already_moving` seeds branches whose rebase is underway but whose ref has
+    // not caught up yet - a paused rebase holds the work in detached HEAD, so
+    // their children would otherwise read as up to date and escape the check.
+    let mut rebasing: BTreeSet<&str> = already_moving.iter().map(String::as_str).collect();
+    let mut blocked = Vec::new();
+    for branch in branches {
+        if frozen.contains(branch) {
+            continue;
+        }
+        let Some(parent) = parents.get(branch) else {
+            continue;
+        };
+        // A branch whose parent is moving will be rebased even if it sits on
+        // that parent's tip right now, so "up to date" only settles it when the
+        // parent stays put.
+        if !rebasing.contains(parent.as_str()) && up_to_date(branch, parent)? {
+            continue;
+        }
+        rebasing.insert(branch.as_str());
+        if let Some((_, path)) = held.iter().find(|(name, _)| name == branch) {
+            blocked.push((branch.clone(), path.clone()));
+        }
+    }
+
+    if blocked.is_empty() {
+        return Ok(());
+    }
+
+    let mut message =
+        String::from("restack would rebase branches checked out in other worktrees:\n");
+    for (branch, path) in &blocked {
+        message.push_str(&format!("  {branch} in {}\n", git::display_path(path)));
+    }
+    message.push_str(
+        "git cannot rebase a branch another worktree holds; free them with \
+         `git worktree remove <path>`, or run the restack from that worktree",
+    );
+    bail!(message);
 }
 
 /// Sitting exactly on the parent tip with a fresh fork point: nothing to do.
@@ -384,6 +448,24 @@ pub fn continue_restack() -> Result<()> {
         bail!("no interrupted restack found");
     };
 
+    // State on file with no rebase behind it: the run failed before any rebase
+    // started. Clear it here rather than failing on git's "no rebase in
+    // progress" - a leftover file also blocks `git stk undo`.
+    if !git::rebase_in_progress() {
+        clear_state()?;
+        bail!(
+            "no rebase is in progress, so there is nothing to continue\n\
+             cleared the leftover restack state; re-run `git stk restack` to pick up where it stopped"
+        );
+    }
+
+    ensure_no_worktree_blocks(
+        &state.remaining,
+        &parent_map()?,
+        &state.frozen.iter().cloned().collect(),
+        &BTreeSet::from([state.branch.clone()]),
+    )?;
+
     if let Err(error) = git::rebase_continue() {
         anstream::eprintln!("{}", style::warn("restack still has conflicts"));
         eprintln!("resolve conflicts, then run `git stk continue`");
@@ -412,6 +494,17 @@ pub fn continue_restack() -> Result<()> {
 }
 
 pub fn abort_restack() -> Result<()> {
+    // Same escape hatch as `continue`: with no rebase to unwind, aborting means
+    // dropping the leftover state so the stack is usable again.
+    if !git::rebase_in_progress() {
+        if RestackState::read()?.is_none() {
+            bail!("no restack to abort");
+        }
+        clear_state()?;
+        anstream::println!("cleared leftover restack state; no rebase was in progress");
+        return Ok(());
+    }
+
     git::rebase_abort()?;
     clear_state()?;
     anstream::println!("restack aborted");
@@ -486,6 +579,13 @@ fn restack_branches(
         };
 
         if let Err(error) = rebase_result {
+            // A rebase that never started is not a conflict: `continue` and
+            // `abort` would both fail on it, and recording state would only
+            // block `undo` too. Let the failure stand on its own.
+            if !git::rebase_in_progress() {
+                return Err(error);
+            }
+
             let remaining = branches[index + 1..].to_vec();
             RestackState {
                 branch: branch.to_owned(),
@@ -692,9 +792,12 @@ fn state_path() -> Result<PathBuf> {
     Ok(PathBuf::from(git::git_path(STATE_FILE)?))
 }
 
-/// Whether a restack is paused on a conflict, awaiting continue/abort.
+/// Whether a restack is paused on a conflict, awaiting continue/abort. Requires
+/// a live rebase, not just state on file: a run that failed before any rebase
+/// started leaves state behind, and treating that as "in progress" would wedge
+/// `undo` as well as `continue`/`abort`.
 pub(super) fn in_progress() -> bool {
-    state_path().map(|path| path.exists()).unwrap_or(false)
+    state_path().map(|path| path.exists()).unwrap_or(false) && git::rebase_in_progress()
 }
 
 #[cfg(test)]
