@@ -572,6 +572,135 @@ fn shareable_formats_leave_out_local_worktree_paths() {
         .stdout(predicates::str::contains(basename).not());
 }
 
+/// `main -> feature/a -> feature/b`, sitting on `feature/a`, with `feature/b`
+/// checked out in a linked worktree.
+fn two_branch_stack_with_b_elsewhere(repo: &TestRepo, at: &Path) {
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "feature/a"]);
+    repo.git(["worktree", "add", at.to_str().unwrap(), "feature/b"]);
+}
+
+#[test]
+fn path_prints_the_worktree_to_cd_into() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+    two_branch_stack_with_b_elsewhere(&repo, &worktree);
+
+    // The whole point: `cd "$(git stk up --from-path)"` has to succeed and print a
+    // path, where plain `up` can only fail - git cannot check this branch out.
+    let output = repo.stack_output(["up", "--from-path"]);
+    assert!(output.status.success(), "up --from-path should succeed");
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "stdout must be exactly the path, nothing else:\n{stdout}"
+    );
+    let printed = stdout.trim();
+    assert!(
+        worktree.ends_with(Path::new(printed).file_name().unwrap()),
+        "printed path {printed} should point at {}",
+        worktree.display()
+    );
+
+    // Not a checkout - we are still where we started.
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
+}
+
+#[test]
+fn path_checks_out_and_prints_dot_for_a_branch_that_lives_here() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+    two_branch_stack_with_b_elsewhere(&repo, &worktree);
+
+    // Going down is an ordinary checkout. `.` keeps the caller's cwd - printing
+    // the repo root would drag them out of any subdirectory they were in.
+    let output = repo.stack_output(["down", "--from-path"]);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8").trim(),
+        ".",
+        "a same-worktree target should print `.`"
+    );
+    assert_eq!(repo.git(["branch", "--show-current"]), "main");
+
+    // The switch is still reported, just on stderr so stdout stays consumable.
+    let stderr = String::from_utf8(repo.stack_output(["up", "--from-path"]).stderr).expect("utf8");
+    assert!(
+        stderr.contains("switched to"),
+        "the switch should be announced on stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn path_prints_a_destination_even_when_navigation_lands_nowhere() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    // Already at the top. `cd "$(...)"` on empty output would fail, so `.` has
+    // to come out even when nothing moved.
+    let output = repo.stack_output(["top", "--from-path"]);
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).expect("utf8").trim(), ".");
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("utf8")
+            .contains("already at the top")
+    );
+}
+
+#[test]
+fn bottom_from_path_navigates_and_stays_put() {
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // From the top, `bottom` moves to the branch above the trunk and prints `.`
+    // because it lives right here.
+    let output = repo.stack_output(["bottom", "--from-path"]);
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).expect("utf8").trim(), ".");
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
+
+    // Already at the bottom: nothing moves, but a destination still has to come
+    // out or the caller's `cd` fails on empty input.
+    let output = repo.stack_output(["bottom", "--from-path"]);
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).expect("utf8").trim(), ".");
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("utf8")
+            .contains("already at the bottom")
+    );
+}
+
+#[test]
+fn nav_without_path_still_fails_on_a_held_branch() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+    two_branch_stack_with_b_elsewhere(&repo, &worktree);
+
+    // Without --from-path there is no destination the caller can act on, so the
+    // collision stays an error rather than a silent no-op that exits 0.
+    repo.stack()
+        .arg("up")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "is checked out in the worktree at",
+        ));
+}
+
 #[test]
 fn undo_ignores_a_worktree_holding_a_branch_it_would_not_move() {
     let repo = TestRepo::new();

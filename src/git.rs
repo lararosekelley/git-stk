@@ -167,16 +167,24 @@ fn collision_message(branch: &str, shown: &str) -> String {
 }
 
 pub fn checkout(branch: &str) -> Result<()> {
+    checkout_silently(branch)?;
+    anstream::println!("switched to {}", switched_to(branch));
+    Ok(())
+}
+
+/// Switch without announcing it on stdout, for callers whose stdout carries a
+/// value a shell will consume. They report the switch themselves, on stderr.
+pub fn checkout_silently(branch: &str) -> Result<()> {
     if let Some(message) = worktree_collision(branch) {
         bail!(message);
     }
 
-    status(&["switch", branch]).with_context(|| format!("failed to check out {branch}"))?;
-    anstream::println!(
-        "switched to {}",
-        crate::style::paint(crate::style::BRANCH, branch)
-    );
-    Ok(())
+    status(&["switch", branch]).with_context(|| format!("failed to check out {branch}"))
+}
+
+/// The "switched to <branch>" wording, so stdout and stderr callers agree.
+pub fn switched_to(branch: &str) -> String {
+    crate::style::paint(crate::style::BRANCH, branch)
 }
 
 pub fn create_branch(branch: &str) -> Result<()> {
