@@ -14,6 +14,11 @@ pub struct New {
     /// Insert below the current branch, moving it onto the new one.
     #[arg(long, conflicts_with = "insert")]
     prepend: bool,
+    /// Create the branch in a worktree of its own instead of checking it out
+    /// here, under `stk.worktreeDir`. git-stk owns the worktrees it creates and
+    /// removes them on cleanup once the branch lands.
+    #[arg(long, conflicts_with_all = ["insert", "prepend"])]
+    worktree: bool,
     /// Print what would change (the branch, and any retargeted children)
     /// without creating or moving anything.
     #[arg(long, short = 'n', action = ArgAction::SetTrue)]
@@ -22,7 +27,9 @@ pub struct New {
 
 impl Run for New {
     fn run(self) -> Result<()> {
-        if self.insert {
+        if self.worktree {
+            crate::stack::create_branch_in_worktree(&self.branch, self.dry_run)
+        } else if self.insert {
             crate::stack::insert_branch(&self.branch, self.dry_run)
         } else if self.prepend {
             crate::stack::prepend_branch(&self.branch, self.dry_run)

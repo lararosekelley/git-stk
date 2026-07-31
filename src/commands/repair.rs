@@ -161,6 +161,8 @@ pub fn repair(dry_run: bool) -> Result<()> {
         }
     }
 
+    repaired += repair_worktree_ownership(&branches, dry_run)?;
+
     anstream::println!(
         "{}",
         style::success(&format!(
@@ -169,6 +171,64 @@ pub fn repair(dry_run: bool) -> Result<()> {
         ))
     );
     Ok(())
+}
+
+/// Reconcile `branch.<name>.stkWorktree` - the marker saying git-stk created a
+/// branch's worktree, and so may remove it when the branch lands.
+///
+/// It drifts in both directions: the recorded worktree can be removed by hand,
+/// leaving a marker pointing at nothing; and the marker can be lost (a fresh
+/// clone, a wiped config) while the worktree is still there, which would strand
+/// it forever since cleanup only removes what it owns.
+fn repair_worktree_ownership(branches: &[String], dry_run: bool) -> Result<usize> {
+    let mut repaired = 0;
+
+    for branch in branches {
+        let recorded = stack::recorded_worktree(branch);
+        let actual = git::worktree_holding(branch)?;
+
+        match (&recorded, &actual) {
+            // Marker with no worktree behind it, or pointing somewhere the
+            // branch no longer lives.
+            (Some(path), actual) if Some(path) != actual.as_ref() => {
+                anstream::println!(
+                    "{}: {} stale worktree marker {}",
+                    style::branch(branch),
+                    if dry_run { "would clear" } else { "cleared" },
+                    style::dim(&git::display_path(path))
+                );
+                if !dry_run {
+                    stack::unset_owned_worktree(branch)?;
+                }
+                repaired += 1;
+            }
+            // An unmarked worktree sitting exactly where `new --worktree` would
+            // have put it: that directory is git-stk's, so claim it back rather
+            // than leaving it unownable.
+            (None, Some(path))
+                if settings::worktree_path_for(branch)
+                    .is_ok_and(|expected| git::same_path(&expected, path)) =>
+            {
+                anstream::println!(
+                    "{}: {} worktree {}",
+                    style::branch(branch),
+                    if dry_run {
+                        "would re-adopt"
+                    } else {
+                        "re-adopted"
+                    },
+                    style::dim(&git::display_path(path))
+                );
+                if !dry_run {
+                    stack::set_owned_worktree(branch, path)?;
+                }
+                repaired += 1;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(repaired)
 }
 
 enum Ancestry {

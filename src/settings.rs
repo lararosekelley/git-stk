@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 
 use crate::cli::{FetchMode, PushMode};
 use crate::git;
@@ -23,6 +23,7 @@ pub const GITLAB_HOST_KEY: &str = "stk.gitlabHost";
 pub const GITEA_HOST_KEY: &str = "stk.giteaHost";
 pub const CHECK_TIMEOUT_KEY: &str = "stk.checkTimeout";
 pub const USE_PR_TEMPLATE_KEY: &str = "stk.usePrTemplate";
+pub const WORKTREE_DIR_KEY: &str = "stk.worktreeDir";
 pub const DEFAULT_REMOTE: &str = "origin";
 
 /// How long `merge --wait` polls a review's checks before giving up, unless
@@ -52,6 +53,10 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ),
     (CHECK_TIMEOUT_KEY, "1800 (30m); 0 waits indefinitely"),
     (USE_PR_TEMPLATE_KEY, "true"),
+    (
+        WORKTREE_DIR_KEY,
+        "a <repo>-worktrees directory beside the repo",
+    ),
 ];
 
 /// The remote used for provider detection, trunk discovery, and pushes.
@@ -133,6 +138,42 @@ pub fn fetch_enabled(mode: FetchMode) -> Result<bool> {
         FetchMode::Enabled => Ok(true),
         FetchMode::Disabled => Ok(false),
     }
+}
+
+/// Where `new --worktree` puts a branch's worktree. From `stk.worktreeDir`, or a
+/// sibling of the repo root named `<repo>-worktrees` - outside the repo, so the
+/// worktrees do not land in its own file watchers, ignore rules, or `git status`.
+pub fn worktree_dir() -> Result<std::path::PathBuf> {
+    if let Some(configured) = git::config_get(WORKTREE_DIR_KEY)?
+        && !configured.trim().is_empty()
+    {
+        return std::path::absolute(configured.trim()).context("failed to resolve stk.worktreeDir");
+    }
+
+    let root = git::repo_root()?;
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_owned());
+    let parent = root
+        .parent()
+        .context("repository root has no parent directory")?;
+    Ok(parent.join(format!("{name}-worktrees")))
+}
+
+/// The worktree directory for `branch`, under [`worktree_dir`]. Branch names nest
+/// as real directories, so `feat/a` lands at `<dir>/feat/a` and its basename
+/// still matches the branch tail - the way git's own path-to-branch guessing
+/// reads a worktree path.
+pub fn worktree_path_for(branch: &str) -> Result<std::path::PathBuf> {
+    let mut path = worktree_dir()?;
+    for component in branch.split('/').filter(|part| !part.is_empty()) {
+        if component == "." || component == ".." {
+            bail!("branch name {branch} cannot be used as a worktree path");
+        }
+        path.push(component);
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
