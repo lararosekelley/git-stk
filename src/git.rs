@@ -89,6 +89,23 @@ pub fn worktree_add_detached(path: &std::path::Path, commit: &str) -> Result<()>
     .with_context(|| format!("failed to create a worktree at {path}"))
 }
 
+/// Add a worktree at `path` holding a new branch created off `start`.
+pub fn worktree_add_new_branch(path: &std::path::Path, branch: &str, start: &str) -> Result<()> {
+    let path = path.to_string_lossy().into_owned();
+    status(&["worktree", "add", "--quiet", "-b", branch, &path, start])
+        .with_context(|| format!("failed to create a worktree for {branch} at {path}"))
+}
+
+/// Whether a worktree has uncommitted changes. Used before removing one git-stk
+/// created, so work in it is never silently discarded.
+pub fn worktree_has_changes(path: &std::path::Path) -> bool {
+    let dir = path.to_string_lossy().into_owned();
+    // Fails safe: if the state cannot be read at all, assume there is work to
+    // lose. The caller removes with --force, so guessing "clean" here would
+    // discard exactly what this guard exists to protect.
+    output(&["-C", &dir, "status", "--porcelain"]).map_or(true, |out| !out.is_empty())
+}
+
 /// Remove a worktree, discarding anything in it. Only for worktrees git-stk
 /// created and owns.
 pub fn worktree_remove(path: &std::path::Path) -> Result<()> {
@@ -155,6 +172,14 @@ fn parse_worktree_branches(
 /// otherwise read as a different worktree than the one we are standing in.
 fn canonical(path: &std::path::Path) -> std::path::PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether two paths name the same place. Never compare worktree paths with
+/// `==`: git reports its own resolved form, which differs from anything we
+/// build ourselves - `/var` against `/private/var` on macOS, forward against
+/// back slashes on Windows - so exact equality quietly reports "different".
+pub fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    canonical(a) == canonical(b)
 }
 
 /// Render a worktree path for a message the user may paste back as a command.

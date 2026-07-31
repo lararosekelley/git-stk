@@ -702,6 +702,307 @@ fn nav_without_path_still_fails_on_a_held_branch() {
 }
 
 #[test]
+fn new_worktree_creates_the_branch_elsewhere_and_leaves_head_alone() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("in the worktree at"));
+
+    // Branch names nest as directories, so the basename still matches the tail.
+    let created = parent.path().join("feature").join("a");
+    assert!(
+        created.is_dir(),
+        "expected a worktree at {}",
+        created.display()
+    );
+    assert_eq!(
+        repo.git(["-C", created.to_str().unwrap(), "branch", "--show-current"]),
+        "feature/a"
+    );
+
+    // Unlike plain `new`, our own checkout never moved.
+    assert_eq!(repo.git(["branch", "--show-current"]), "main");
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
+    );
+}
+
+#[test]
+fn cleanup_removes_a_worktree_git_stk_created() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let created = parent.path().join("feature").join("a");
+    assert!(created.is_dir());
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    // git-stk made this worktree, so it owns removing it - and must do so before
+    // deleting the branch, since git refuses to delete a branch a worktree holds.
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("remove worktree"))
+        .stdout(predicates::str::contains("delete branch feature/a"));
+
+    assert!(!created.exists(), "the owned worktree should be gone");
+    assert_eq!(
+        repo.git_status(["rev-parse", "--verify", "feature/a"])
+            .status
+            .code(),
+        Some(128),
+        "the branch should be deleted too"
+    );
+}
+
+#[test]
+fn cleanup_keeps_an_owned_worktree_that_has_uncommitted_work() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let created = parent.path().join("feature").join("a");
+    std::fs::write(created.join("scratch.txt"), "unsaved\n").expect("write");
+    repo.git(["-C", created.to_str().unwrap(), "add", "scratch.txt"]);
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    // Ours to remove, but not ours to throw away: no snapshot covers work
+    // sitting in that worktree.
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("has uncommitted changes"));
+
+    assert!(created.exists(), "a dirty owned worktree must survive");
+    repo.git(["rev-parse", "--verify", "feature/a"]);
+}
+
+#[test]
+fn repair_clears_a_marker_whose_worktree_is_gone() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let created = parent.path().join("feature").join("a");
+
+    // Removed by hand, out from under the marker.
+    repo.git(["worktree", "remove", created.to_str().unwrap()]);
+
+    repo.stack()
+        .arg("repair")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("cleared stale worktree marker"));
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.feature/a.stkWorktree"])
+            .status
+            .code(),
+        Some(1),
+        "the marker should be gone"
+    );
+}
+
+#[test]
+fn repair_re_adopts_a_worktree_sitting_where_git_stk_would_put_it() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+
+    // Lose the marker the way a fresh clone or a wiped config would. Without
+    // re-adoption the worktree would be stranded: cleanup only removes what it
+    // owns, so nothing would ever take it away.
+    repo.git(["config", "--unset", "branch.feature/a.stkWorktree"]);
+
+    repo.stack()
+        .arg("repair")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("re-adopted worktree"));
+
+    let recorded = repo.git(["config", "--get", "branch.feature/a.stkWorktree"]);
+    assert!(
+        recorded.ends_with("a"),
+        "expected the worktree path back, got {recorded}"
+    );
+}
+
+#[test]
+fn repair_does_not_claim_a_worktree_outside_the_stk_directory() {
+    let repo = TestRepo::new();
+    let stk_dir = worktree_dir();
+    let elsewhere = worktree_dir();
+    repo.git([
+        "config",
+        "stk.worktreeDir",
+        stk_dir.path().to_str().unwrap(),
+    ]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    // The user's own worktree, nowhere near stk.worktreeDir. Claiming it would
+    // put a directory git-stk never made on cleanup's deletion path.
+    let by_hand = elsewhere.path().join("mine");
+    repo.git(["worktree", "add", by_hand.to_str().unwrap(), "feature/a"]);
+
+    repo.stack()
+        .arg("repair")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("re-adopted").not());
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.feature/a.stkWorktree"])
+            .status
+            .code(),
+        Some(1),
+        "a hand-made worktree must not be claimed"
+    );
+}
+
+#[test]
+fn cleanup_keeps_an_owned_worktree_whose_state_cannot_be_read() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let created = parent.path().join("feature").join("a");
+
+    // Break the gitfile so `git status` inside the worktree fails while the
+    // directory - and whatever is in it - survives. Removal is `--force`, so
+    // reading this as "clean" would discard work the guard exists to protect.
+    std::fs::remove_file(created.join(".git")).expect("remove gitfile");
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("has uncommitted changes"));
+
+    assert!(
+        created.exists(),
+        "an unreadable owned worktree must not be removed"
+    );
+}
+
+/// Reproduces, portably, the shape of the path mismatch that broke ownership on
+/// macOS and Windows: git reports its own resolved path, which need not be
+/// textually equal to the one we recorded. A symlinked `stk.worktreeDir` makes
+/// the two differ on any unix; macOS gets there via /var -> /private/var and
+/// Windows via slash and case differences.
+#[cfg(unix)]
+#[test]
+fn worktree_ownership_survives_a_path_git_reports_differently() {
+    let repo = TestRepo::new();
+    let real = worktree_dir();
+    let links = worktree_dir();
+    let link = links.path().join("via-symlink");
+    std::os::unix::fs::symlink(real.path(), &link).expect("symlink");
+
+    repo.git(["config", "stk.worktreeDir", link.to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    // Comparing the recorded path to git's with `==` reports "not ours" here,
+    // so cleanup would refuse to remove a worktree it created.
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("remove worktree"));
+
+    assert!(
+        !real.path().join("feature").join("a").exists(),
+        "the owned worktree should have been removed"
+    );
+}
+
+#[test]
+fn cleanup_leaves_a_hand_made_worktree_alone() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("by-hand");
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    // Made by the user, not recorded as ours - so it stays theirs to manage.
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/a"]);
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: checked out in the worktree at",
+        ))
+        .stdout(predicates::str::contains("remove worktree").not());
+
+    assert!(worktree.exists(), "a hand-made worktree must be left alone");
+}
+
+#[test]
 fn undo_ignores_a_worktree_holding_a_branch_it_would_not_move() {
     let repo = TestRepo::new();
 

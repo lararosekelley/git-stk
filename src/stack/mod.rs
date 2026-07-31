@@ -32,6 +32,9 @@ const BASE_KEY: &str = "stkBase";
 /// Marks a branch as the rename of another that still has an open review, so
 /// the next submit can replace and close that review.
 const RENAMED_FROM_KEY: &str = "stkRenamedFrom";
+/// Records that git-stk created this branch's worktree, and where. Only these
+/// are ours to remove; a worktree the user made by hand stays theirs.
+const WORKTREE_KEY: &str = "stkWorktree";
 
 pub fn create_branch(branch: &str, dry_run: bool) -> Result<()> {
     let parent = git::current_branch()?;
@@ -57,6 +60,78 @@ pub fn create_branch(branch: &str, dry_run: bool) -> Result<()> {
         style::branch(&parent)
     );
     Ok(())
+}
+
+/// Create `branch` in a new worktree of its own instead of checking it out here,
+/// leaving the current worktree on the branch it was already on.
+///
+/// The directory is derived from the branch name under [`settings::worktree_dir`],
+/// nested so `feat/a` keeps a basename matching the branch tail - the way git's
+/// own path-to-branch guessing would read it.
+pub fn create_branch_in_worktree(branch: &str, dry_run: bool) -> Result<()> {
+    let parent = git::current_branch()?;
+    ensure_absent(branch)?;
+
+    let path = settings::worktree_path_for(branch)?;
+    if path.exists() {
+        bail!(
+            "{} already exists; remove it or pick another branch name",
+            path.display()
+        );
+    }
+
+    if !dry_run {
+        git::worktree_add_new_branch(&path, branch, &parent)?;
+        // Provenance first: this worktree is ours, so cleanup may remove it
+        // later. Recorded before the metadata below so a failure there cannot
+        // leave a worktree on disk that nothing claims.
+        set_owned_worktree(branch, &path)?;
+        set_parent(branch, &parent)?;
+        record_base(branch, &parent);
+    }
+
+    anstream::println!(
+        "{} {} with parent {} in the worktree at {}",
+        if dry_run { "would create" } else { "created" },
+        style::branch(branch),
+        style::branch(&parent),
+        git::display_path(&path)
+    );
+    if !dry_run {
+        anstream::println!(
+            "{}",
+            style::dim(&format!("cd {}", git::display_path(&path)))
+        );
+    }
+    Ok(())
+}
+
+/// The worktree git-stk created for `branch`, if it created one and it is still
+/// there. Only these are ours to remove.
+pub fn owned_worktree(branch: &str) -> Option<std::path::PathBuf> {
+    recorded_worktree(branch).filter(|path| path.exists())
+}
+
+/// What the marker says, whether or not the directory still exists. `repair`
+/// needs the raw value to spot a marker pointing at nothing.
+pub fn recorded_worktree(branch: &str) -> Option<std::path::PathBuf> {
+    git::config_get(&format!("branch.{branch}.{WORKTREE_KEY}"))
+        .ok()
+        .flatten()
+        .map(std::path::PathBuf::from)
+}
+
+/// Record that git-stk owns `branch`'s worktree at `path`.
+pub fn set_owned_worktree(branch: &str, path: &std::path::Path) -> Result<()> {
+    git::config_set(
+        &format!("branch.{branch}.{WORKTREE_KEY}"),
+        &path.to_string_lossy(),
+    )
+}
+
+/// Forget that git-stk owns a worktree for `branch`.
+pub fn unset_owned_worktree(branch: &str) -> Result<()> {
+    git::config_unset(&format!("branch.{branch}.{WORKTREE_KEY}"))
 }
 
 /// Insert a new empty branch directly above the current one, moving the

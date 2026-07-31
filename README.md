@@ -175,7 +175,7 @@ that takes `--dry-run` also accepts `-n` as a short alias.
 Local stack metadata:
 
 ```sh
-git stk new <branch> [--insert | --prepend] [--dry-run]
+git stk new <branch> [--insert | --prepend | --worktree] [--dry-run]
 git stk parent [branch]
 git stk children [branch]
 git stk list [--all] [--commits] [--format <markdown|plain>]
@@ -189,6 +189,13 @@ git stk split [--per-commit] [--dry-run]
 current branch instead, moving the current branch's children onto it; `--prepend` splices it in _below_,
 moving the current branch onto it. The new branch is empty and shares its base's tip, so descendants stay
 correctly based - commit to it, then `restack` to replay them. `--prepend` needs a clean worktree.
+
+`--worktree` creates the branch in a worktree of its own instead of checking it out here, so your current
+checkout stays where it is. The directory comes from `stk.worktreeDir` (default: a `<repo>-worktrees`
+directory beside the repo), with branch names nested as real directories - `feat/a` lands at `feat/a`, whose
+basename still matches the branch. git-stk records the worktrees it creates and **owns removing them**:
+`cleanup` takes an owned worktree away when its branch lands, but never touches one you made yourself, and
+keeps any owned worktree that still has uncommitted work in it. See [Worktrees](#worktrees).
 
 `rename` is `git branch -m` plus stack upkeep: children pointing at the old name are retargeted. When an
 open review still heads the old branch (platforms do not follow local renames), it records the rename so
@@ -487,11 +494,16 @@ Everything is optional; defaults shown below:
     absorbIncludeUnstaged = true
     ; Skip the once-a-day check for a newer release. Default: false.
     noUpdateCheck = true
+    ; Where `new --worktree` puts a branch's worktree. Default: a
+    ; <repo>-worktrees directory beside the repo.
+    worktreeDir = ~/code/myrepo-worktrees
 ```
 
-The tool also manages per-branch metadata: `branch.<name>.stkParent` (the stack parent) and
-`branch.<name>.stkBase` (the recorded fork point). These are written by `new`, `adopt`, `rename`, `sync`, `restack`,
-`cleanup`, and `repair`; you normally never touch them by hand.
+The tool also manages per-branch metadata: `branch.<name>.stkParent` (the stack parent),
+`branch.<name>.stkBase` (the recorded fork point), and - for branches made with `new --worktree` -
+`branch.<name>.stkWorktree`, recording that git-stk created that worktree and so may remove it. These
+are written by `new`, `adopt`, `rename`, `sync`, `restack`, `cleanup`, and `repair`; you normally never
+touch them by hand.
 
 Branches are the real state; the metadata is just annotation. If it is ever lost or stale, `git stk repair`
 rebuilds it from review bases (when the provider CLI - `gh`/`glab`/`tea` - is available) and branch

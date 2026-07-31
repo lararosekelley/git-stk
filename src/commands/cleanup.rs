@@ -243,19 +243,47 @@ pub(crate) fn cleanup_branch_deletion(
         return Ok(());
     }
 
-    // Nor can a branch another worktree holds. Naming where it lives keeps the
-    // rest of the cleanup running - a landed stack should not stop halfway
-    // because one branch has a worktree parked on it. The worktree is the
-    // user's to remove.
+    // Nor can a branch another worktree holds - but a worktree git-stk created
+    // for this branch is ours to remove, and must go first: git refuses to
+    // delete a branch a worktree still holds.
     if let Some(path) = git::worktree_holding(branch)? {
+        let ours = stack::owned_worktree(branch).is_some_and(|owned| git::same_path(&owned, &path));
+        if !ours {
+            // The user's own worktree. Naming where it lives keeps the rest of
+            // the cleanup running - a landed stack should not stop halfway
+            // because one branch has a worktree parked on it.
+            anstream::println!(
+                "{}",
+                style::dim(&format!(
+                    "kept {branch}: checked out in the worktree at {}",
+                    git::display_path(&path)
+                ))
+            );
+            return Ok(());
+        }
+
+        // Ours, but not ours to throw away: uncommitted work in it is not
+        // covered by any snapshot, so keep it and say so.
+        if git::worktree_has_changes(&path) {
+            anstream::println!(
+                "{}",
+                style::dim(&format!(
+                    "kept {branch}: its worktree at {} has uncommitted changes",
+                    git::display_path(&path)
+                ))
+            );
+            return Ok(());
+        }
+
         anstream::println!(
-            "{}",
-            style::dim(&format!(
-                "kept {branch}: checked out in the worktree at {}",
-                path.display()
-            ))
+            "{} remove worktree {}",
+            if dry_run { "would" } else { "will" },
+            git::display_path(&path)
         );
-        return Ok(());
+        if !dry_run {
+            git::worktree_remove(&path)?;
+            stack::unset_owned_worktree(branch)?;
+        }
     }
 
     anstream::println!(
