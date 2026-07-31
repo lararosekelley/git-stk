@@ -127,6 +127,30 @@ in addition to `git-stk <TAB>`. `-y`/`--yes` skips the shell-rc confirmation for
 `--refresh` only re-renders the man page and never touches your shell rc - it is what `upgrade` runs with
 the freshly installed binary.
 
+## Worktrees
+
+git-stk understands linked worktrees. `list` and `status` name the worktree holding each branch, and the
+commands that rewrite history refuse up front - before touching anything - rather than failing partway
+through, because git will not rebase, delete, or check out a branch another worktree has checked out.
+
+That last one makes navigation awkward in a worktree-per-branch layout: moving up the stack is a `cd`, not
+a checkout, and a program cannot change its parent shell's directory. So the navigation commands take
+`--from-path`, which prints where to go and lets the shell do the moving:
+
+```sh
+# bash/zsh: add to ~/.bashrc or ~/.zshrc
+stk() {
+  case "$1" in
+    up|down|top|bottom) cd "$(git stk "$@" --from-path)" || return ;;
+    *) git stk "$@" ;;
+  esac
+}
+```
+
+`stk up` then follows the branch wherever it lives - into another worktree when that is where it is
+checked out, or an ordinary checkout when it is here (printing `.`, so your current directory is left
+alone). The switch is still reported, on stderr, so stdout stays a single usable path.
+
 ## Install For Development
 
 ```sh

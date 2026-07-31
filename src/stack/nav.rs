@@ -13,6 +13,57 @@ use crate::prompt;
 use crate::providers::ReviewAnnotation;
 use crate::style;
 
+/// How a navigation command reports where it landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavOutput {
+    /// Announce the switch on stdout - the default.
+    Announce,
+    /// Print only the destination directory on stdout, so `cd "$(git stk up
+    /// --from-path)"` moves the caller's shell. Everything else goes to stderr.
+    Path,
+}
+
+/// Go to `branch`, or - under `--from-path` - say where to go.
+///
+/// A branch living in another worktree cannot be checked out, but it can be
+/// walked to, so `--from-path` hands back that worktree and lets the shell do
+/// what git cannot. Without it there is nothing the caller can act on, so the
+/// collision stays an error.
+fn navigate_to(branch: &str, output: NavOutput) -> Result<()> {
+    if output == NavOutput::Announce {
+        return git::checkout(branch);
+    }
+
+    if let Some(path) = git::worktree_holding(branch).ok().flatten() {
+        anstream::eprintln!(
+            "{} is checked out in the worktree at {}",
+            style::paint(style::BRANCH, branch),
+            git::display_path(&path)
+        );
+        println!("{}", git::display_path(&path));
+        return Ok(());
+    }
+
+    git::checkout_silently(branch)?;
+    anstream::eprintln!("switched to {}", git::switched_to(branch));
+    // "." rather than the repo root: the branch is here, only HEAD moved, so
+    // the caller's `cd` must not drag them out of a subdirectory.
+    println!(".");
+    Ok(())
+}
+
+/// Under `--from-path`, a command that lands nowhere still has to print a
+/// destination or the caller's `cd` fails on empty input.
+fn stay_put(message: &str, output: NavOutput) {
+    match output {
+        NavOutput::Announce => anstream::println!("{message}"),
+        NavOutput::Path => {
+            anstream::eprintln!("{message}");
+            println!(".");
+        }
+    }
+}
+
 /// Offer a numbered pick of `children`; None when nothing was chosen
 /// (non-interactive stdin, or an invalid answer).
 fn pick_child(title: &str, children: &[String]) -> anyhow::Result<Option<String>> {
@@ -44,16 +95,16 @@ pub fn print_children(branch: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn checkout_parent() -> Result<()> {
+pub fn checkout_parent(output: NavOutput) -> Result<()> {
     let current = git::current_branch()?;
     let Some(parent) = parent_of(&current)? else {
         bail!("{current} has no stack parent");
     };
 
-    git::checkout(&parent)
+    navigate_to(&parent, output)
 }
 
-pub fn checkout_child(branch: Option<&str>) -> Result<()> {
+pub fn checkout_child(branch: Option<&str>, output: NavOutput) -> Result<()> {
     let current = git::current_branch()?;
     let children = children_of(&current)?;
     let child = match (branch, children.as_slice()) {
@@ -77,12 +128,12 @@ pub fn checkout_child(branch: Option<&str>) -> Result<()> {
         }
     };
 
-    git::checkout(&child)
+    navigate_to(&child, output)
 }
 
 /// Check out the leaf of the current stack, following single children. A
 /// fork is ambiguous, like `up` without a branch.
-pub fn checkout_top() -> Result<()> {
+pub fn checkout_top(output: NavOutput) -> Result<()> {
     let current = git::current_branch()?;
     let mut top = current.clone();
     loop {
@@ -102,15 +153,18 @@ pub fn checkout_top() -> Result<()> {
         if children_of(&current)?.is_empty() && parent_of(&current)?.is_none() {
             bail!("{current} is not in a stack");
         }
-        anstream::println!("{current} is already at the top of the stack");
+        stay_put(
+            &format!("{current} is already at the top of the stack"),
+            output,
+        );
         return Ok(());
     }
-    git::checkout(&top)
+    navigate_to(&top, output)
 }
 
 /// Check out the bottom of the current stack: the branch just above the
 /// trunk. From the trunk itself, a single stacked child is unambiguous.
-pub fn checkout_bottom() -> Result<()> {
+pub fn checkout_bottom(output: NavOutput) -> Result<()> {
     let current = git::current_branch()?;
     let trunk = trunk_branch(&git::local_branches()?);
 
@@ -144,10 +198,13 @@ pub fn checkout_bottom() -> Result<()> {
         if parent_of(&current)?.is_none() && children_of(&current)?.is_empty() {
             bail!("{current} is not in a stack");
         }
-        anstream::println!("{current} is already at the bottom of the stack");
+        stay_put(
+            &format!("{current} is already at the bottom of the stack"),
+            output,
+        );
         return Ok(());
     }
-    git::checkout(&bottom)
+    navigate_to(&bottom, output)
 }
 
 pub fn print_stack(reviews: &BTreeMap<String, ReviewAnnotation>, commits: bool) -> Result<()> {
