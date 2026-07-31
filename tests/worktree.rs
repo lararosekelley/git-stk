@@ -408,6 +408,85 @@ fn cleanup_dry_run_predicts_the_worktree_skip() {
 }
 
 #[test]
+fn navigation_to_a_held_branch_explains_where_it_lives() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "feature/a"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+
+    // Previously this leaked `fatal: 'feature/b' is already used by worktree at
+    // ...` plus `git exited with status exit status: 128`.
+    repo.stack()
+        .arg("up")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "feature/b is checked out in the worktree at",
+        ))
+        .stderr(predicates::str::contains("git worktree remove"))
+        .stderr(predicates::str::contains("git exited with status").not());
+
+    // Still on the branch we started from.
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
+}
+
+#[test]
+fn a_blocked_restack_never_leaks_gits_raw_fatal() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["switch", "feature/a"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+
+    // Whichever layer stops this - the restack preflight in practice, the git
+    // wrapper as a backstop - the user must never see git's own wording.
+    repo.stack()
+        .arg("restack")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "restack would rebase branches checked out in other worktrees",
+        ))
+        .stderr(predicates::str::contains("feature/b"))
+        .stderr(predicates::str::contains("already used by worktree").not());
+}
+
+#[test]
+fn a_free_branch_still_checks_out_normally() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-unrelated");
+
+    // A worktree exists, just not on the branch being navigated to - the
+    // collision check must not get in the way of ordinary navigation.
+    repo.git(["branch", "unrelated"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "unrelated"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    repo.stack()
+        .arg("down")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("switched to main"));
+    assert_eq!(repo.git(["branch", "--show-current"]), "main");
+}
+
+#[test]
 fn undo_ignores_a_worktree_holding_a_branch_it_would_not_move() {
     let repo = TestRepo::new();
 

@@ -145,7 +145,32 @@ pub fn remote_url(remote: &str) -> Result<Option<String>> {
     output_codes(&["remote", "get-url", remote], &[2], "git remote get-url")
 }
 
+/// The explanation for an operation git refuses because another worktree holds
+/// `branch` - checkout and rebase both hit this, and should say the same thing.
+/// Asked structurally rather than by matching git's wording, which varies across
+/// versions and locales. An unanswerable query (very old git, an odd setup)
+/// yields None and the caller falls through to git's own error, as before.
+fn worktree_collision(branch: &str) -> Option<String> {
+    let path = worktree_holding(branch).ok().flatten()?;
+    Some(collision_message(branch, &display_path(&path)))
+}
+
+/// The wording, split out so it can be checked directly. The suggested commands
+/// are quoted: a worktree path containing a space would otherwise be pasted back
+/// as two arguments.
+fn collision_message(branch: &str, shown: &str) -> String {
+    format!(
+        "{branch} is checked out in the worktree at {shown}\n\
+         work on it there with `cd \"{shown}\"`, or free it with \
+         `git worktree remove \"{shown}\"`"
+    )
+}
+
 pub fn checkout(branch: &str) -> Result<()> {
+    if let Some(message) = worktree_collision(branch) {
+        bail!(message);
+    }
+
     status(&["switch", branch]).with_context(|| format!("failed to check out {branch}"))?;
     anstream::println!(
         "switched to {}",
@@ -422,6 +447,9 @@ pub fn read_ref_file(reference: &str, file: &str) -> Result<Option<String>> {
 }
 
 pub fn rebase(parent: &str, branch: &str, update_refs: bool) -> Result<()> {
+    if let Some(message) = worktree_collision(branch) {
+        bail!(message);
+    }
     let mut args = vec!["rebase"];
     if update_refs {
         args.push("--update-refs");
@@ -435,6 +463,9 @@ pub fn rebase(parent: &str, branch: &str, update_refs: bool) -> Result<()> {
 /// `parent`. Used when the recorded fork point is known so commits that
 /// landed upstream by squash or rebase are not replayed.
 pub fn rebase_onto(parent: &str, base: &str, branch: &str, update_refs: bool) -> Result<()> {
+    if let Some(message) = worktree_collision(branch) {
+        bail!(message);
+    }
     let mut args = vec!["rebase"];
     if update_refs {
         args.push("--update-refs");
@@ -1048,6 +1079,27 @@ branch refs/heads/feat/deep/nested/name
     #[test]
     fn empty_porcelain_holds_nothing() {
         assert!(parse_worktree_branches("", None).is_empty());
+    }
+
+    #[test]
+    fn a_collision_message_quotes_the_path_it_suggests_pasting() {
+        // A worktree path with a space in it has to survive the round trip into
+        // the user's shell.
+        let message = collision_message("feat/a", "../my worktree");
+        assert!(
+            message.contains(r#"`cd "../my worktree"`"#),
+            "cd suggestion is not pasteable: {message}"
+        );
+        assert!(
+            message.contains(r#"`git worktree remove "../my worktree"`"#),
+            "remove suggestion is not pasteable: {message}"
+        );
+    }
+
+    #[test]
+    fn a_collision_message_names_the_branch_and_where_it_lives() {
+        let message = collision_message("feat/a", "../wt-a");
+        assert!(message.starts_with("feat/a is checked out in the worktree at ../wt-a"));
     }
 
     #[test]
