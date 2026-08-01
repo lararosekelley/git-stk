@@ -62,7 +62,7 @@ Compiles and passes tests but is wrong:
 
 ### Safety regressions
 
-Guarantees weakened versus old code — especially anything that rewrites history, force-pushes, or
+Guarantees weakened versus old code; especially anything that rewrites history, force-pushes, or
 deletes branches/refs. A force-push that drops `--force-with-lease`, or a branch delete that no longer
 confirms the work landed, is a regression.
 
@@ -71,7 +71,7 @@ confirms the work landed, is a regression.
 git-stk has deliberate seams. Flag a PR that escapes them:
 
 - **Shelling out:** only `src/git.rs` runs `git`, and only the `src/providers/` modules run
-  `gh`/`glab`/`tea`. A new `std::process::Command` outside those layers is a violation — route it
+  `gh`/`glab`/`tea`. A new `std::process::Command` outside those layers is a violation. Route it
   through the existing helper or add one there.
 - **Config:** user-facing knobs are `stk.*` git-config keys defined in `src/settings.rs` (and listed
   in its `SETTINGS` table). Never read behavior off a bespoke environment variable.
@@ -221,7 +221,7 @@ Optionally include a suggestion block for small concrete patches that are correc
 
 **[One line: what this PR does]**
 
-- **[Category]** — <file>:<line>: <one-sentence headline>. [(inline comment)](link)
+- **[Category]** - <file>:<line>: <one-sentence headline>. [(inline comment)](link)
 - ...
 
 [If required coverage is missing, state exactly what's missing and why it's required.]

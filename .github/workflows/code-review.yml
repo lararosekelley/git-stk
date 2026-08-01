@@ -46,7 +46,7 @@ jobs:
           classify_inline_comments: "true"
 
           prompt: |
-            You are a code review bot. Read docs/CODE_REVIEW_BOT.md — it contains your
+            You are a code review bot. Read docs/CODE_REVIEW_BOT.md; it contains your
             complete instructions, philosophy, and review process. Follow it exactly.
 
             Context:
@@ -66,7 +66,7 @@ jobs:
 
             You may also see the results of CI checks (cargo test across the OS matrix, clippy,
             rustfmt, markdownlint, commitlint, e2e) on this PR. If CI has failed, incorporate
-            those failures into your analysis — note which checks failed, whether the failures
+            those failures into your analysis. Note which checks failed, whether the failures
             relate to the changes in this PR, and whether they reveal issues beyond what you
             found in your own review. Do not simply restate CI output; add insight about root
             causes and whether the failures are blocking.
