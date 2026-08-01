@@ -267,6 +267,10 @@ fn fetch_trunk(dry_run: bool) -> Result<()> {
         );
         return Ok(());
     }
+    if super::trunk_held_elsewhere(&trunk)? {
+        return Ok(());
+    }
+
     if dry_run {
         anstream::println!("would fetch {} from {remote}", style::branch(&trunk));
         return Ok(());

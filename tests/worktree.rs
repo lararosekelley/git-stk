@@ -1002,6 +1002,90 @@ fn cleanup_leaves_a_hand_made_worktree_alone() {
     assert!(worktree.exists(), "a hand-made worktree must be left alone");
 }
 
+/// A repo with a real `origin` and a linked worktree, viewed from that
+/// worktree - the layout where the trunk is checked out somewhere else.
+fn worktree_with_trunk_held_in_main(repo: &TestRepo, at: &Path) {
+    let remote = repo.path().join("origin.git");
+    repo.git(["init", "--bare", "-q", remote.to_str().unwrap()]);
+    repo.git(["remote", "add", "origin", remote.to_str().unwrap()]);
+    repo.git(["push", "-q", "-u", "origin", "main"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    repo.git(["worktree", "add", at.to_str().unwrap(), "feature/a"]);
+}
+
+#[test]
+fn restack_from_a_worktree_skips_a_trunk_fetch_it_cannot_do() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-a");
+    worktree_with_trunk_held_in_main(&repo, &worktree);
+
+    // `git fetch origin main:main` is refused while the main worktree sits on
+    // main. Before this, the fetch failed the whole command.
+    repo.stack_in(&worktree)
+        .args(["restack", "--fetch", "--no-push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("skipped fetching main"))
+        .stdout(predicates::str::contains("restack complete"));
+}
+
+#[test]
+fn sync_from_a_worktree_skips_a_trunk_fetch_it_cannot_do() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-a");
+    worktree_with_trunk_held_in_main(&repo, &worktree);
+
+    // `sync` has its own fetch step; it must survive the same way. Without a
+    // provider it stops at "no reviews", which is past the fetch - the point.
+    let output = repo
+        .stack_in(&worktree)
+        .args(["sync", "--dry-run"])
+        .output()
+        .expect("sync");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("skipped fetching main"),
+        "sync should skip the impossible fetch, got:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("refusing to fetch"),
+        "git's refusal should never surface"
+    );
+}
+
+#[test]
+fn merge_from_a_worktree_finishes_instead_of_failing_after_the_merge() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-a");
+    worktree_with_trunk_held_in_main(&repo, &worktree);
+    repo.git(["config", "stk.provider", "demo"]);
+
+    repo.stack_in(&worktree).arg("submit").assert().success();
+
+    // Two things used to kill this after the review had already landed: the
+    // trunk fetch, and the "move off the merged branch" checkout - both refused
+    // because the main worktree holds main. Landing a PR must not leave the user
+    // with a merged review and an errored command.
+    repo.stack_in(&worktree)
+        .args(["merge", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("stayed on feature/a"))
+        // Still checked out here, so it is kept rather than deleted.
+        .stdout(predicates::str::contains(
+            "kept feature/a: cannot delete the checked out branch",
+        ));
+
+    repo.git(["-C", worktree.to_str().unwrap(), "rev-parse", "feature/a"]);
+}
+
 #[test]
 fn undo_ignores_a_worktree_holding_a_branch_it_would_not_move() {
     let repo = TestRepo::new();
