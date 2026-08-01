@@ -40,13 +40,18 @@ const TOPICS: &[(&str, &str, Walk)] = &[
         split,
     ),
     ("undo", "reverse the last stack-rewriting command", undo),
+    (
+        "worktrees",
+        "a branch per worktree: the flows and the gotchas",
+        worktrees,
+    ),
 ];
 
 /// Walk the stacked workflow in a disposable sandbox repository.
 #[derive(Debug, clap::Args)]
 pub struct Guide {
     /// Which tour to run; omit for a menu.
-    #[arg(value_parser = clap::builder::PossibleValuesParser::new(["intro", "conflicts", "repair", "absorb", "adopt", "split", "undo"]))]
+    #[arg(value_parser = clap::builder::PossibleValuesParser::new(["intro", "conflicts", "repair", "absorb", "adopt", "split", "undo", "worktrees"]))]
     topic: Option<String>,
 }
 
@@ -107,11 +112,21 @@ fn guide(topic: Option<&str>) -> Result<()> {
         .default(true)
         .interact()
         .unwrap_or(true);
+    // The worktrees tour creates linked worktrees, which live beside the
+    // sandbox rather than inside it - so removing the sandbox alone would leave
+    // them behind.
+    let worktrees = sibling_worktree_dir(&sandbox);
     if delete {
         fs::remove_dir_all(&sandbox).context("failed to remove the sandbox")?;
+        if worktrees.exists() {
+            fs::remove_dir_all(&worktrees).context("failed to remove the sandbox worktrees")?;
+        }
         say("sandbox removed");
     } else {
         say(&format!("kept: cd {}", sandbox.display()));
+        if worktrees.exists() {
+            say(&format!("its worktrees: {}", worktrees.display()));
+        }
         say("it uses `git config stk.provider demo`, so every command works offline");
     }
 
@@ -338,6 +353,69 @@ fn adopt(tour: &mut Tour) -> Result<()> {
     tour.stk(&["list", "--all"])?;
     tour.say("feature/web still exists; git-stk just no longer tracks it. Re-`adopt`");
     tour.say("it onto any parent whenever you want it back in a stack.");
+    tour.finish()
+}
+
+fn worktrees(tour: &mut Tour) -> Result<()> {
+    tour.banner("1/4 - a branch in a worktree of its own");
+    tour.say("A git worktree is a second checkout of the same repository, on its");
+    tour.say("own branch. `new --worktree` makes one instead of checking the branch");
+    tour.say("out here - so you keep whatever you were doing:");
+    tour.stk(&["new", "feature/api"])?;
+    tour.commit("api.txt", "endpoints\n", "add api")?;
+    tour.stk(&["new", "feature/web", "--worktree"])?;
+    tour.say("Note what did *not* happen: we are still on feature/api. The new");
+    tour.say("branch lives somewhere else entirely.");
+    tour.show_git("git branch --show-current", &["branch", "--show-current"])?;
+    tour.say("`list` says where each branch lives, so the stack is still one view:");
+    tour.stk(&["list", "--local"])?;
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("2/4 - gotcha: a branch can only be checked out once");
+    tour.say("Git refuses to check out a branch a second worktree already holds.");
+    tour.say("That is the central worktree gotcha, and it makes `up` impossible -");
+    tour.say("moving up the stack is now a `cd`, not a checkout:");
+    tour.stk_fails(&["up"])?;
+    tour.say("So navigation can print where to go instead, and let the shell move:");
+    tour.note("cd \"$(git stk up --from-path)\"");
+    tour.say("Put that in a shell function and `up`/`down`/`top`/`bottom` follow the");
+    tour.say("branch wherever it lives - into a worktree, or an ordinary checkout");
+    tour.say("when it is here. The README has the snippet.");
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("3/4 - gotcha: rewrites refuse up front");
+    tour.say("Git will not rebase a branch another worktree holds either. So when a");
+    tour.say("parent moves and a held branch would need replaying:");
+    tour.commit("api.txt", "endpoints\nauth\n", "add auth")?;
+    tour.say("`restack` refuses before touching anything, rather than rewriting half");
+    tour.say("the stack and failing in the middle:");
+    tour.stk_fails(&["restack"])?;
+    tour.say("Nothing was rewritten. Free the worktree (`git worktree remove`) or run");
+    tour.say("the restack from it, then try again. `undo` and `cleanup` are just as");
+    tour.say("careful: undo refuses rather than rewinding a branch under a worktree");
+    tour.say("that would not notice, and cleanup keeps such a branch and moves on");
+    tour.say("instead of failing the whole run.");
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("4/4 - run, and who owns a worktree");
+    tour.say("`run` uses a throwaway worktree of its own, so checking the stack");
+    tour.say("never moves your HEAD and never needs a clean tree:");
+    tour.edit_and_add("api.txt", "endpoints\nauth\nwork in progress\n")?;
+    tour.say("Uncommitted work, and `run` still walks every branch:");
+    tour.stk(&["run", "--", "git", "log", "--oneline", "-1"])?;
+    tour.say("The catch: a fresh worktree has no untracked build output - no");
+    tour.say("node_modules, no target/ - so a command that needs those may fail");
+    tour.say("there having passed in your checkout. `--no-worktree` runs the old way.");
+    tour.say("");
+    tour.say("Finally, ownership. git-stk removes the worktrees *it* created (from");
+    tour.say("`new --worktree`) once their branch lands, and never touches one you");
+    tour.say("made by hand - nor an owned one with uncommitted work still in it.");
     tour.finish()
 }
 
@@ -631,6 +709,19 @@ impl<'a> Tour<'a> {
 fn fit(line: &str, width: usize) -> String {
     let truncated = truncate_str(line, width, "…");
     pad_str(&truncated, width, Alignment::Left, None).into_owned()
+}
+
+/// Where `new --worktree` puts the sandbox's worktrees by default: a
+/// `<sandbox>-worktrees` sibling. Mirrors `settings::worktree_dir`.
+fn sibling_worktree_dir(sandbox: &Path) -> PathBuf {
+    let name = sandbox
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sandbox".to_owned());
+    sandbox
+        .parent()
+        .unwrap_or(sandbox)
+        .join(format!("{name}-worktrees"))
 }
 
 fn setup_sandbox(sandbox: &Path) -> Result<()> {
