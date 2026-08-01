@@ -47,6 +47,9 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     if let Some(trunk) = &trunk {
         if !has_remote {
             anstream::println!("no remote {remote}; skipped fetch");
+        } else if stack::trunk_held_elsewhere(trunk)? {
+            // Nothing to do: git will not fetch into a trunk another worktree
+            // holds, and the sync runs against the local one.
         } else if dry_run {
             anstream::println!("would fetch {trunk} from {remote}");
         } else if current == *trunk {
@@ -200,12 +203,26 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             .cloned()
             .or_else(|| trunk.clone())
             .unwrap_or(root.clone());
-        if dry_run {
+        let held = git::worktree_holding(&target)?;
+        if let Some(path) = held {
+            // The place to land lives in another worktree. Staying put is not a
+            // failure - the merge already happened - and it leaves `position` on
+            // the merged branch, so the deletion below keeps it, which is right:
+            // it is still checked out right here.
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "stayed on {current}: {target} is checked out in the worktree at {}",
+                    git::display_path(&path)
+                ))
+            );
+        } else if dry_run {
             anstream::println!("would switch to {}", style::branch(&target));
+            position = target;
         } else {
             git::checkout(&target)?;
+            position = target;
         }
-        position = target;
     }
 
     // 6. Clean up the merged branches: retarget children, then delete.

@@ -106,6 +106,34 @@ pub fn create_branch_in_worktree(branch: &str, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether the trunk cannot be fetched because another worktree has it checked
+/// out, reporting the skip when so.
+///
+/// Git refuses `fetch <remote> <trunk>:<trunk>` while another worktree holds the
+/// trunk - the normal state of a worktree-per-branch layout. Skipping beats the
+/// alternatives: failing outright would make `sync` and `merge` unusable from a
+/// worktree, and fetching only the remote-tracking ref would leave the local
+/// trunk quietly stale for the rebase that follows.
+pub fn trunk_held_elsewhere(trunk: &str) -> Result<bool> {
+    let Some(path) = git::worktree_holding(trunk)? else {
+        return Ok(false);
+    };
+    anstream::println!(
+        "{}",
+        style::warn(&format!(
+            "skipped fetching {trunk}: it is checked out in the worktree at {}",
+            git::display_path(&path)
+        ))
+    );
+    anstream::println!(
+        "{}",
+        style::dim(&format!(
+            "using the local {trunk}; fast-forward it there to pick up the remote"
+        ))
+    );
+    Ok(true)
+}
+
 /// The worktree git-stk created for `branch`, if it created one and it is still
 /// there. Only these are ours to remove.
 pub fn owned_worktree(branch: &str) -> Option<std::path::PathBuf> {
