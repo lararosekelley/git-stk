@@ -14,11 +14,103 @@ use crate::prompt::confirm;
 /// (`#` is also a comment in PowerShell).
 const COMPLETION_MARKER: &str = "# added by git-stk setup";
 
+/// Closes the block, so `uninstall` can lift a multi-line one out exactly.
+/// Blocks written before the wrapper existed have no end marker, which is why
+/// [`strip_completion_block`] still understands the single-line shape.
+const BLOCK_END_MARKER: &str = "# end git-stk setup";
+
+/// First line of the wrapper, used to recognize it in an existing block so a
+/// re-run neither duplicates it nor claims it is missing.
+const WRAPPER_MARKER: &str = "# stk wrapper:";
+
+/// The `stk` function. Identical under bash and zsh - a POSIX function body,
+/// `case`, and `local` all behave the same in both.
+///
+/// The path is captured before the `cd` rather than `cd "$(...)"`: a navigation
+/// that fails prints nothing on stdout, and `cd ""` would then add its own
+/// `cd: null directory` on top of the error git-stk already reported.
+const WRAPPER_BODY: &str = r#"# stk wrapper: up/down/top/bottom cd into the worktree holding the branch.
+# A process cannot change its parent shell's directory, so git-stk prints the
+# destination and this moves you. Every other command falls through to git stk.
+stk() {
+  case "$1" in
+    up|down|top|bottom)
+      local dest
+      dest=$(git stk "$@" --from-path) || return
+      [ -n "$dest" ] && cd "$dest"
+      ;;
+    *) git stk "$@" ;;
+  esac
+}"#;
+
 /// The PowerShell completion line, guarded so a removed git-stk never breaks
 /// shell startup.
 const POWERSHELL_LINE: &str = "if (Get-Command git-stk -ErrorAction SilentlyContinue) { git stk completions powershell | Out-String | Invoke-Expression }";
 
-pub fn setup(yes: bool, refresh: bool) -> Result<()> {
+/// Reuse the completion registration git-stk already installed under the name
+/// `stk`, so the wrapper completes like the command it forwards to. Both forms
+/// are guarded and silenced: if the registration is missing (completions not
+/// sourced yet, an older git-stk), the wrapper still works and only completion
+/// is absent - nothing should be printed on every shell start.
+fn completion_alias(shell: &str) -> Option<&'static str> {
+    match shell {
+        "bash" => Some(
+            r#"complete -p git-stk >/dev/null 2>&1 && eval "$(complete -p git-stk | sed 's/ git-stk$/ stk/')""#,
+        ),
+        "zsh" => Some("(( $+functions[compdef] )) && compdef stk=git-stk 2>/dev/null"),
+        _ => None,
+    }
+}
+
+/// The wrapper is written as a bash/zsh function; fish needs different syntax
+/// and PowerShell a different name-resolution story entirely.
+fn wrapper_supported(shell: &str) -> bool {
+    completion_alias(shell).is_some()
+}
+
+/// The block setup appends, ending in [`BLOCK_END_MARKER`] so uninstall can
+/// remove it whole however many lines it grew to.
+fn rc_block(shell: &str, line: &str, wrapper: bool) -> String {
+    let mut block = format!("{COMPLETION_MARKER}\n{line}\n");
+    if wrapper {
+        block.push_str(&format!("\n{WRAPPER_BODY}\n"));
+        if let Some(alias) = completion_alias(shell) {
+            block.push_str(&format!("{alias}\n"));
+        }
+    }
+    block.push_str(&format!("{BLOCK_END_MARKER}\n"));
+    block
+}
+
+/// Whether something else already answers to `stk`, in which case the wrapper
+/// would shadow it. Only an rc definition and a PATH executable are visible
+/// from here - a function or alias defined in another sourced file is not, so
+/// this reduces the chance of a collision rather than ruling one out.
+fn stk_name_taken(rc: &str) -> Option<String> {
+    for line in rc.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(WRAPPER_MARKER) || trimmed.starts_with("stk()") {
+            continue;
+        }
+        if trimmed.starts_with("alias stk=") || trimmed.starts_with("function stk") {
+            return Some(format!("your rc file already defines stk (`{trimmed}`)"));
+        }
+    }
+
+    let path = env::var_os("PATH")?;
+    for dir in env::split_paths(&path) {
+        let candidate = dir.join("stk");
+        if candidate.is_file() {
+            return Some(format!(
+                "an stk executable already exists at {}",
+                candidate.display()
+            ));
+        }
+    }
+    None
+}
+
+pub fn setup(yes: bool, refresh: bool, wrapper: bool) -> Result<()> {
     if refresh {
         // Re-render assets that can go stale across versions. Non-interactive;
         // run by `upgrade` via the newly installed binary. Completion wiring is
@@ -29,7 +121,7 @@ pub fn setup(yes: bool, refresh: bool) -> Result<()> {
     }
 
     install_man_page()?;
-    wire_completions(yes)?;
+    wire_completions(yes, wrapper)?;
     Ok(())
 }
 
@@ -66,13 +158,23 @@ fn man_dir() -> Result<PathBuf> {
     Ok(data_home.join("man").join("man1"))
 }
 
-/// Append a completion-sourcing line to the detected shell's rc file, once.
-fn wire_completions(yes: bool) -> Result<()> {
+/// Append a completion-sourcing line to the detected shell's rc file, once,
+/// plus the `stk` wrapper when asked for it.
+fn wire_completions(yes: bool, wrapper: bool) -> Result<()> {
     let Some((shell, rc_path, line)) = completion_target()? else {
         anstream::println!("could not detect a supported shell");
         anstream::println!("see the README for manual completion setup");
         return Ok(());
     };
+
+    if wrapper && !wrapper_supported(shell) {
+        anstream::println!(
+            "the stk wrapper is a bash/zsh shell function; {shell} needs different \
+             syntax, so it was not added"
+        );
+        anstream::println!("see the Worktrees section of the README for a starting point");
+    }
+    let mut wrapper = wrapper && wrapper_supported(shell);
 
     let existing = match fs::read_to_string(&rc_path) {
         Ok(contents) => contents,
@@ -82,11 +184,46 @@ fn wire_completions(yes: bool) -> Result<()> {
         }
     };
 
-    if existing.contains(COMPLETION_MARKER) || existing.contains("git stk completions") {
+    // Defining `stk` on top of something else that answers to that name would
+    // break whatever was there. Drop the wrapper rather than win the collision.
+    if wrapper && let Some(clash) = stk_name_taken(&existing) {
+        anstream::println!("skipped the stk wrapper: {clash}");
+        wrapper = false;
+    }
+
+    let configured =
+        existing.contains(COMPLETION_MARKER) || existing.contains("git stk completions");
+    let has_wrapper = existing.contains(WRAPPER_MARKER);
+    if configured && (!wrapper || has_wrapper) {
         anstream::println!(
             "{shell} completions already configured in {}",
             rc_path.display()
         );
+        if wrapper_supported(shell) && !has_wrapper {
+            anstream::println!(
+                "{}",
+                crate::style::dim(
+                    "the stk wrapper (up/down cd into another worktree) is not installed; \
+                     add it with `git stk setup --wrapper`"
+                )
+            );
+        }
+        return Ok(());
+    }
+
+    // Adding the wrapper to a block that is already there means replacing that
+    // block, which is only safe for one we wrote: without our marker the line is
+    // the user's, and rewriting would duplicate or clobber it.
+    if configured && !existing.contains(COMPLETION_MARKER) {
+        anstream::println!(
+            "completion setup in {} was added by hand, so the wrapper was not \
+             merged into it",
+            rc_path.display()
+        );
+        anstream::println!("add this yourself:");
+        for wrapper_line in rc_block(shell, line, true).lines().skip(2) {
+            anstream::println!("  {wrapper_line}");
+        }
         return Ok(());
     }
 
@@ -117,13 +254,22 @@ fn wire_completions(yes: bool) -> Result<()> {
     // a question and immediately read EOF as "no" - skip cleanly instead. Pass
     // `--yes` (or run `git stk setup` later) to wire it up non-interactively.
     let interactive = std::io::stdin().is_terminal();
+    // Replacing our own block rather than appending a new one - say so, since
+    // the answer decides whether an existing block gets rewritten.
+    let question = if configured {
+        format!("add the stk wrapper to {}? [y/N] ", rc_path.display())
+    } else if wrapper {
+        format!(
+            "append completion setup and the stk wrapper to {}? [y/N] ",
+            rc_path.display()
+        )
+    } else {
+        format!("append completion setup to {}? [y/N] ", rc_path.display())
+    };
     let proceed = if yes {
         true
     } else if interactive {
-        confirm(&format!(
-            "append completion setup to {}? [y/N] ",
-            rc_path.display()
-        ))?
+        confirm(&question)?
     } else {
         false
     };
@@ -137,15 +283,23 @@ fn wire_completions(yes: bool) -> Result<()> {
             }
         );
         anstream::println!("to configure manually, add this to {}:", rc_path.display());
-        anstream::println!("  {line}");
+        for block_line in rc_block(shell, line, wrapper).lines().skip(1) {
+            anstream::println!("  {block_line}");
+        }
         return Ok(());
     }
 
-    let mut updated = existing;
+    // An existing block of ours is lifted out and rewritten whole, so the
+    // wrapper lands inside it and uninstall still has exactly one block to find.
+    let mut updated = if configured {
+        strip_completion_block(&existing).unwrap_or(existing)
+    } else {
+        existing
+    };
     if !updated.is_empty() && !updated.ends_with('\n') {
         updated.push('\n');
     }
-    updated.push_str(&format!("\n{COMPLETION_MARKER}\n{line}\n"));
+    updated.push_str(&format!("\n{}", rc_block(shell, line, wrapper)));
     // The rc file's directory may not exist yet (fish's ~/.config/fish, a
     // never-created PowerShell profile dir).
     if let Some(parent) = rc_path.parent() {
@@ -154,7 +308,27 @@ fn wire_completions(yes: bool) -> Result<()> {
     }
     fs::write(&rc_path, updated)
         .with_context(|| format!("failed to write {}", rc_path.display()))?;
-    anstream::println!("added {shell} completion setup to {}", rc_path.display());
+    if wrapper {
+        anstream::println!(
+            "added {shell} completion setup and the stk wrapper to {}",
+            rc_path.display()
+        );
+        anstream::println!(
+            "{}",
+            crate::style::dim("start a new shell, then `stk up` follows a branch across worktrees")
+        );
+    } else {
+        anstream::println!("added {shell} completion setup to {}", rc_path.display());
+        if wrapper_supported(shell) {
+            anstream::println!(
+                "{}",
+                crate::style::dim(
+                    "`git stk setup --wrapper` also defines an stk function whose up/down \
+                     cd into another worktree"
+                )
+            );
+        }
+    }
     Ok(())
 }
 
@@ -373,14 +547,26 @@ fn strip_completion_block(contents: &str) -> Option<String> {
         .iter()
         .position(|line| line.trim() == COMPLETION_MARKER)?;
 
-    // The block is "<blank>\n<marker>\n<completion line>". Only remove the line
-    // after the marker when it is actually ours - every completion line setup
-    // writes mentions `git stk completions`. If the user hand-deleted it and
-    // left the marker, the line below is their own content; keep it.
-    let removes_completion_line = lines
-        .get(marker + 1)
-        .is_some_and(|line| line.contains("git stk completions"));
-    let end = (marker + 1 + usize::from(removes_completion_line)).min(lines.len());
+    // A block setup wrote ends in BLOCK_END_MARKER and comes out whole, however
+    // many lines the wrapper added. Blocks written before that marker existed
+    // are "<blank>\n<marker>\n<completion line>", so fall back to removing the
+    // one line after the marker, and only when it is actually ours - every
+    // completion line setup writes mentions `git stk completions`. If the user
+    // hand-deleted it and left the marker, the line below is their own; keep it.
+    let end = match lines
+        .iter()
+        .skip(marker + 1)
+        .position(|line| line.trim() == BLOCK_END_MARKER)
+    {
+        Some(offset) => marker + offset + 2,
+        None => {
+            let removes_completion_line = lines
+                .get(marker + 1)
+                .is_some_and(|line| line.contains("git stk completions"));
+            marker + 1 + usize::from(removes_completion_line)
+        }
+    }
+    .min(lines.len());
     // Also drop the single blank line setup inserted before the marker.
     let start = marker.saturating_sub(usize::from(
         marker > 0 && lines[marker - 1].trim().is_empty(),
@@ -425,6 +611,65 @@ mod tests {
     #[test]
     fn strip_returns_none_without_the_marker() {
         assert_eq!(strip_completion_block("export PATH=/x\n"), None);
+    }
+
+    #[test]
+    fn strip_removes_a_wrapper_block_whole() {
+        // The multi-line shape: the wrapper's own blank lines and braces must
+        // not end the block early, and the user's line below has to survive.
+        let rc = format!(
+            "export PATH=/x\n\n{}\nalias g=git\n",
+            rc_block(
+                "bash",
+                "command -v git-stk >/dev/null && source <(git stk completions bash)",
+                true
+            )
+            .trim_end()
+        );
+        assert_eq!(
+            strip_completion_block(&rc).unwrap(),
+            "export PATH=/x\nalias g=git\n"
+        );
+    }
+
+    #[test]
+    fn strip_removes_a_wrapperless_block_with_an_end_marker() {
+        let rc = format!(
+            "{}\nalias g=git\n",
+            rc_block(
+                "zsh",
+                "command -v git-stk >/dev/null && source <(git stk completions zsh)",
+                false
+            )
+            .trim_end()
+        );
+        assert_eq!(strip_completion_block(&rc).unwrap(), "alias g=git\n");
+    }
+
+    #[test]
+    fn a_wrapper_block_carries_the_function_and_the_completion_alias() {
+        let block = rc_block("bash", "line", true);
+        assert!(block.contains("stk() {"), "{block}");
+        assert!(block.contains(WRAPPER_MARKER), "{block}");
+        assert!(block.contains("complete -p git-stk"), "{block}");
+        assert!(block.trim_end().ends_with(BLOCK_END_MARKER), "{block}");
+        // zsh completes through compdef, not bash's `complete`.
+        assert!(rc_block("zsh", "line", true).contains("compdef stk=git-stk"));
+    }
+
+    #[test]
+    fn the_wrapper_is_bash_and_zsh_only() {
+        assert!(wrapper_supported("bash") && wrapper_supported("zsh"));
+        assert!(!wrapper_supported("fish") && !wrapper_supported("PowerShell"));
+    }
+
+    #[test]
+    fn an_existing_stk_definition_is_detected_but_our_own_is_not() {
+        assert!(stk_name_taken("alias stk=git-stk\n").is_some());
+        assert!(stk_name_taken("function stk { }\n").is_some());
+        // Our own block must not read as a collision, or a re-run would refuse
+        // to reinstall the wrapper it wrote itself.
+        assert!(stk_name_taken(&rc_block("bash", "line", true)).is_none());
     }
 
     #[test]

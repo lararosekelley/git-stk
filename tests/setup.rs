@@ -114,6 +114,177 @@ fn setup_is_idempotent_for_completions() {
     assert_eq!(rc.matches("git stk completions zsh").count(), 1);
 }
 
+/// A fake HOME under the repo's tempdir.
+fn fake_home(repo: &TestRepo) -> std::path::PathBuf {
+    let home = repo.path().join("home");
+    fs::create_dir_all(&home).expect("create fake home");
+    home
+}
+
+#[test]
+fn setup_wrapper_writes_the_stk_function_and_completion_alias() {
+    let repo = TestRepo::new();
+    let home = fake_home(&repo);
+
+    repo.stack()
+        .args(["setup", "--yes", "--wrapper"])
+        .env("HOME", &home)
+        .env("SHELL", "/bin/bash")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "added bash completion setup and the stk wrapper",
+        ));
+
+    let rc = fs::read_to_string(home.join(".bashrc")).expect("read bashrc");
+    assert!(rc.contains("command -v git-stk >/dev/null && source <(git stk completions bash)"));
+    assert!(rc.contains("stk() {"), "{rc}");
+    assert!(rc.contains("up|down|top|bottom"), "{rc}");
+    // The path is captured before the cd, so a failed navigation does not also
+    // produce bash's own `cd: null directory`.
+    assert!(
+        rc.contains("dest=$(git stk \"$@\" --from-path) || return"),
+        "{rc}"
+    );
+    assert!(rc.contains("complete -p git-stk"), "{rc}");
+    assert!(rc.contains("# end git-stk setup"), "{rc}");
+}
+
+#[test]
+fn setup_without_the_wrapper_advertises_it() {
+    let repo = TestRepo::new();
+    let home = fake_home(&repo);
+
+    repo.stack()
+        .args(["setup", "--yes"])
+        .env("HOME", &home)
+        .env("SHELL", "/bin/bash")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("git stk setup --wrapper"));
+
+    let rc = fs::read_to_string(home.join(".bashrc")).expect("read bashrc");
+    assert!(!rc.contains("stk() {"), "wrapper must be opt-in: {rc}");
+}
+
+#[test]
+fn setup_wrapper_merges_into_a_block_it_already_wrote() {
+    let repo = TestRepo::new();
+    let home = fake_home(&repo);
+
+    // Completions first, wrapper later - the upgrade path for anyone who ran
+    // setup before the wrapper existed.
+    for args in [
+        ["setup", "--yes"].as_slice(),
+        ["setup", "--yes", "--wrapper"].as_slice(),
+    ] {
+        repo.stack()
+            .args(args)
+            .env("HOME", &home)
+            .env("SHELL", "/bin/bash")
+            .assert()
+            .success();
+    }
+
+    let rc = fs::read_to_string(home.join(".bashrc")).expect("read bashrc");
+    // Merged into the one block rather than appended as a second copy.
+    assert_eq!(rc.matches("git stk completions bash").count(), 1, "{rc}");
+    assert_eq!(rc.matches("# added by git-stk setup").count(), 1, "{rc}");
+    assert_eq!(rc.matches("stk() {").count(), 1, "{rc}");
+}
+
+#[test]
+fn setup_skips_the_wrapper_when_the_name_is_taken() {
+    let repo = TestRepo::new();
+    let home = fake_home(&repo);
+    fs::write(home.join(".bashrc"), "alias stk=/usr/bin/something-else\n").expect("seed rc");
+
+    repo.stack()
+        .args(["setup", "--yes", "--wrapper"])
+        .env("HOME", &home)
+        .env("SHELL", "/bin/bash")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("skipped the stk wrapper"));
+
+    let rc = fs::read_to_string(home.join(".bashrc")).expect("read bashrc");
+    assert!(rc.contains("alias stk=/usr/bin/something-else"), "{rc}");
+    assert!(!rc.contains("stk() {"), "must not shadow their stk: {rc}");
+}
+
+#[test]
+fn setup_declines_the_wrapper_for_fish() {
+    let repo = TestRepo::new();
+    let home = fake_home(&repo);
+
+    repo.stack()
+        .args(["setup", "--yes", "--wrapper"])
+        .env("HOME", &home)
+        .env("SHELL", "/usr/bin/fish")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("bash/zsh shell function"));
+
+    let rc = fs::read_to_string(home.join(".config/fish/config.fish")).expect("read fish config");
+    assert!(rc.contains("git stk completions fish"), "{rc}");
+    assert!(
+        !rc.contains("stk() {"),
+        "bash syntax must not land in fish: {rc}"
+    );
+}
+
+#[test]
+fn the_bash_block_loads_silently_and_defines_stk() {
+    // The worst thing an rc block can do is fail or chatter on every shell
+    // start, so run what setup wrote through a real bash. git-stk is deliberately
+    // absent from PATH here: every line is guarded, so this must stay silent.
+    let Ok(bash) = which_bash() else {
+        eprintln!("no bash available; skipping");
+        return;
+    };
+    let repo = TestRepo::new();
+    let home = fake_home(&repo);
+
+    repo.stack()
+        .args(["setup", "--yes", "--wrapper"])
+        .env("HOME", &home)
+        .env("SHELL", "/bin/bash")
+        .assert()
+        .success();
+
+    let rc = home.join(".bashrc");
+    let output = std::process::Command::new(bash)
+        .args([
+            "--noprofile",
+            "--norc",
+            "-c",
+            &format!("source {}; type -t stk", rc.display()),
+        ])
+        .env("PATH", "/nonexistent")
+        .output()
+        .expect("run bash");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "sourcing failed: {stderr}");
+    assert_eq!(
+        stdout.trim(),
+        "function",
+        "stk not defined: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "the block must not print anything at shell start: {stderr}"
+    );
+}
+
+fn which_bash() -> Result<std::path::PathBuf, ()> {
+    std::env::split_paths(&std::env::var_os("PATH").ok_or(())?)
+        .map(|dir| dir.join("bash"))
+        .find(|path| path.is_file())
+        .ok_or(())
+}
+
 #[test]
 fn setup_non_interactive_skips_completions_but_installs_man_page() {
     let repo = TestRepo::new();
