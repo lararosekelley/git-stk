@@ -138,6 +138,62 @@ pub fn worktree_holding(branch: &str) -> Result<Option<std::path::PathBuf>> {
         .map(|(_, path)| path))
 }
 
+/// Whether `path` is the repo's main worktree. Worth telling apart because
+/// `git worktree remove` refuses on it, so any advice that would free a branch
+/// by removing its worktree is a dead end there.
+pub fn is_main_worktree(path: &std::path::Path) -> bool {
+    // Best effort: an unreadable listing just means the path goes undistinguished
+    // and the advice stays the one that works everywhere.
+    main_worktree().is_some_and(|main| same_path(&main, path))
+}
+
+/// The main worktree - the first record `git worktree list` reports.
+fn main_worktree() -> Option<std::path::PathBuf> {
+    parse_main_worktree(&output(&["worktree", "list", "--porcelain"]).ok()?)
+}
+
+fn parse_main_worktree(porcelain: &str) -> Option<std::path::PathBuf> {
+    porcelain
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(std::path::PathBuf::from)
+}
+
+/// How to hand a branch back, as a command the user can paste. Detaching is what
+/// the guards lead with because it works on every worktree: `git worktree remove`
+/// refuses on the main one, and moving the operation into the holding worktree
+/// only helps when that worktree is the only one in the way.
+pub fn detach_command(path: &std::path::Path) -> String {
+    // Quoted: a worktree path containing a space would otherwise be pasted back
+    // as two arguments.
+    format!("git -C \"{}\" checkout --detach", display_path(path))
+}
+
+/// A worktree path for a message, tagged when it is the main one so the reader
+/// knows why removing it is not among the options.
+pub fn describe_worktree(path: &std::path::Path) -> String {
+    let shown = display_path(path);
+    if is_main_worktree(path) {
+        format!("{shown} (the main worktree)")
+    } else {
+        shown
+    }
+}
+
+/// Collapse worktree paths to the distinct places involved, so a message about
+/// three branches held by one worktree suggests freeing it once, not three times.
+pub fn distinct_paths<'a>(
+    paths: impl IntoIterator<Item = &'a std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut distinct: Vec<std::path::PathBuf> = Vec::new();
+    for path in paths {
+        if !distinct.iter().any(|seen| same_path(seen, path)) {
+            distinct.push(path.to_path_buf());
+        }
+    }
+    distinct
+}
+
 /// Parse `git worktree list --porcelain` into (branch, path) pairs. Records are
 /// blank-line separated, each opening with `worktree <path>`; only those with a
 /// `branch` line hold a branch, so bare and detached ones drop out. The record
@@ -218,17 +274,27 @@ pub fn remote_url(remote: &str) -> Result<Option<String>> {
 /// yields None and the caller falls through to git's own error, as before.
 fn worktree_collision(branch: &str) -> Option<String> {
     let path = worktree_holding(branch).ok().flatten()?;
-    Some(collision_message(branch, &display_path(&path)))
+    Some(collision_message(
+        branch,
+        &display_path(&path),
+        is_main_worktree(&path),
+    ))
 }
 
 /// The wording, split out so it can be checked directly. The suggested commands
 /// are quoted: a worktree path containing a space would otherwise be pasted back
-/// as two arguments.
-fn collision_message(branch: &str, shown: &str) -> String {
+/// as two arguments. Removal is only offered for a linked worktree - git refuses
+/// to remove the main one, so suggesting it there sends the user nowhere.
+fn collision_message(branch: &str, shown: &str, is_main: bool) -> String {
+    let mut free = format!("free it with `git -C \"{shown}\" checkout --detach`");
+    if !is_main {
+        free.push_str(&format!(
+            ", or drop that worktree with `git worktree remove \"{shown}\"`"
+        ));
+    }
     format!(
         "{branch} is checked out in the worktree at {shown}\n\
-         work on it there with `cd \"{shown}\"`, or free it with \
-         `git worktree remove \"{shown}\"`"
+         work on it there with `cd \"{shown}\"`, or {free}"
     )
 }
 
@@ -1159,7 +1225,7 @@ branch refs/heads/feat/deep/nested/name
     fn a_collision_message_quotes_the_path_it_suggests_pasting() {
         // A worktree path with a space in it has to survive the round trip into
         // the user's shell.
-        let message = collision_message("feat/a", "../my worktree");
+        let message = collision_message("feat/a", "../my worktree", false);
         assert!(
             message.contains(r#"`cd "../my worktree"`"#),
             "cd suggestion is not pasteable: {message}"
@@ -1168,11 +1234,68 @@ branch refs/heads/feat/deep/nested/name
             message.contains(r#"`git worktree remove "../my worktree"`"#),
             "remove suggestion is not pasteable: {message}"
         );
+        assert!(
+            message.contains(r#"`git -C "../my worktree" checkout --detach`"#),
+            "detach suggestion is not pasteable: {message}"
+        );
+    }
+
+    #[test]
+    fn a_collision_with_the_main_worktree_never_suggests_removing_it() {
+        // `git worktree remove` refuses on the main worktree, so offering it
+        // there would be advice the user cannot act on.
+        let message = collision_message("feat/a", "../product", true);
+        assert!(
+            !message.contains("git worktree remove"),
+            "the main worktree cannot be removed: {message}"
+        );
+        assert!(
+            message.contains(r#"`git -C "../product" checkout --detach`"#),
+            "no workable way to free the branch: {message}"
+        );
+    }
+
+    #[test]
+    fn the_main_worktree_is_the_first_record_listed() {
+        let porcelain = "\
+worktree /repo/product
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/feat/b
+
+worktree /repo/product-worktrees/feat/a
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/feat/a
+";
+        assert_eq!(
+            parse_main_worktree(porcelain),
+            Some(std::path::PathBuf::from("/repo/product"))
+        );
+    }
+
+    #[test]
+    fn no_listing_names_no_main_worktree() {
+        assert_eq!(parse_main_worktree(""), None);
+    }
+
+    #[test]
+    fn one_worktree_holding_three_branches_is_freed_once() {
+        let held = [
+            std::path::Path::new("../wt-a"),
+            std::path::Path::new("../wt-a"),
+            std::path::Path::new("../wt-b"),
+        ];
+        assert_eq!(
+            distinct_paths(held),
+            vec![
+                std::path::PathBuf::from("../wt-a"),
+                std::path::PathBuf::from("../wt-b")
+            ]
+        );
     }
 
     #[test]
     fn a_collision_message_names_the_branch_and_where_it_lives() {
-        let message = collision_message("feat/a", "../wt-a");
+        let message = collision_message("feat/a", "../wt-a", false);
         assert!(message.starts_with("feat/a is checked out in the worktree at ../wt-a"));
     }
 

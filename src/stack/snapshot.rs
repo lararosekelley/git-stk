@@ -183,12 +183,21 @@ fn blocked_by_other_worktrees(
 fn blocked_message(blocked: &[(String, std::path::PathBuf)]) -> String {
     let mut message = String::from("undo would rewind branches checked out in other worktrees:\n");
     for (branch, path) in blocked {
-        message.push_str(&format!("  {branch} in {}\n", git::display_path(path)));
+        message.push_str(&format!("  {branch} in {}\n", git::describe_worktree(path)));
     }
+    let held_by = git::distinct_paths(blocked.iter().map(|(_, path)| path.as_path()));
     message.push_str(
-        "those worktrees would keep an index and working tree the branch no longer matches; \
-         free them with `git worktree remove <path>` and re-run",
+        "those worktrees would keep an index and working tree the branch no longer matches. \
+         Free ",
     );
+    // Detaching rather than removing: the main worktree can hold a branch too,
+    // and `git worktree remove` refuses on it.
+    message.push_str(if held_by.len() == 1 { "it" } else { "each one" });
+    message.push_str(" by detaching there, then re-run:\n");
+    for path in &held_by {
+        message.push_str(&format!("  {}\n", git::detach_command(path)));
+    }
+    message.truncate(message.trim_end().len());
     message
 }
 

@@ -394,8 +394,10 @@ fn worktrees(tour: &mut Tour) -> Result<()> {
     tour.say("`restack` refuses before touching anything, rather than rewriting half");
     tour.say("the stack and failing in the middle:");
     tour.stk_fails(&["restack"])?;
-    tour.say("Nothing was rewritten. Free the worktree (`git worktree remove`) or run");
-    tour.say("the restack from it, then try again. `undo` and `cleanup` are just as");
+    tour.say("Nothing was rewritten. Hand the branch back with");
+    tour.say("`git -C <path> checkout --detach`, then try again - that works even when");
+    tour.say("the holder is your main worktree, which cannot be removed. `undo` and");
+    tour.say("`cleanup` are just as");
     tour.say("careful: undo refuses rather than rewinding a branch under a worktree");
     tour.say("that would not notice, and cleanup keeps such a branch and moves on");
     tour.say("instead of failing the whole run.");
