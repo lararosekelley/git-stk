@@ -6,14 +6,35 @@ use std::{env, fs, path::Path, process::Command};
 use tempfile::TempDir;
 
 pub struct TestRepo {
+    /// Held for its Drop: removing it takes the repo and anything beside it.
     dir: TempDir,
+    root: std::path::PathBuf,
 }
 
 impl TestRepo {
     pub fn new() -> Self {
-        let repo = Self {
-            dir: tempfile::tempdir().expect("create temp repo"),
+        Self::init(None)
+    }
+
+    /// A repo one level *below* the temp root, named `name`. Only needed by tests
+    /// that exercise the default `stk.worktreeDir` - a `<repo>-worktrees` sibling
+    /// of the repo - which then lands inside the tempdir and is cleaned up with
+    /// it. Under `new` that sibling would be a stray directory in the system temp.
+    pub fn new_in_subdir(name: &str) -> Self {
+        Self::init(Some(name))
+    }
+
+    fn init(subdir: Option<&str>) -> Self {
+        let dir = tempfile::tempdir().expect("create temp repo");
+        let root = match subdir {
+            Some(name) => {
+                let root = dir.path().join(name);
+                fs::create_dir_all(&root).expect("create repo dir");
+                root
+            }
+            None => dir.path().to_path_buf(),
         };
+        let repo = Self { dir, root };
         repo.git(["init", "--initial-branch", "main"]);
         repo.git(["config", "user.email", "test@example.com"]);
         repo.git(["config", "user.name", "Test User"]);
@@ -24,7 +45,7 @@ impl TestRepo {
     }
 
     pub fn path(&self) -> &Path {
-        self.dir.path()
+        &self.root
     }
 
     pub fn write(&self, path: &str, contents: &str) {

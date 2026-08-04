@@ -465,6 +465,43 @@ fn a_blocked_restack_never_leaks_gits_raw_fatal() {
 }
 
 #[test]
+fn new_worktree_from_inside_a_worktree_lands_beside_the_main_repo() {
+    // Deliberately no stk.worktreeDir: the *default* is what used to be derived
+    // from the current worktree, so a configured absolute path would hide this.
+    let repo = TestRepo::new_in_subdir("product");
+    let worktrees = repo
+        .path()
+        .parent()
+        .expect("temp root")
+        .join("product-worktrees");
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let a = worktrees.join("feature").join("a");
+    assert!(a.is_dir(), "expected a worktree at {}", a.display());
+
+    // The second one is created from *inside* the first - the normal way to grow
+    // a stack that lives in worktrees.
+    repo.stack_in(&a)
+        .args(["new", "feature/b", "--worktree"])
+        .assert()
+        .success();
+
+    let b = worktrees.join("feature").join("b");
+    assert!(
+        b.is_dir(),
+        "worktrees must all be siblings under one directory, but {} is missing",
+        b.display()
+    );
+    assert!(
+        !worktrees.join("feature").join("a-worktrees").exists(),
+        "the worktree nested under the one it was created from"
+    );
+}
+
+#[test]
 fn a_restack_the_main_worktree_blocks_is_told_how_to_free_it() {
     let repo = TestRepo::new();
     let parent = worktree_dir();
