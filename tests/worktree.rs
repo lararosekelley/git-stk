@@ -66,7 +66,7 @@ fn undo_refuses_to_rewind_a_branch_held_by_another_worktree() {
             "undo would rewind branches checked out in other worktrees",
         ))
         .stderr(predicates::str::contains("feature/b"))
-        .stderr(predicates::str::contains("git worktree remove"));
+        .stderr(predicates::str::contains("checkout --detach"));
 
     // The refusal is total: no ref moved, and the held worktree is untouched.
     assert_eq!(repo.git(["rev-parse", "feature/b"]), tip);
@@ -462,6 +462,65 @@ fn a_blocked_restack_never_leaks_gits_raw_fatal() {
         ))
         .stderr(predicates::str::contains("feature/b"))
         .stderr(predicates::str::contains("already used by worktree").not());
+}
+
+#[test]
+fn a_restack_the_main_worktree_blocks_is_told_how_to_free_it() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-a");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+
+    // The layout that used to leave no way out: the *main* worktree parks on
+    // feature/b while the restack runs from a linked worktree below it. Both
+    // escapes the old message offered are unreachable here - git will not remove
+    // a main worktree, and re-running from it just trades which branch blocks.
+    repo.git(["switch", "feature/b"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/a"]);
+
+    repo.stack_in(&worktree)
+        .arg("restack")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "restack would rebase branches checked out in other worktrees",
+        ))
+        .stderr(predicates::str::contains("feature/b"))
+        .stderr(predicates::str::contains("(the main worktree)"))
+        .stderr(predicates::str::contains("checkout --detach"))
+        .stderr(predicates::str::contains("git worktree remove").not())
+        .stderr(predicates::str::contains("or run the restack from").not());
+}
+
+#[test]
+fn a_restack_still_offers_the_holding_worktree_when_running_there_would_work() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-b");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    // feature/a moves *after* feature/b branched off it, so feature/b needs
+    // replaying while feature/a - sitting on the trunk tip - does not.
+    repo.git(["switch", "feature/a"]);
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+
+    // Nothing checked out here is being rebased and only one worktree is in the
+    // way, so delegating really does resolve it - unlike the case above.
+    repo.stack()
+        .arg("restack")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("feature/b"))
+        .stderr(predicates::str::contains("checkout --detach"))
+        .stderr(predicates::str::contains("or run the restack from"));
 }
 
 #[test]

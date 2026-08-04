@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
@@ -230,16 +230,56 @@ fn ensure_no_worktree_blocks(
         return Ok(());
     }
 
+    // Re-running from the holding worktree only helps when that worktree is the
+    // only one in the way *and* nothing checked out here needs rebasing.
+    // Otherwise the two worktrees hold each other's branches and the advice
+    // sends the user in a circle.
+    let held_by = git::distinct_paths(blocked.iter().map(|(_, path)| path.as_path()));
+    let here_moves = git::current_branch()
+        .ok()
+        .is_some_and(|branch| rebasing.contains(branch.as_str()));
+    let delegate = match held_by.as_slice() {
+        [only] if !here_moves => Some(only.as_path()),
+        _ => None,
+    };
+
+    bail!(worktree_block_message(&blocked, &held_by, delegate));
+}
+
+/// The refusal, with a remedy that holds in every layout. Detaching is what this
+/// leads with: `git worktree remove` cannot free the main worktree, and moving
+/// the restack into the holding worktree only works in the single-blocker case,
+/// so neither is safe to offer unconditionally.
+fn worktree_block_message(
+    blocked: &[(String, PathBuf)],
+    held_by: &[PathBuf],
+    delegate: Option<&Path>,
+) -> String {
     let mut message =
         String::from("restack would rebase branches checked out in other worktrees:\n");
-    for (branch, path) in &blocked {
-        message.push_str(&format!("  {branch} in {}\n", git::display_path(path)));
+    for (branch, path) in blocked {
+        message.push_str(&format!("  {branch} in {}\n", git::describe_worktree(path)));
     }
-    message.push_str(
-        "git cannot rebase a branch another worktree holds; free them with \
-         `git worktree remove <path>`, or run the restack from that worktree",
-    );
-    bail!(message);
+    message.push_str("git cannot rebase a branch another worktree holds. Free ");
+    message.push_str(if held_by.len() == 1 { "it" } else { "each one" });
+    message.push_str(" by detaching there:\n");
+    for path in held_by {
+        message.push_str(&format!("  {}\n", git::detach_command(path)));
+    }
+    message.push_str("then check ");
+    message.push_str(if blocked.len() == 1 {
+        "the branch"
+    } else {
+        "those branches"
+    });
+    message.push_str(" out again once the restack finishes");
+    if let Some(path) = delegate {
+        message.push_str(&format!(
+            ",\nor run the restack from {} instead",
+            git::display_path(path)
+        ));
+    }
+    message
 }
 
 /// Sitting exactly on the parent tip with a fresh fork point: nothing to do.
