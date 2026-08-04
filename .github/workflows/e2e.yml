@@ -67,20 +67,62 @@ jobs:
       # running each cell on bash/zsh/pwsh. `$SHELL` steers setup's shell
       # detection. Matrix expressions aren't allowed in `shell:`, so one
       # literal-shell step per OS, gated by `if:`.
+      #
+      # bash and zsh additionally run `setup -y --wrapper` and *load the block
+      # it wrote* in that shell, asserting the `stk` function is defined, its
+      # completion is mapped, and nothing is printed at shell start. Those are
+      # shell-specific mechanisms (`complete -p` vs `compdef`) that only a real
+      # zsh or bash can prove. PowerShell asserts the opposite: the wrapper is
+      # declined, with no shell-function syntax written to the profile. fish has
+      # no cell in this matrix, so its decline path is covered only by
+      # tests/setup.rs.
       - name: Completions, setup, uninstall (bash)
         if: runner.os == 'Linux'
         shell: bash
         env:
           SHELL: /bin/bash
         run: |
+          # On PATH so `git stk` resolves as a subcommand and the block's
+          # completion lines actually fire - otherwise they self-skip and the
+          # `stk` completion alias would go untested.
+          export PATH="$PWD/target/debug:$PATH"
           ./target/debug/git-stk completions bash > comp.bash
           test -s comp.bash
           bash -n comp.bash
           ./target/debug/git-stk setup -y
           grep -q "git stk completions bash" "$HOME/.bashrc"
+          if grep -q 'stk() {' "$HOME/.bashrc"; then
+            echo "the wrapper must be opt-in"; exit 1
+          fi
+          # Re-run with --wrapper: merges into the block already there rather
+          # than appending a second copy.
+          ./target/debug/git-stk setup -y --wrapper
+          grep -q 'stk() {' "$HOME/.bashrc"
+          test "$(grep -c '# added by git-stk setup' "$HOME/.bashrc")" = 1
+          test "$(grep -c 'git stk completions bash' "$HOME/.bashrc")" = 1
+          # Source only the block, delimited by its own markers: Ubuntu's
+          # .bashrc returns early when non-interactive, so the appended block
+          # would never be reached. Extracting it also proves the end marker
+          # closes the block where it should.
+          sed -n '/# added by git-stk setup/,/# end git-stk setup/p' \
+            "$HOME/.bashrc" > block.bash
+          grep -q '# end git-stk setup' block.bash
+          bash -n block.bash
+          out=$(bash --noprofile --norc -c 'source block.bash; type -t stk; complete -p stk' 2>err.txt)
+          echo "$out"
+          # A block that chatters (or errors) on every shell start is the worst
+          # failure mode, so require silence.
+          if [ -s err.txt ]; then
+            echo "the rc block wrote to stderr:"; cat err.txt; exit 1
+          fi
+          grep -qx function <<<"$out"
+          grep -q ' stk$' <<<"$out"
           ./target/debug/git-stk uninstall -y
           if grep -q "git stk completions bash" "$HOME/.bashrc"; then
             echo "uninstall left the bash rc wired"; exit 1
+          fi
+          if grep -qe 'stk() {' -e '# end git-stk setup' "$HOME/.bashrc"; then
+            echo "uninstall left wrapper lines behind"; exit 1
           fi
 
       - name: Completions, setup, uninstall (zsh)
@@ -90,14 +132,46 @@ jobs:
           SHELL: /bin/zsh
         run: |
           set -e
+          export PATH="$PWD/target/debug:$PATH"
           ./target/debug/git-stk completions zsh > comp.zsh
           test -s comp.zsh
           zsh -n comp.zsh
           ./target/debug/git-stk setup -y
           grep -q "git stk completions zsh" "$HOME/.zshrc"
+          if grep -q 'stk() {' "$HOME/.zshrc"; then
+            echo "the wrapper must be opt-in"; exit 1
+          fi
+          ./target/debug/git-stk setup -y --wrapper
+          grep -q 'stk() {' "$HOME/.zshrc"
+          test "$(grep -c '# added by git-stk setup' "$HOME/.zshrc")" = 1
+          sed -n '/# added by git-stk setup/,/# end git-stk setup/p' \
+            "$HOME/.zshrc" > block.zsh
+          grep -q '# end git-stk setup' block.zsh
+          zsh -n block.zsh
+          # compdef only exists once compinit has run, which is what an
+          # interactive zsh does - so do the same here. This is the assertion
+          # that proves `compdef stk=git-stk` actually maps the wrapper's
+          # completion; $_comps holds the result.
+          out=$(zsh -f -c '
+            autoload -Uz compinit && compinit -u
+            source block.zsh
+            whence -w stk
+            print -r -- "comps=${_comps[stk]}"
+          ' 2>err.txt)
+          echo "$out"
+          if [ -s err.txt ]; then
+            echo "the rc block wrote to stderr:"; cat err.txt; exit 1
+          fi
+          grep -q 'stk: function' <<<"$out"
+          if grep -q '^comps=$' <<<"$out"; then
+            echo "compdef did not map completion for stk"; exit 1
+          fi
           ./target/debug/git-stk uninstall -y
           if grep -q "git stk completions zsh" "$HOME/.zshrc"; then
             echo "uninstall left the zsh rc wired"; exit 1
+          fi
+          if grep -qe 'stk() {' -e '# end git-stk setup' "$HOME/.zshrc"; then
+            echo "uninstall left wrapper lines behind"; exit 1
           fi
 
       - name: Completions, setup, uninstall (pwsh)
@@ -111,6 +185,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'setup failed' }
           if (-not (Select-String -Path $PROFILE -Pattern 'git stk completions powershell' -Quiet)) {
             throw 'setup did not wire the PowerShell profile'
+          }
+          # --wrapper is a bash/zsh shell function: PowerShell must decline it in
+          # so many words, and never write that syntax into the profile.
+          $out = & ./target/debug/git-stk.exe setup -y --wrapper | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'setup --wrapper failed' }
+          if ($out -notmatch 'bash/zsh shell function') {
+            throw "setup --wrapper did not explain the skip: $out"
+          }
+          if (Select-String -Path $PROFILE -Pattern 'stk\(\) \{' -Quiet) {
+            throw 'bash function syntax landed in the PowerShell profile'
           }
           & ./target/debug/git-stk.exe uninstall -y
           if ($LASTEXITCODE -ne 0) { throw 'uninstall failed' }
