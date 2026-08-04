@@ -141,7 +141,11 @@ a checkout, and a program cannot change its parent shell's directory. So the nav
 # bash/zsh: add to ~/.bashrc or ~/.zshrc
 stk() {
   case "$1" in
-    up|down|top|bottom) cd "$(git stk "$@" --from-path)" || return ;;
+    up|down|top|bottom)
+      local dest
+      dest=$(git stk "$@" --from-path) || return
+      [ -n "$dest" ] && cd "$dest"
+      ;;
     *) git stk "$@" ;;
   esac
 }
@@ -149,7 +153,12 @@ stk() {
 
 `stk up` then follows the branch wherever it lives - into another worktree when that is where it is
 checked out, or an ordinary checkout when it is here (printing `.`, so your current directory is left
-alone). The switch is still reported, on stderr, so stdout stays a single usable path.
+alone). The switch is still reported, on stderr, so stdout stays a single usable path. Every other
+command falls through to `git stk` untouched, so `stk` works as the only name you need.
+
+Capture the path before the `cd` rather than `cd "$(...)"` directly: a navigation that fails prints
+nothing on stdout, and `cd ""` would add its own `cd: null directory` complaint on top of the error
+git-stk already gave you.
 
 ## Install For Development
 
