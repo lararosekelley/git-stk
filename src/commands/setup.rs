@@ -12,10 +12,14 @@ pub struct Setup {
     /// Only re-render generated assets (man page); never touch shell rc files.
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "yes")]
     refresh: bool,
+    /// Also define an `stk` shell function whose up/down/top/bottom cd into the
+    /// worktree holding the branch (bash and zsh only).
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "refresh")]
+    wrapper: bool,
 }
 
 impl Run for Setup {
     fn run(self) -> Result<()> {
-        crate::setup::setup(self.yes, self.refresh)
+        crate::setup::setup(self.yes, self.refresh, self.wrapper)
     }
 }

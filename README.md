@@ -127,6 +127,13 @@ in addition to `git-stk <TAB>`. `-y`/`--yes` skips the shell-rc confirmation for
 `--refresh` only re-renders the man page and never touches your shell rc - it is what `upgrade` runs with
 the freshly installed binary.
 
+`--wrapper` additionally defines the [`stk` shell function](#worktrees) whose `up`/`down`/`top`/`bottom`
+`cd` into the worktree holding the branch, and teaches your shell to complete `stk` the same way it
+completes `git-stk`. It is opt-in because it defines a new command name: setup skips it, telling you why,
+if an `stk` executable is on your `PATH` or your rc file already defines one. bash and zsh only - fish
+needs different syntax. Re-running with `--wrapper` after a plain `setup` merges it into the existing
+block rather than appending a second one, and `git stk uninstall` removes the whole block either way.
+
 ## Worktrees
 
 git-stk understands linked worktrees. `list` and `status` name the worktree holding each branch, and the
@@ -136,6 +143,8 @@ through, because git will not rebase, delete, or check out a branch another work
 That last one makes navigation awkward in a worktree-per-branch layout: moving up the stack is a `cd`, not
 a checkout, and a program cannot change its parent shell's directory. So the navigation commands take
 `--from-path`, which prints where to go and lets the shell do the moving:
+
+`git stk setup --wrapper` writes this for you (see [Shell Completions](#shell-completions)); by hand it is:
 
 ```sh
 # bash/zsh: add to ~/.bashrc or ~/.zshrc
