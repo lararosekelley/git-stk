@@ -152,6 +152,18 @@ fn main_worktree() -> Option<std::path::PathBuf> {
     parse_main_worktree(&output(&["worktree", "list", "--porcelain"]).ok()?)
 }
 
+/// The anchor for repo-wide paths that must resolve the same from every
+/// worktree. [`repo_root`] answers "where am I", which inside a linked worktree
+/// is that worktree - so a default derived from it would nest a new worktree
+/// under the one it was created from. Falls back to the root when the listing
+/// cannot be read, which is where a repo with no linked worktrees lands anyway.
+pub fn main_worktree_root() -> Result<std::path::PathBuf> {
+    match main_worktree() {
+        Some(path) => Ok(path),
+        None => repo_root(),
+    }
+}
+
 fn parse_main_worktree(porcelain: &str) -> Option<std::path::PathBuf> {
     porcelain
         .lines()

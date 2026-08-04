@@ -143,6 +143,11 @@ pub fn fetch_enabled(mode: FetchMode) -> Result<bool> {
 /// Where `new --worktree` puts a branch's worktree. From `stk.worktreeDir`, or a
 /// sibling of the repo root named `<repo>-worktrees` - outside the repo, so the
 /// worktrees do not land in its own file watchers, ignore rules, or `git status`.
+///
+/// Anchored on the *main* worktree, not the current one, so every worktree of a
+/// repo agrees on one directory: derived from wherever the command ran, `new
+/// --worktree` inside a worktree would nest the next one under it, and `repair`
+/// would look for owned worktrees somewhere they were never put.
 pub fn worktree_dir() -> Result<std::path::PathBuf> {
     if let Some(configured) = git::config_get(WORKTREE_DIR_KEY)?
         && !configured.trim().is_empty()
@@ -150,7 +155,7 @@ pub fn worktree_dir() -> Result<std::path::PathBuf> {
         return std::path::absolute(configured.trim()).context("failed to resolve stk.worktreeDir");
     }
 
-    let root = git::repo_root()?;
+    let root = git::main_worktree_root()?;
     let name = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
