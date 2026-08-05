@@ -4,6 +4,40 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.11.2
+
+### Added
+
+- **shell:** `setup --wrapper` installs an `stk` shell function whose
+  `up`/`down`/`top`/`bottom` `cd` into the worktree holding the branch, and
+  points your shell's completion for `git-stk` at `stk` as well. Opt-in, bash
+  and zsh only: it defines a new command name, so setup skips it with a reason
+  when an `stk` executable is on your `PATH` or your rc already defines one.
+  Re-running with `--wrapper` merges it into the block setup already wrote, and
+  `uninstall` removes the whole block.
+
+### Fixed
+
+- **shell:** the README's `stk` wrapper captures the destination before the
+  `cd`, so a failed navigation reports only git-stk's own error instead of
+  adding bash's `cd: null directory` to it.
+
+## 0.11.1
+
+### Fixed
+
+- **code:** a worktree collision now suggests detaching the branch
+  (`git -C <path> checkout --detach`), which works on every worktree.
+  `git worktree remove` refuses on the main worktree, and re-running the
+  operation from the holding worktree only helps when that worktree is the
+  only one in the way - so `restack` names the main worktree as such and
+  offers the delegate escape only when it would actually resolve the block.
+  `undo` and the checkout collision message got the same treatment.
+- **code:** the default `stk.worktreeDir` is anchored on the main worktree
+  rather than the current one, so `new --worktree` run from inside a worktree
+  no longer nests the next worktree under it - and `repair` looks for owned
+  worktrees where they were actually put.
+
 ## 0.11.0
 
 **git-stk now understands git worktrees.**
@@ -42,7 +76,7 @@ now worktree-aware, and worktree-native workflows are supported directly.
 - **code:** `cleanup` keeps a worktree-held branch and finishes the run instead
   of aborting partway.
 - **sync:** `sync`, `merge`, and `restack --fetch` work from inside a worktree;
-  `merge` previously failed *after* landing the review.
+  `merge` previously failed _after_ landing the review.
 - **code:** collisions explain where the branch lives instead of leaking git's
   raw `fatal:`.
 
