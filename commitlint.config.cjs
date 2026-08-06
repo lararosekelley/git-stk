@@ -10,6 +10,7 @@ module.exports = {
         "code",
         "stack",
         "config",
+        "worktree",
         "providers",
         "github",
         "gitlab",

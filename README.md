@@ -213,7 +213,11 @@ checkout stays where it is. The directory comes from `stk.worktreeDir` (default:
 directory beside the repo), with branch names nested as real directories - `feat/a` lands at `feat/a`, whose
 basename still matches the branch. git-stk records the worktrees it creates and **owns removing them**:
 `cleanup` takes an owned worktree away when its branch lands, but never touches one you made yourself, and
-keeps any owned worktree that still has uncommitted work in it. See [Worktrees](#worktrees).
+keeps any owned worktree that still has uncommitted work in it. A branch whose ref has to stay - because it
+is checked out, or a worktree holds it - keeps its stack metadata too, so it stays in the stack for a later
+cleanup rather than quietly dropping out of it. Running `sync` or `merge` from inside a branch's own
+worktree therefore lands the review and leaves the branch alone; `cd` to the main checkout and run
+`git stk cleanup <branch>` to remove the branch and its worktree. See [Worktrees](#worktrees).
 
 `rename` is `git branch -m` plus stack upkeep: children pointing at the old name are retargeted. When an
 open review still heads the old branch (platforms do not follow local renames), it records the rename so

@@ -377,8 +377,13 @@ fn cleanup_keeps_a_worktree_held_branch_and_finishes_the_rest() {
         ))
         .stdout(predicates::str::contains("will delete branch feature/b"));
 
-    // The held branch survives; the rest of the cleanup still happened.
+    // The held branch survives - with its metadata, so it is still in the stack
+    // for a cleanup run once the worktree lets go.
     repo.git(["rev-parse", "--verify", "feature/a"]);
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
+    );
     assert_eq!(
         repo.git_status(["rev-parse", "--verify", "feature/b"])
             .status
@@ -1180,6 +1185,69 @@ fn merge_from_a_worktree_finishes_instead_of_failing_after_the_merge() {
         ));
 
     repo.git(["-C", worktree.to_str().unwrap(), "rev-parse", "feature/a"]);
+    // Kept means kept: the branch stays in the stack, so `list` still shows it
+    // and a cleanup from the main checkout can finish the job.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
+    );
+}
+
+/// Standing in the worktree git-stk made for a branch that just landed, with
+/// the trunk free: checking the trunk out *here* would repoint a checkout that
+/// exists for that branch, and - the branch no longer being held - let the
+/// deletion take it, leaving the worktree behind with nothing pointing at it.
+#[test]
+fn sync_from_an_owned_worktree_neither_repoints_nor_orphans_it() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let worktree = parent.path().join("feature").join("a");
+    // Park the main checkout off the trunk, so nothing holds main and the
+    // "move off the landed branch" step is free to switch.
+    repo.git(["switch", "-c", "parked"]);
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    let mut command = repo.stack_faked(&fake);
+    command.current_dir(&worktree);
+    command
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "stayed on feature/a: this is its own worktree, not the main checkout",
+        ))
+        .stdout(predicates::str::contains(
+            "kept feature/a: cannot delete the checked out branch",
+        ))
+        .stdout(predicates::str::contains("delete branch feature/a").not());
+
+    // The worktree still holds its branch, and the branch is still stacked.
+    assert!(worktree.is_dir(), "the owned worktree must survive");
+    assert_eq!(
+        repo.git(["-C", worktree.to_str().unwrap(), "branch", "--show-current"]),
+        "feature/a"
+    );
+    repo.git(["rev-parse", "--verify", "feature/a"]);
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
+    );
+    // Still ours, so a later `cleanup` from the main checkout removes both.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkWorktree"]),
+        worktree.to_str().unwrap()
+    );
 }
 
 #[test]

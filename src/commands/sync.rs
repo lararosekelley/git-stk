@@ -6,7 +6,8 @@ use clap::ArgAction;
 use crate::cli::{FetchMode, PushMode, UpdateRefsMode};
 use crate::commands::Run;
 use crate::commands::cleanup::{
-    Landing, cleanup_branch_deletion, cleanup_finished_branch, landing_for,
+    Landing, cleanup_branch_deletion, cleanup_finished_branch, deletion_blocker, landing_for,
+    report_kept,
 };
 use crate::providers::{ReviewState, detect_review_provider};
 use crate::settings;
@@ -227,6 +228,19 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
                     git::display_path(&path)
                 ))
             );
+        } else if git::in_linked_worktree() {
+            // This worktree exists for the branch we are standing on. Checking
+            // the trunk out here would repoint someone's dedicated checkout,
+            // and - because the branch would no longer be held - let the
+            // deletion below take it while leaving the worktree behind with
+            // nothing pointing at it. Stay; the branch is kept below, and a
+            // cleanup from the main checkout can finish it.
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "stayed on {current}: this is its own worktree, not the main checkout"
+                ))
+            );
         } else if dry_run {
             anstream::println!("would switch to {}", style::branch(&target));
             position = target;
@@ -236,15 +250,21 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         }
     }
 
-    // 6. Clean up the finished branches: retarget children, then delete.
+    // 6. Clean up the finished branches: retarget children, then delete. One
+    //    whose ref cannot go yet keeps its metadata, so it stays in the stack
+    //    for a later cleanup instead of quietly dropping out of it.
     for branch in &finished {
         let landing = if closed.contains(branch) {
             Landing::Closed
         } else {
             Landing::Merged
         };
+        if let Some(reason) = deletion_blocker(branch, &position)? {
+            report_kept(branch, &reason);
+            continue;
+        }
         cleanup_finished_branch(review_provider.as_ref(), branch, landing, dry_run)?;
-        cleanup_branch_deletion(branch, &position, landing, dry_run, true)?;
+        cleanup_branch_deletion(branch, landing, dry_run)?;
     }
 
     // 7. Restack the remainder (and push, per flags/config).
