@@ -119,7 +119,10 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             continue;
         }
 
-        if review.state == ReviewState::Merged {
+        if review.state == ReviewState::Merged
+            || (review.state == ReviewState::Closed
+                && settings::bool_setting(settings::CLEAN_CLOSED_KEY)?)
+        {
             anstream::println!(
                 "{}: review {} is {}",
                 style::branch(branch),
@@ -132,7 +135,9 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
 
         // A closed review's base is dead state: surface it, but never let
         // it drive the stack metadata.
-        if review.state == ReviewState::Closed {
+        if review.state == ReviewState::Closed
+            && !settings::bool_setting(settings::CLEAN_CLOSED_KEY)?
+        {
             anstream::println!(
                 "{}",
                 style::dim(&format!(

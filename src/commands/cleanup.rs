@@ -3,11 +3,11 @@ use clap::ArgAction;
 use clap_complete::engine::ArgValueCompleter;
 
 use crate::commands::Run;
-use crate::completions;
 use crate::providers::{
     ReviewProvider, ReviewState, detect_review_provider, owned_review_for_branch,
 };
 use crate::style;
+use crate::{completions, settings};
 use crate::{git, stack};
 
 /// Clean up local metadata for merged review requests and delete their
@@ -77,7 +77,10 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
             continue;
         };
 
-        if review.state != ReviewState::Merged {
+        if review.state != ReviewState::Merged
+            || (review.state == ReviewState::Closed
+                && settings::bool_setting(settings::CLEAN_CLOSED_KEY)?)
+        {
             anstream::println!(
                 "{}",
                 style::dim(&format!(

@@ -14,6 +14,7 @@ pub const FETCH_BEFORE_RESTACK_KEY: &str = "stk.fetchBeforeRestack";
 pub const PUSH_ON_RESTACK_KEY: &str = "stk.pushOnRestack";
 pub const PUSH_ON_SUBMIT_KEY: &str = "stk.pushOnSubmit";
 pub const SUBMIT_STACK_KEY: &str = "stk.submitStack";
+pub const CLEAN_CLOSED_KEY: &str = "stk.cleanClosed";
 pub const MERGE_STRATEGY_KEY: &str = "stk.mergeStrategy";
 pub const MERGE_WAIT_KEY: &str = "stk.mergeWait";
 pub const SUBMIT_DRAFT_KEY: &str = "stk.submitDraft";
@@ -41,6 +42,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     (PUSH_ON_RESTACK_KEY, "false"),
     (PUSH_ON_SUBMIT_KEY, "false"),
     (SUBMIT_STACK_KEY, "false"),
+    (CLEAN_CLOSED_KEY, "false"),
     (MERGE_STRATEGY_KEY, "squash"),
     (MERGE_WAIT_KEY, "false"),
     (SUBMIT_DRAFT_KEY, "false"),
