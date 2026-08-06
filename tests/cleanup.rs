@@ -288,6 +288,71 @@ fn cleanup_deletes_cleaned_merged_branch_by_default() {
 }
 
 #[test]
+fn cleanup_deletes_closed_branch_only_with_config_set() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    // Real commits + a squash merge: feature/a's commits are NOT
+    // ancestry-merged into main afterwards, so `git branch -d` would refuse.
+    // Deletion must trust the provider-verified merge state instead.
+    repo.commit_file("a.txt", "one\n", "parent change one");
+    repo.commit_file("a.txt", "one\ntwo\n", "parent change two");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.git(["switch", "main"]);
+    repo.git(["merge", "--squash", "feature/a"]);
+    repo.git(["commit", "-m", "parent changes (#12)"]);
+    let fake = FakeProvider::new()
+        .on("feature/a --state closed", CLOSED_A)
+        .on("feature/a", "[]")
+        .on("feature/b", OPEN_B)
+        .on("pr edit", "updated child review")
+        .fallback("[]")
+        .install(&repo);
+
+    // Initially try without the config option set
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "skipped feature/a: review #12 is closed",
+        ))
+        .stdout(predicates::str::contains(
+            "cleanup complete: 0 cleaned, 2 skipped",
+        ));
+
+    assert!(
+        repo.git(["branch", "--list", "feature/a"])
+            .contains("feature/a")
+    );
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "feature/a"
+    );
+
+    // Then try with the config option set
+    repo.git(["config", "stk.cleanClosed", "true"]);
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("will delete branch feature/a"))
+        .stdout(predicates::str::contains(
+            "cleanup complete: 1 cleaned, 1 skipped",
+        ));
+
+    assert!(
+        !repo
+            .git(["branch", "--list", "feature/a"])
+            .contains("feature/a")
+    );
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "main"
+    );
+}
+
+#[test]
 fn cleanup_dry_run_keeps_branch() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);

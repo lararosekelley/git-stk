@@ -77,7 +77,7 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
             continue;
         };
 
-        if review.state != ReviewState::Merged {
+        if !review.state.should_cleanup() {
             anstream::println!(
                 "{}",
                 style::dim(&format!(
@@ -207,7 +207,6 @@ pub(crate) fn cleanup_merged_branch(
             }
         }
     }
-
     anstream::println!(
         "{} detach {}",
         if dry_run { "would" } else { "will" },
