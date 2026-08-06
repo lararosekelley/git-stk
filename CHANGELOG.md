@@ -8,6 +8,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ### Added
 
+- **cleanup:** `stk.cleanClosed` has `sync` and `cleanup` clean up branches
+  whose review was closed without merging, not just merged ones.
 - **nav:** `up` and `down` take an optional distance - `git stk up 3`,
   `git stk down 2` - walking that many branches and prompting at each fork the
   way `top` does. A distance past the end of the stack fails naming how far you

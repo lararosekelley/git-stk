@@ -7,16 +7,20 @@ use crate::completions;
 use crate::providers::{
     ReviewProvider, ReviewState, detect_review_provider, owned_review_for_branch,
 };
+use crate::settings;
 use crate::style;
 use crate::{git, stack};
 
-/// Clean up local metadata for merged review requests and delete their
+/// Clean up local metadata for finished review requests and delete their
 /// branches.
 ///
-/// Unlike `merge`, this does not prompt: it only ever deletes branches whose
-/// review is *merged*, so the work is already in the trunk and the ref is
-/// recoverable from the reflog - the same reason `sync` deletes merged
-/// branches unprompted. `--dry-run` previews and `--keep-branch` retains them.
+/// Unlike `merge`, this does not prompt: a merged branch's work is already in
+/// the trunk and the ref is recoverable from the reflog (and `git stk undo`) -
+/// the same reason `sync` deletes merged branches unprompted. Under
+/// `stk.cleanClosed` it also cleans up branches whose review was closed without
+/// merging; those commits are upstream nowhere, so the deletion says as much
+/// and their children keep them. `--dry-run` previews and `--keep-branch`
+/// retains them.
 #[derive(Debug, clap::Args)]
 pub struct Cleanup {
     /// Branch to clean up (defaults to the current branch).
@@ -25,9 +29,30 @@ pub struct Cleanup {
     /// Print what would change without updating local metadata.
     #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
-    /// Keep cleaned merged branches instead of deleting them.
+    /// Keep cleaned branches instead of deleting them.
     #[arg(long, action = ArgAction::SetTrue)]
     keep_branch: bool,
+}
+
+/// Whether the branch being cleaned up reached the trunk. A merged branch's
+/// commits are upstream, so its children's fork points can be pinned past
+/// them; a closed branch's commits live nowhere else, so its children have to
+/// keep them.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Landing {
+    Merged,
+    Closed,
+}
+
+/// Which reviews `cleanup` and `sync` act on: merged always, closed only under
+/// `stk.cleanClosed` - for some workflows closing a review means the branch is
+/// done too. `None` is a review to leave alone.
+pub(crate) fn landing_for(state: &ReviewState, clean_closed: bool) -> Option<Landing> {
+    match state {
+        ReviewState::Merged => Some(Landing::Merged),
+        ReviewState::Closed if clean_closed => Some(Landing::Closed),
+        _ => None,
+    }
 }
 
 impl Run for Cleanup {
@@ -44,6 +69,7 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
     let current_branch = git::current_branch()?;
     let local_branches = git::local_branches()?;
     let (provider, review_provider) = detect_review_provider()?;
+    let clean_closed = settings::bool_setting(settings::CLEAN_CLOSED_KEY)?;
     let mut cleaned = 0;
     let mut skipped = 0;
     let mut retargeted = 0;
@@ -60,11 +86,16 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
     crate::notes::update_stack_notes(review_provider.as_ref(), &branch_parents, dry_run, false)?;
 
     for branch in branches {
-        retargeted +=
-            recover_deleted_parent(review_provider.as_ref(), &branch, &local_branches, dry_run)?;
-        // Closed-inclusive so a review closed without merging gets a
-        // truthful skip instead of "no review found". Only merged reviews
-        // are ever cleaned: a closed review's work is not in the trunk.
+        retargeted += recover_deleted_parent(
+            review_provider.as_ref(),
+            &branch,
+            &local_branches,
+            clean_closed,
+            dry_run,
+        )?;
+        // Closed-inclusive so a review closed without merging gets a truthful
+        // skip instead of "no review found" - and so `stk.cleanClosed` can act
+        // on it.
         let Some(review) = review_provider.review_for_branch_including_closed(&branch)? else {
             anstream::println!(
                 "{}",
@@ -77,7 +108,7 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
             continue;
         };
 
-        if !review.state.should_cleanup() {
+        let Some(landing) = landing_for(&review.state, clean_closed) else {
             anstream::println!(
                 "{}",
                 style::dim(&format!(
@@ -87,10 +118,10 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
             );
             skipped += 1;
             continue;
-        }
+        };
 
-        cleanup_merged_branch(review_provider.as_ref(), &branch, dry_run)?;
-        cleanup_branch_deletion(&branch, &current_branch, dry_run, !keep_branch)?;
+        cleanup_finished_branch(review_provider.as_ref(), &branch, landing, dry_run)?;
+        cleanup_branch_deletion(&branch, &current_branch, landing, dry_run, !keep_branch)?;
         cleaned += 1;
     }
 
@@ -108,14 +139,14 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
     Ok(())
 }
 
-/// A merged parent deleted remotely (and pruned locally) leaves `branch`
-/// pointing at nothing, but the merged review still remembers its base.
-/// Retarget past the gap; the recorded fork point stays valid because it
-/// lives in the branch's own history. Returns how many branches moved.
+/// A finished parent deleted remotely (and pruned locally) leaves `branch`
+/// pointing at nothing, but the review still remembers its base. Retarget past
+/// the gap. Returns how many branches moved.
 fn recover_deleted_parent(
     review_provider: &dyn ReviewProvider,
     branch: &str,
     local_branches: &[String],
+    clean_closed: bool,
     dry_run: bool,
 ) -> Result<usize> {
     let Some(parent) = stack::parent_of(branch)? else {
@@ -130,20 +161,29 @@ fn recover_deleted_parent(
     let Ok(Some(review)) = owned_review_for_branch(review_provider, &parent) else {
         return Ok(0);
     };
-    if review.state != ReviewState::Merged
-        || review.base == *branch
-        || !local_branches.contains(&review.base)
-    {
+    let Some(landing) = landing_for(&review.state, clean_closed) else {
+        return Ok(0);
+    };
+    if review.base == *branch || !local_branches.contains(&review.base) {
         return Ok(0);
     }
 
-    anstream::println!(
-        "{}: parent {} is gone, but review {} merged into {}",
-        style::branch(branch),
-        style::branch(&parent),
-        review.id,
-        style::branch(&review.base)
-    );
+    match landing {
+        Landing::Merged => anstream::println!(
+            "{}: parent {} is gone, but review {} merged into {}",
+            style::branch(branch),
+            style::branch(&parent),
+            review.id,
+            style::branch(&review.base)
+        ),
+        Landing::Closed => anstream::println!(
+            "{}: parent {} is gone; review {} was closed against {}",
+            style::branch(branch),
+            style::branch(&parent),
+            review.id,
+            style::branch(&review.base)
+        ),
+    }
     anstream::println!(
         "{} retarget {} -> {}",
         if dry_run { "would" } else { "will" },
@@ -152,14 +192,25 @@ fn recover_deleted_parent(
     );
     update_child_review_base(review_provider, branch, &review.base, dry_run)?;
     if !dry_run {
+        // A merged parent's fork point stays valid: it lives in this branch's
+        // own history and its commits are upstream. A closed parent's commits
+        // survive only here, so a fork point recorded off it would make the
+        // restack drop them.
+        if landing == Landing::Closed {
+            stack::unset_base(branch)?;
+        }
         stack::set_parent(branch, &review.base)?;
     }
     Ok(1)
 }
 
-pub(crate) fn cleanup_merged_branch(
+/// Retarget a finished branch's children onto its parent, then detach the
+/// branch itself. The children's recorded fork points depend on `landing`: see
+/// [`Landing`].
+pub(crate) fn cleanup_finished_branch(
     review_provider: &dyn ReviewProvider,
     branch: &str,
+    landing: Landing,
     dry_run: bool,
 ) -> Result<()> {
     let parent = stack::parent_of(branch)?;
@@ -185,11 +236,21 @@ pub(crate) fn cleanup_merged_branch(
                 );
                 update_child_review_base(review_provider, &child, parent, dry_run)?;
                 if !dry_run {
-                    // Record the fork point off the merged branch before
-                    // retargeting, so the next restack replays only the
-                    // child's own commits even after a squash merge.
-                    if let Ok(base) = git::merge_base(branch, &child) {
-                        stack::set_base(&child, &base)?;
+                    match landing {
+                        // Record the fork point off the merged branch before
+                        // retargeting, so the next restack replays only the
+                        // child's own commits even after a squash merge.
+                        Landing::Merged => {
+                            if let Ok(base) = git::merge_base(branch, &child) {
+                                stack::set_base(&child, &base)?;
+                            }
+                        }
+                        // A closed branch's commits landed nowhere, and the
+                        // child was written on top of them: drop the fork
+                        // point so the restack replays everything the child
+                        // has that its new parent lacks, closed commits
+                        // included.
+                        Landing::Closed => stack::unset_base(&child)?,
                     }
                     stack::set_parent(&child, parent)?;
                 }
@@ -223,6 +284,7 @@ pub(crate) fn cleanup_merged_branch(
 pub(crate) fn cleanup_branch_deletion(
     branch: &str,
     current_branch: &str,
+    landing: Landing,
     dry_run: bool,
     delete_branch: bool,
 ) -> Result<()> {
@@ -285,8 +347,15 @@ pub(crate) fn cleanup_branch_deletion(
         }
     }
 
+    // A closed branch's commits are in no other branch, so say so on the way
+    // out and name the way back: the snapshot `undo` restores is the only
+    // handle most people will have.
+    let caveat = match landing {
+        Landing::Merged => String::new(),
+        Landing::Closed => style::dim(" (closed, not merged - `git stk undo` restores it)"),
+    };
     anstream::println!(
-        "{} delete branch {}",
+        "{} delete branch {}{caveat}",
         if dry_run { "would" } else { "will" },
         style::branch(branch)
     );
