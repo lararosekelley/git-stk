@@ -276,10 +276,10 @@ Branches without reviews degrade to plain names, so both work before submitting 
 Navigation and re-stacking:
 
 ```sh
-git stk up [branch]   # towards the top of the stack (children; picker at forks)
-git stk down          # towards the trunk (parent)
-git stk top           # jump to the leaf of the stack
-git stk bottom        # jump to the branch just above the trunk
+git stk up [branch | n]   # towards the top of the stack (children; picker at forks)
+git stk down [n]          # towards the trunk (parent)
+git stk top               # jump to the leaf of the stack
+git stk bottom            # jump to the branch just above the trunk
 git stk restack [--fetch | --no-fetch] [--update-refs | --no-update-refs] [--push | --no-push] [--dry-run]
 git stk run [--fail-fast] [--no-worktree] -- <command>   # run a command on each branch, bottom-up
 git stk absorb [--dry-run] [--include-unstaged]
@@ -287,6 +287,10 @@ git stk continue
 git stk abort
 git stk undo
 ```
+
+`up` and `down` also take a distance: `git stk up 3` climbs three branches, prompting at any fork on the
+way, and `git stk down 2` drops two. A distance that would walk past the end of the stack is an error
+naming how far you could actually go, rather than a silent stop short of it.
 
 `run` executes the command against each branch bottom-up (e.g. `git stk run -- cargo test`), printing a
 per-branch pass/fail summary and exiting non-zero if any branch failed - a quick way to confirm each PR is

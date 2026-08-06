@@ -4,6 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.11.3
+
+### Added
+
+- **nav:** `up` and `down` take an optional distance - `git stk up 3`,
+  `git stk down 2` - walking that many branches and prompting at each fork the
+  way `top` does. A distance past the end of the stack fails naming how far you
+  could actually go, and one below 1 is rejected up front.
+
 ## 0.11.2
 
 ### Added
