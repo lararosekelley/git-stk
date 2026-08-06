@@ -1,16 +1,20 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Result, bail};
 use clap::ArgAction;
 
 use crate::cli::{FetchMode, PushMode, UpdateRefsMode};
 use crate::commands::Run;
-use crate::commands::cleanup::{cleanup_branch_deletion, cleanup_merged_branch};
+use crate::commands::cleanup::{
+    Landing, cleanup_branch_deletion, cleanup_finished_branch, landing_for,
+};
 use crate::providers::{ReviewState, detect_review_provider};
 use crate::settings;
 use crate::style;
 use crate::{git, stack};
 
 /// Sync the stack with remote state: fetch the trunk, refresh metadata from
-/// reviews, clean up merged branches, then restack and push.
+/// reviews, clean up finished branches, then restack and push.
 #[derive(Debug, clap::Args)]
 pub struct Sync {
     /// Print what would change without changing anything.
@@ -87,8 +91,12 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     };
 
     // 3. Classify every branch: refresh metadata from open reviews, collect
-    //    merged ones for cleanup.
-    let mut merged = Vec::new();
+    //    the finished ones for cleanup - merged, plus closed under
+    //    `stk.cleanClosed`. `closed` tracks which of them never reached the
+    //    trunk, since that changes both the cleanup and the final report.
+    let clean_closed = settings::bool_setting(settings::CLEAN_CLOSED_KEY)?;
+    let mut finished = Vec::new();
+    let mut closed = BTreeSet::new();
     let mut synced = 0;
     let mut skipped = 0;
 
@@ -119,22 +127,23 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             continue;
         }
 
-        if review.state.should_cleanup() {
+        if let Some(landing) = landing_for(&review.state, clean_closed) {
             anstream::println!(
                 "{}: review {} is {}",
                 style::branch(branch),
                 review.id,
                 style::state(&review.state)
             );
-            merged.push(branch.clone());
+            finished.push(branch.clone());
+            if landing == Landing::Closed {
+                closed.insert(branch.clone());
+            }
             continue;
         }
 
         // A closed review's base is dead state: surface it, but never let
         // it drive the stack metadata.
-        if review.state == ReviewState::Closed
-            && !settings::bool_setting(settings::CLEAN_CLOSED_KEY)?
-        {
+        if review.state == ReviewState::Closed {
             anstream::println!(
                 "{}",
                 style::dim(&format!(
@@ -146,14 +155,14 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             continue;
         }
 
-        // If this branch's parent merged in this same sync, leave its retarget
-        // to cleanup_merged_branch (step 6): it pins the fork point off the
-        // merged parent so the restack drops squash-merged commits instead of
-        // replaying them. Recording a base off the new parent here would lose
-        // that fork point - the provider may have already retargeted the review
-        // to the trunk (GitLab does this when the parent branch is deleted).
+        // If this branch's parent finished in this same sync, leave its retarget
+        // to cleanup_finished_branch (step 6): it decides the fork point from
+        // how the parent ended - pinned past a squash merge, dropped for a
+        // closed branch. Recording a base off the new parent here would lose
+        // that - the provider may have already retargeted the review to the
+        // trunk (GitLab does this when the parent branch is deleted).
         if let Some(parent) = stack::parent_of(branch)?
-            && merged.contains(&parent)
+            && finished.contains(&parent)
         {
             continue;
         }
@@ -192,14 +201,14 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
 
     let survivors: Vec<String> = branches
         .iter()
-        .filter(|branch| !merged.contains(branch))
+        .filter(|branch| !finished.contains(branch))
         .cloned()
         .collect();
 
     // 5. Move off any branch that is about to be deleted, onto the first
     //    survivor (the new stack bottom) or the trunk.
     let mut position = current.clone();
-    if merged.contains(&current) {
+    if finished.contains(&current) {
         let target = survivors
             .first()
             .cloned()
@@ -208,9 +217,9 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         let held = git::worktree_holding(&target)?;
         if let Some(path) = held {
             // The place to land lives in another worktree. Staying put is not a
-            // failure - the merge already happened - and it leaves `position` on
-            // the merged branch, so the deletion below keeps it, which is right:
-            // it is still checked out right here.
+            // failure - the review is already finished - and it leaves
+            // `position` on that branch, so the deletion below keeps it, which
+            // is right: it is still checked out right here.
             anstream::println!(
                 "{}",
                 style::warn(&format!(
@@ -227,10 +236,15 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         }
     }
 
-    // 6. Clean up the merged branches: retarget children, then delete.
-    for branch in &merged {
-        cleanup_merged_branch(review_provider.as_ref(), branch, dry_run)?;
-        cleanup_branch_deletion(branch, &position, dry_run, true)?;
+    // 6. Clean up the finished branches: retarget children, then delete.
+    for branch in &finished {
+        let landing = if closed.contains(branch) {
+            Landing::Closed
+        } else {
+            Landing::Merged
+        };
+        cleanup_finished_branch(review_provider.as_ref(), branch, landing, dry_run)?;
+        cleanup_branch_deletion(branch, &position, landing, dry_run, true)?;
     }
 
     // 7. Restack the remainder (and push, per flags/config).
@@ -263,10 +277,14 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         },
         None => {
             let base = trunk.unwrap_or(root);
-            anstream::println!(
-                "{}",
-                style::success(&format!("stack complete: everything merged into {base}"))
-            );
+            // Only claim a merge when there was one: a stack cleaned up under
+            // `stk.cleanClosed` may have been closed rather than landed.
+            let ending = if closed.is_empty() {
+                format!("stack complete: everything merged into {base}")
+            } else {
+                format!("stack complete: nothing left above {base} - merged or closed")
+            };
+            anstream::println!("{}", style::success(&ending));
         }
     }
 

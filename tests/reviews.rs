@@ -518,7 +518,7 @@ fn sync_styles_closed_reviews_in_the_stack_overview() {
     repo.stack().args(["new", "feature/b"]).assert().success();
 
     // feature/b's review was closed on the platform: invisible to the sync
-    // classification (without specifying cleanClosed in the config), but the overview must show it red rather than drop it.
+    // classification, but the overview must show it red rather than drop it.
     let fake = FakeProvider::new()
         .on("pr view 12", r#"{"body":""}"#)
         .on("pr view 13", r#"{"body":""}"#)
@@ -547,7 +547,7 @@ fn sync_styles_closed_reviews_in_the_stack_overview() {
         .stdout(predicates::str::contains("updated stack note in #12"))
         .stdout(predicates::str::contains("updated stack note in #13"));
 
-    // The closed review never drives metadata (when cleanClosed is false): the parent stays put.
+    // The closed review never drives metadata: the parent stays put.
     assert_eq!(
         repo.git(["config", "--get", "branch.feature/b.stkParent"]),
         "feature/a"
@@ -607,6 +607,96 @@ fn sync_cleans_up_closed_reviews_in_the_stack_overview_when_configured() {
             "- \u{1F7E2} [A work (#12)](https://github.com/owner/repo/pull/12) \u{1F448}"
         )
     );
+}
+
+/// A closed branch's commits are upstream nowhere, so cleaning it up must not
+/// pin its child's fork point past them the way a squash merge allows: the
+/// child was written on top of that work and has to keep it.
+#[test]
+fn sync_keeps_a_closed_parents_commits_in_its_child() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.cleanClosed", "true"]);
+
+    // main -> feature/a (a.txt) -> feature/b (b.txt), with real commits.
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // feature/a's review was closed, never merged: nothing of a.txt is in main.
+    let fake = FakeProvider::new()
+        .on("pr view 12", r#"{"body":""}"#)
+        .on("pr view 13", r#"{"body":""}"#)
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        .record("pr edit 13 --body", "edit-body-13.txt", "")
+        .on(
+            "feature/a --state closed",
+            r##"[{"number":12,"state":"CLOSED","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##,
+        )
+        .on("feature/a", "[]")
+        .on(
+            "feature/b",
+            r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/13","title":"B work"}]"##,
+        )
+        .on("pr edit", "updated review")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("feature/a: review #12 is closed"))
+        // The deletion says what it is, and where the branch went.
+        .stdout(predicates::str::contains(
+            "will delete branch feature/a (closed, not merged - `git stk undo` restores it)",
+        ));
+
+    // feature/b sits on main now, carrying both its own work and the closed
+    // parent's - the whole point.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "main"
+    );
+    let files = repo.git(["ls-tree", "-r", "--name-only", "feature/b"]);
+    assert!(
+        files.contains("a.txt"),
+        "closed parent's file gone: {files}"
+    );
+    assert!(files.contains("b.txt"), "child's own file gone: {files}");
+    assert_eq!(repo.git(["show", "feature/b:a.txt"]), "a");
+}
+
+/// Nothing merged, so the closing line must not claim a merge.
+#[test]
+fn sync_does_not_report_a_merge_when_the_stack_was_only_closed() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.cleanClosed", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+
+    let fake = FakeProvider::new()
+        .on("pr view 12", r#"{"body":""}"#)
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        .on(
+            "feature/a --state closed",
+            r##"[{"number":12,"state":"CLOSED","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##,
+        )
+        .on("feature/a", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "stack complete: nothing left above main - merged or closed",
+        ))
+        .stdout(predicates::str::contains("everything merged into").not());
 }
 
 #[test]

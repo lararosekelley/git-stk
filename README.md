@@ -349,9 +349,15 @@ or `stack complete` when the loop is done. After squash-merging a PR, `git stk s
 you need.
 
 `cleanup` does the branch-deletion half on demand: it removes the local branches whose reviews have
-merged (retargeting any children first). It deletes without a prompt - unlike `merge` - because it only
-touches _merged_ branches, whose work is already in the trunk and whose ref the reflog still holds (and
-`git stk undo` recreates them); `--dry-run` previews and `--keep-branch` retains them.
+merged (retargeting any children first). It deletes without a prompt - unlike `merge` - because a
+_merged_ branch's work is already in the trunk and its ref is still in the reflog (and `git stk undo`
+recreates it); `--dry-run` previews and `--keep-branch` retains them.
+
+With `git config stk.cleanClosed true`, `sync` and `cleanup` also clean up branches whose review was
+_closed_ without merging - handy if closing a PR means you are done with the branch. Those commits are
+in no other branch, so git-stk treats them accordingly: the deletion line says `(closed, not merged)`
+and points at `git stk undo`, and children keep the closed branch's commits rather than having them
+dropped by the next restack (a merged parent's are dropped, because the trunk already has them).
 
 `merge` merges the review at the bottom of the stack via the provider CLI (strategy from
 `stk.mergeStrategy`; squash by default), confirming first unless `-y` is passed, then runs the full `sync`
@@ -499,6 +505,9 @@ Everything is optional; defaults shown below:
     pushOnSubmit = true
     ; Bare `submit` submits the whole stack instead of one branch. Default: false.
     submitStack = true
+    ; `sync` and `cleanup` also clean up branches whose review was closed
+    ; without merging, not just merged ones. Default: false.
+    cleanClosed = true
     ; Strategy for `merge`: squash, rebase, or merge. Default: squash.
     mergeStrategy = squash
     ; `merge --all` waits for each review's checks before merging it. Default: false.

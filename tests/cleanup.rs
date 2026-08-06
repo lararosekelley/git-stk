@@ -292,9 +292,8 @@ fn cleanup_deletes_closed_branch_only_with_config_set() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     repo.stack().args(["new", "feature/a"]).assert().success();
-    // Real commits + a squash merge: feature/a's commits are NOT
-    // ancestry-merged into main afterwards, so `git branch -d` would refuse.
-    // Deletion must trust the provider-verified merge state instead.
+    // Real commits, none of them ancestry-merged into main, so `git branch -d`
+    // would refuse: deletion trusts the provider-verified review state.
     repo.commit_file("a.txt", "one\n", "parent change one");
     repo.commit_file("a.txt", "one\ntwo\n", "parent change two");
     repo.stack().args(["new", "feature/b"]).assert().success();
@@ -336,7 +335,9 @@ fn cleanup_deletes_closed_branch_only_with_config_set() {
         .args(["cleanup", "feature/a"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("will delete branch feature/a"))
+        .stdout(predicates::str::contains(
+            "will delete branch feature/a (closed, not merged - `git stk undo` restores it)",
+        ))
         .stdout(predicates::str::contains(
             "cleanup complete: 1 cleaned, 1 skipped",
         ));
@@ -349,6 +350,14 @@ fn cleanup_deletes_closed_branch_only_with_config_set() {
     assert_eq!(
         repo.git(["config", "--get", "branch.feature/b.stkParent"]),
         "main"
+    );
+    // No fork point pinned past the closed parent: feature/b's next restack has
+    // to replay the closed commits it was built on, not drop them.
+    assert!(
+        !repo
+            .git_status(["config", "--get", "branch.feature/b.stkBase"])
+            .status
+            .success()
     );
 }
 

@@ -115,14 +115,6 @@ pub enum ReviewState {
     Unknown(String),
 }
 
-impl ReviewState {
-    pub fn should_cleanup(&self) -> bool {
-        *self == ReviewState::Merged
-            || (*self == ReviewState::Closed
-                && settings::bool_setting(settings::CLEAN_CLOSED_KEY).unwrap_or(false))
-    }
-}
-
 /// A structural reason the platform won't merge a review, read from its API
 /// rather than its error text - so a wording change can't silently reclassify
 /// a real failure. `None` means nothing structural blocks the merge, or the
