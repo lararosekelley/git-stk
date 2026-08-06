@@ -119,10 +119,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             continue;
         }
 
-        if review.state == ReviewState::Merged
-            || (review.state == ReviewState::Closed
-                && settings::bool_setting(settings::CLEAN_CLOSED_KEY)?)
-        {
+        if review.state.should_cleanup() {
             anstream::println!(
                 "{}: review {} is {}",
                 style::branch(branch),
