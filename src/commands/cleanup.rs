@@ -78,8 +78,8 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
         };
 
         if review.state != ReviewState::Merged
-            || (review.state == ReviewState::Closed
-                && !settings::bool_setting(settings::CLEAN_CLOSED_KEY)?)
+            && (review.state != ReviewState::Closed
+                || !settings::bool_setting(settings::CLEAN_CLOSED_KEY)?)
         {
             anstream::println!(
                 "{}",
