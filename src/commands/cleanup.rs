@@ -72,6 +72,7 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
     let clean_closed = settings::bool_setting(settings::CLEAN_CLOSED_KEY)?;
     let mut cleaned = 0;
     let mut skipped = 0;
+    let mut kept = 0;
     let mut retargeted = 0;
 
     // Snapshot before any branch is retargeted or deleted.
@@ -120,11 +121,29 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
             continue;
         };
 
+        // `--keep-branch` keeps the ref on purpose, so the deletion guards do
+        // not apply: clean the metadata and stop there. Otherwise a ref that
+        // cannot go yet keeps its metadata too, and stays in the stack.
+        if !keep_branch && let Some(reason) = deletion_blocker(&branch, &current_branch)? {
+            report_kept(&branch, &reason);
+            kept += 1;
+            continue;
+        }
+
         cleanup_finished_branch(review_provider.as_ref(), &branch, landing, dry_run)?;
-        cleanup_branch_deletion(&branch, &current_branch, landing, dry_run, !keep_branch)?;
+        if !keep_branch {
+            cleanup_branch_deletion(&branch, landing, dry_run)?;
+        }
         cleaned += 1;
     }
 
+    // Only mention the extras when there are any, so the common line stays
+    // short.
+    let kept_note = if kept > 0 {
+        format!(", {kept} kept")
+    } else {
+        String::new()
+    };
     let retargeted_note = if retargeted > 0 {
         format!(", {retargeted} retargeted")
     } else {
@@ -133,7 +152,7 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
     anstream::println!(
         "{}",
         style::success(&format!(
-            "cleanup complete: {cleaned} cleaned, {skipped} skipped{retargeted_note}"
+            "cleanup complete: {cleaned} cleaned, {skipped} skipped{kept_note}{retargeted_note}"
         ))
     );
     Ok(())
@@ -281,61 +300,62 @@ pub(crate) fn cleanup_finished_branch(
     Ok(())
 }
 
-pub(crate) fn cleanup_branch_deletion(
-    branch: &str,
-    current_branch: &str,
-    landing: Landing,
-    dry_run: bool,
-    delete_branch: bool,
-) -> Result<()> {
-    if !delete_branch {
-        return Ok(());
-    }
-
+/// Why `branch`'s ref cannot go yet, or `None` when it can. Asked *before*
+/// anything is written: a branch that has to stay keeps its stack metadata too,
+/// so it stays in the stack for a later cleanup rather than being silently
+/// unstacked.
+pub(crate) fn deletion_blocker(branch: &str, current_branch: &str) -> Result<Option<String>> {
     // The checked out branch cannot be deleted; keep it and let the user
     // switch away instead of failing the rest of the cleanup.
     if branch == current_branch {
-        anstream::println!(
-            "{}",
-            style::dim(&format!(
-                "kept {branch}: cannot delete the checked out branch"
-            ))
-        );
-        return Ok(());
+        return Ok(Some("cannot delete the checked out branch".to_owned()));
     }
 
     // Nor can a branch another worktree holds - but a worktree git-stk created
-    // for this branch is ours to remove, and must go first: git refuses to
-    // delete a branch a worktree still holds.
-    if let Some(path) = git::worktree_holding(branch)? {
-        let ours = stack::owned_worktree(branch).is_some_and(|owned| git::same_path(&owned, &path));
-        if !ours {
-            // The user's own worktree. Naming where it lives keeps the rest of
-            // the cleanup running - a landed stack should not stop halfway
-            // because one branch has a worktree parked on it.
-            anstream::println!(
-                "{}",
-                style::dim(&format!(
-                    "kept {branch}: checked out in the worktree at {}",
-                    git::display_path(&path)
-                ))
-            );
-            return Ok(());
-        }
+    // for this branch is ours to remove.
+    let Some(path) = git::worktree_holding(branch)? else {
+        return Ok(None);
+    };
+    if !stack::owned_worktree(branch).is_some_and(|owned| git::same_path(&owned, &path)) {
+        // The user's own worktree. Naming where it lives keeps the rest of the
+        // cleanup running - a landed stack should not stop halfway because one
+        // branch has a worktree parked on it.
+        return Ok(Some(format!(
+            "checked out in the worktree at {}",
+            git::display_path(&path)
+        )));
+    }
+    // Ours, but not ours to throw away: uncommitted work in it is not covered
+    // by any snapshot.
+    if git::worktree_has_changes(&path) {
+        return Ok(Some(format!(
+            "its worktree at {} has uncommitted changes",
+            git::display_path(&path)
+        )));
+    }
+    Ok(None)
+}
 
-        // Ours, but not ours to throw away: uncommitted work in it is not
-        // covered by any snapshot, so keep it and say so.
-        if git::worktree_has_changes(&path) {
-            anstream::println!(
-                "{}",
-                style::dim(&format!(
-                    "kept {branch}: its worktree at {} has uncommitted changes",
-                    git::display_path(&path)
-                ))
-            );
-            return Ok(());
-        }
+/// Report a finished branch whose ref stays for now, and why.
+pub(crate) fn report_kept(branch: &str, reason: &str) {
+    anstream::println!(
+        "{}",
+        style::dim(&format!(
+            "kept {branch}: {reason} - still stacked, so a later cleanup can finish it"
+        ))
+    );
+}
 
+/// Delete `branch`, removing the worktree git-stk made for it first: git refuses
+/// to delete a branch a worktree still holds. Call [`deletion_blocker`] first -
+/// this assumes the ref is free to go.
+pub(crate) fn cleanup_branch_deletion(branch: &str, landing: Landing, dry_run: bool) -> Result<()> {
+    if let Some(path) = stack::owned_worktree(branch).filter(|owned| {
+        git::worktree_holding(branch)
+            .ok()
+            .flatten()
+            .is_some_and(|held| git::same_path(owned, &held))
+    }) {
         anstream::println!(
             "{} remove worktree {}",
             if dry_run { "would" } else { "will" },

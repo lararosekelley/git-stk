@@ -398,20 +398,27 @@ fn cleanup_keeps_the_checked_out_branch() {
         .fallback("[]")
         .install(&repo);
 
+    // Nothing was cleaned: the ref stays, so its metadata stays with it and the
+    // branch is still in the stack for a later run.
     repo.stack_faked(&fake)
         .args(["cleanup", "feature/a"])
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "kept feature/a: cannot delete the checked out branch",
+            "kept feature/a: cannot delete the checked out branch \
+             - still stacked, so a later cleanup can finish it",
         ))
         .stdout(predicates::str::contains(
-            "cleanup complete: 1 cleaned, 0 skipped",
+            "cleanup complete: 0 cleaned, 0 skipped, 1 kept",
         ));
 
     assert!(
         repo.git(["branch", "--list", "feature/a"])
             .contains("feature/a")
+    );
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
     );
 }
 

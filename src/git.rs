@@ -138,6 +138,13 @@ pub fn worktree_holding(branch: &str) -> Result<Option<std::path::PathBuf>> {
         .map(|(_, path)| path))
 }
 
+/// Whether this command is running inside a linked worktree rather than the
+/// main checkout. Best effort: an unreadable root reads as the main worktree,
+/// which is where most runs happen.
+pub fn in_linked_worktree() -> bool {
+    repo_root().is_ok_and(|root| !is_main_worktree(&root))
+}
+
 /// Whether `path` is the repo's main worktree. Worth telling apart because
 /// `git worktree remove` refuses on it, so any advice that would free a branch
 /// by removing its worktree is a dead end there.

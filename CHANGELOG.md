@@ -4,6 +4,23 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.11.4
+
+### Fixed
+
+- **cleanup:** a finished branch whose ref has to stay - it is checked out, or a
+  worktree holds it, or its own worktree has uncommitted work - now keeps its
+  stack metadata as well, so it stays in the stack for a later cleanup instead
+  of quietly dropping out of it. `cleanup` counts it as `kept` rather than
+  `cleaned`; `--keep-branch` still cleans the metadata, since keeping the ref is
+  the point there.
+- **sync:** running `sync` (or `merge`) from inside a linked worktree no longer
+  checks the trunk out there when nothing else holds it. That repointed a
+  checkout made for one branch, and - the branch no longer being held - let the
+  deletion take it, leaving the worktree behind with no branch and no ownership
+  marker, so nothing could ever clean it up. It now stays put and keeps the
+  branch, and `git stk cleanup <branch>` from the main checkout removes both.
+
 ## 0.11.3
 
 ### Added
