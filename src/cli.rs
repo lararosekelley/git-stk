@@ -63,6 +63,19 @@ pub enum Command {
     Credits(commands::credits::Credits),
 }
 
+/// How many branches an `up`/`down` should move. Zero lands where you already
+/// are and the other direction is the other command's job, so neither is a
+/// distance.
+pub fn parse_distance(value: &str) -> Result<usize, String> {
+    match value.parse::<i64>() {
+        Ok(distance) if distance >= 1 => Ok(usize::try_from(distance).unwrap_or(usize::MAX)),
+        Ok(_) => {
+            Err("a distance is 1 or more branches - the other way is the other command".into())
+        }
+        Err(_) => Err("expected a number of branches".into()),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum UpdateRefsMode {
     Config,

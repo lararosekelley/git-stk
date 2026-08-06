@@ -249,6 +249,114 @@ fn up_picker_chooses_among_multiple_children() {
 }
 
 #[test]
+fn up_and_down_walk_a_given_number_of_branches() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.stack().args(["new", "feature/c"]).assert().success();
+
+    repo.stack()
+        .args(["down", "2"])
+        .assert()
+        .success()
+        .stdout("switched to feature/a\n");
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
+
+    repo.stack()
+        .args(["up", "2"])
+        .assert()
+        .success()
+        .stdout("switched to feature/c\n");
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/c");
+
+    // A distance of one is the plain command.
+    repo.stack().args(["down", "1"]).assert().success();
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/b");
+}
+
+#[test]
+fn up_and_down_reject_a_distance_past_the_end_of_the_stack() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    repo.stack()
+        .args(["down", "5"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "cannot go down 5: feature/b is only 2 branches above main",
+        ));
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/b");
+
+    repo.git(["switch", "main"]);
+    repo.stack()
+        .args(["up", "5"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "cannot go up 5: main is only 2 branches below feature/b",
+        ));
+    assert_eq!(repo.git(["branch", "--show-current"]), "main");
+}
+
+#[test]
+fn up_and_down_reject_a_distance_below_one() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+
+    for args in [
+        vec!["up", "0"],
+        vec!["down", "0"],
+        vec!["up", "-2"],
+        vec!["down", "-2"],
+    ] {
+        repo.stack()
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(
+                "a distance is 1 or more branches",
+            ));
+    }
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
+}
+
+#[test]
+fn up_with_a_distance_prompts_at_each_fork() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.git(["switch", "feature/a"]);
+    repo.stack().args(["new", "feature/c"]).assert().success();
+    repo.git(["switch", "main"]);
+
+    // main -> feature/a, then the fork picker chooses feature/c.
+    repo.stack()
+        .args(["up", "2"])
+        .write_stdin("2\n")
+        .assert()
+        .success();
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/c");
+
+    // Declining the pick part-way names the branch the walk stopped on.
+    repo.git(["switch", "main"]);
+    repo.stack()
+        .args(["up", "2"])
+        .write_stdin("9\n")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "walk up from feature/a with `git stk up <branch>`",
+        ));
+    assert_eq!(repo.git(["branch", "--show-current"]), "main");
+}
+
+#[test]
 fn top_picker_resolves_the_fork_and_keeps_climbing() {
     let repo = TestRepo::new();
 

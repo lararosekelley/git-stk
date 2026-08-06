@@ -95,40 +95,66 @@ pub fn print_children(branch: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn checkout_parent(output: NavOutput) -> Result<()> {
-    let current = git::current_branch()?;
-    let Some(parent) = parent_of(&current)? else {
-        bail!("{current} has no stack parent");
-    };
-
-    navigate_to(&parent, output)
+/// "N branch(es)", for the errors of a walk that ran out of stack.
+fn branches(count: usize) -> String {
+    format!("{count} branch{}", if count == 1 { "" } else { "es" })
 }
 
-pub fn checkout_child(branch: Option<&str>, output: NavOutput) -> Result<()> {
+/// Walk `distance` branches down, towards the trunk.
+pub fn checkout_parent(distance: usize, output: NavOutput) -> Result<()> {
     let current = git::current_branch()?;
-    let children = children_of(&current)?;
-    let child = match (branch, children.as_slice()) {
-        (Some(branch), _) => {
-            if children.iter().any(|child| child == branch) {
-                branch.to_owned()
-            } else {
-                bail!("{branch} is not a stack child of {current}");
+    let mut at = current.clone();
+    for moved in 0..distance {
+        let Some(parent) = parent_of(&at)? else {
+            if moved == 0 {
+                bail!("{current} has no stack parent");
             }
-        }
-        (None, [child]) => child.to_owned(),
-        (None, []) => bail!("{current} has no stack children"),
-        (None, _) => {
-            match pick_child(
-                &format!("{current} has multiple stack children:"),
-                &children,
-            )? {
-                Some(child) => child,
-                None => bail!("choose one with `git stk up <branch>`"),
-            }
-        }
-    };
+            bail!(
+                "cannot go down {distance}: {current} is only {} above {at}",
+                branches(moved)
+            );
+        };
+        at = parent;
+    }
 
-    navigate_to(&child, output)
+    navigate_to(&at, output)
+}
+
+/// Walk `distance` branches up, towards the leaf, prompting at each fork the
+/// way `top` does. `up <branch>` names a child instead and always moves one.
+pub fn checkout_child(branch: Option<&str>, distance: usize, output: NavOutput) -> Result<()> {
+    let current = git::current_branch()?;
+    if let Some(branch) = branch {
+        let children = children_of(&current)?;
+        if !children.iter().any(|child| child == branch) {
+            bail!("{branch} is not a stack child of {current}");
+        }
+        return navigate_to(branch, output);
+    }
+
+    let mut at = current.clone();
+    for moved in 0..distance {
+        let children = children_of(&at)?;
+        match children.as_slice() {
+            [child] => at = child.clone(),
+            [] => {
+                if moved == 0 {
+                    bail!("{current} has no stack children");
+                }
+                bail!(
+                    "cannot go up {distance}: {current} is only {} below {at}",
+                    branches(moved)
+                );
+            }
+            _ => match pick_child(&format!("{at} has multiple stack children:"), &children)? {
+                Some(child) => at = child,
+                None if moved == 0 => bail!("choose one with `git stk up <branch>`"),
+                None => bail!("walk up from {at} with `git stk up <branch>`"),
+            },
+        }
+    }
+
+    navigate_to(&at, output)
 }
 
 /// Check out the leaf of the current stack, following single children. A
