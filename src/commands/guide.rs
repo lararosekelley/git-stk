@@ -169,15 +169,21 @@ fn intro(tour: &mut Tour) -> Result<()> {
     tour.say("`restack` rebases every descendant back onto its parent:");
     tour.stk(&["restack"])?;
     tour.stk(&["top"])?;
+    tour.say("`up` and `down` take a distance, so a tall stack is one hop:");
+    tour.stk(&["down", "2"])?;
+    tour.stk(&["up", "2"])?;
     if tour.pause()?.stop() {
         return Ok(());
     }
 
     tour.banner("4/5 - land the stack");
     tour.say("`merge --all` repeats merge-bottom-then-sync until the stack is");
-    tour.say("complete: children retarget, merged branches vanish, the overview");
+    tour.say("complete: children retarget, landed branches vanish, the overview");
     tour.say("in every review restyles as history accumulates:");
     tour.stk(&["merge", "--all", "-y"])?;
+    tour.say("Only merged reviews are cleaned up. If closing a review means you are");
+    tour.say("done with the branch too, `git config stk.cleanClosed true` has");
+    tour.say("`sync` and `cleanup` treat closed ones the same way.");
     if tour.pause()?.stop() {
         return Ok(());
     }
@@ -380,9 +386,11 @@ fn worktrees(tour: &mut Tour) -> Result<()> {
     tour.stk_fails(&["up"])?;
     tour.say("So navigation can print where to go instead, and let the shell move:");
     tour.note("cd \"$(git stk up --from-path)\"");
-    tour.say("Put that in a shell function and `up`/`down`/`top`/`bottom` follow the");
+    tour.say("`git stk setup --wrapper` wraps that in an `stk` shell function for");
+    tour.say("you, completions included, so `stk up`/`down`/`top`/`bottom` follow the");
     tour.say("branch wherever it lives - into a worktree, or an ordinary checkout");
-    tour.say("when it is here. The README has the snippet.");
+    tour.say("when it is here. Every other `stk` command falls through to `git stk`.");
+    tour.say("bash and zsh only; the README has the snippet to write by hand.");
     if tour.pause()?.stop() {
         return Ok(());
     }
@@ -418,6 +426,12 @@ fn worktrees(tour: &mut Tour) -> Result<()> {
     tour.say("Finally, ownership. git-stk removes the worktrees *it* created (from");
     tour.say("`new --worktree`) once their branch lands, and never touches one you");
     tour.say("made by hand - nor an owned one with uncommitted work still in it.");
+    tour.say("");
+    tour.say("One consequence worth knowing: land a review from inside that branch's");
+    tour.say("own worktree and the branch is kept, not deleted - it is checked out");
+    tour.say("right where you are standing. It stays in the stack, so `cd` to the");
+    tour.say("main checkout afterwards and `git stk cleanup <branch>` removes the");
+    tour.say("branch and its worktree together.");
     tour.finish()
 }
 
