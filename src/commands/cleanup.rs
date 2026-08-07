@@ -80,7 +80,7 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
         stack::snapshot("cleanup");
     }
 
-    // Refresh the stack overview ledger while the merged branches and their
+    // Refresh the stack overview ledger while the finished branches and their
     // reviews are still resolvable, so their entries get restyled rather
     // than dropped - mirroring sync.
     let branch_parents = stack::branch_parents(&branches)?;
