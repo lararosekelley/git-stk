@@ -35,13 +35,22 @@ impl ReviewProvider for GitHubProvider {
         list_review(branch, Some("closed"))
     }
 
-    fn create_review(&self, branch: &str, base: &str, draft: bool) -> Result<String> {
+    fn create_review(
+        &self,
+        branch: &str,
+        base: &str,
+        draft: bool,
+        title: Option<&str>,
+    ) -> Result<String> {
         // Like the glab and tea paths: the branch is already pushed, so set the
         // title and body explicitly from its tip commit. --fill would turn a
         // multi-commit branch into a bulleted dump of every commit subject,
         // which then renders awkwardly under git-stk's template and stack
         // overview; git-stk overwrites the body afterward regardless.
-        let title = git::commit_subject(branch)?;
+        let title = match title {
+            Some(title) => title.to_owned(),
+            None => git::commit_subject(branch)?,
+        };
         let body = git::commit_body(branch)?;
         let description = if body.trim().is_empty() {
             title.as_str()
@@ -68,6 +77,10 @@ impl ReviewProvider for GitHubProvider {
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String> {
         command_output("gh", &["pr", "edit", review.id_value(), "--base", base])
+    }
+
+    fn update_review_title(&self, review: &ReviewRequest, title: &str) -> Result<String> {
+        command_output("gh", &["pr", "edit", review.id_value(), "--title", title])
     }
 
     fn review_body(&self, review: &ReviewRequest) -> Result<String> {

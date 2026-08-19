@@ -178,8 +178,8 @@ git stk view [branch]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
 git stk repair [--dry-run | --from-remote]
-git stk submit [branch] [--no-stack] [-d <desc>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
-git stk submit [--stack | --no-stack | --downstack] [-d <desc>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--rebuild-overview] [--dry-run] [--push | --no-push]
+git stk submit [branch] [--no-stack] [-t <title>] [-d <desc>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
+git stk submit [--stack | --no-stack | --downstack] [-t <title>] [-d <desc>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--rebuild-overview] [--dry-run] [--push | --no-push]
 git stk cleanup [branch] [--dry-run] [--keep-branch]
 ```
 
@@ -260,6 +260,13 @@ GitHub/GitLab app that auto-links any branch or review whose name carries a tick
 (`eng-123-fix-thing`, `PROJ-456-thing`) and recognizes magic words (`Closes ENG-123`) in review bodies.
 Name your branches with the ticket key and the platform integration does the linking and closing; stk's
 own `Closes #N` step stays inert on those shapes, so the two never collide.
+
+`submit --title <text>` (or `-t`) names the review, for the current or named branch only - without it a
+new review takes the branch tip's commit subject, which is also what the platforms themselves default to.
+A review that does not exist yet is created under the title directly, so it is never briefly published
+under the commit subject; an existing one is retitled in place. On Gitea and GitLab, where draft state
+lives in the title (`WIP:`, `Draft:`), the prefix is carried forward, so retitling a draft never readies
+it. An empty `--title` is refused - every review needs a title, so there is nothing to clear.
 
 `submit --desc <text>` (or `-d`) writes a description block at the top of the review body, above the
 managed sections, for the current or named branch only. It sticks across resubmits until changed;

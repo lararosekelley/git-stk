@@ -232,10 +232,22 @@ pub trait ReviewProvider {
     /// state, to restyle the entry rather than drop it.
     fn review_for_branch_including_closed(&self, branch: &str) -> Result<Option<ReviewRequest>>;
 
-    /// Open a review for the branch; with `draft`, as a draft.
-    fn create_review(&self, branch: &str, base: &str, draft: bool) -> Result<String>;
+    /// Open a review for the branch; with `draft`, as a draft. `title` sets the
+    /// review's title, defaulting to the branch tip's commit subject.
+    fn create_review(
+        &self,
+        branch: &str,
+        base: &str,
+        draft: bool,
+        title: Option<&str>,
+    ) -> Result<String>;
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String>;
+
+    /// Retitle an existing review. Platforms that encode draft state in the
+    /// title (Gitea's `WIP:`, GitLab's `Draft:`) re-apply their prefix, so a
+    /// retitle never readies a draft.
+    fn update_review_title(&self, review: &ReviewRequest, title: &str) -> Result<String>;
 
     fn review_body(&self, review: &ReviewRequest) -> Result<String>;
 
