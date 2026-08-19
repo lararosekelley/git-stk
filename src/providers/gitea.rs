@@ -13,8 +13,15 @@ use super::{
 pub(super) struct GiteaProvider;
 
 /// Gitea has no draft flag on PR creation; the convention is a `WIP:` title
-/// prefix that the server treats as a work-in-progress marker.
+/// prefix that the server treats as a work-in-progress marker. This is the
+/// spelling we write; [`DRAFT_MARKERS`] covers the ones we recognize.
 const DRAFT_PREFIX: &str = "WIP: ";
+
+/// Gitea's stock work-in-progress markers, matched case-insensitively as Gitea
+/// itself matches them - so `wip: x` is already a draft and must not collect a
+/// second prefix. (An instance can configure its own set; these are the
+/// defaults, and the only ones we can know about.)
+const DRAFT_MARKERS: [&str; 2] = ["wip:", "[wip]"];
 
 impl ReviewProvider for GiteaProvider {
     fn review_for_branch(&self, branch: &str) -> Result<Option<ReviewRequest>> {
@@ -44,8 +51,10 @@ impl ReviewProvider for GiteaProvider {
         } else {
             &body
         };
-        // Drafts are a `WIP:` title prefix, not a flag.
-        let title = if draft {
+        // Drafts are a `WIP:` title prefix, not a flag - and a title that
+        // already carries one is a draft, so prefixing again would only make
+        // the title unreadable and leave a marker `mark_ready` has to strip.
+        let title = if draft && !is_draft_title(&title) {
             format!("{DRAFT_PREFIX}{title}")
         } else {
             title.clone()
@@ -70,7 +79,7 @@ impl ReviewProvider for GiteaProvider {
     fn update_review_title(&self, review: &ReviewRequest, title: &str) -> Result<String> {
         // Drafts are a `WIP:` title prefix here, so keep it on a retitle -
         // dropping it would silently mark the PR ready.
-        let title = if review.draft && !title.starts_with(DRAFT_PREFIX) {
+        let title = if review.draft && !is_draft_title(title) {
             format!("{DRAFT_PREFIX}{title}")
         } else {
             title.to_owned()
@@ -208,11 +217,9 @@ impl ReviewProvider for GiteaProvider {
     }
 
     fn mark_ready(&self, review: &ReviewRequest) -> Result<String> {
-        // Clearing the draft state means dropping the `WIP:` title prefix.
-        let title = review
-            .title
-            .strip_prefix(DRAFT_PREFIX)
-            .unwrap_or(&review.title);
+        // Clearing the draft state means dropping the `WIP:` title prefix - in
+        // whatever case it was written, since Gitea honors it either way.
+        let title = without_draft_prefix(&review.title);
         command_output("tea", &["pr", "edit", review.id_value(), "--title", title])
     }
 
@@ -253,6 +260,32 @@ impl ReviewProvider for GiteaProvider {
 
     fn open_review(&self, review: &ReviewRequest) -> Result<String> {
         command_output("tea", &["open", &format!("pulls/{}", review.id_value())])
+    }
+}
+
+/// The length of the draft marker a title opens with, if any. Gitea compares
+/// its prefixes case-insensitively, so `WIP:`, `wip:` and `Wip:` all mark a
+/// draft. ASCII-only lowercasing keeps the length usable as a byte offset.
+fn draft_marker_len(title: &str) -> Option<usize> {
+    let lowered = title.trim_start().to_ascii_lowercase();
+    DRAFT_MARKERS
+        .iter()
+        .find(|marker| lowered.starts_with(*marker))
+        .map(|marker| marker.len())
+}
+
+/// Whether the title already marks the PR as a draft.
+fn is_draft_title(title: &str) -> bool {
+    draft_marker_len(title).is_some()
+}
+
+/// The title without its leading draft marker, so readying a PR actually clears
+/// the state Gitea keys on. Unmarked titles pass through untouched.
+fn without_draft_prefix(title: &str) -> &str {
+    let trimmed = title.trim_start();
+    match draft_marker_len(trimmed) {
+        Some(len) => trimmed[len..].trim_start(),
+        None => title,
     }
 }
 
@@ -437,6 +470,30 @@ fn slug_from_url(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draft_titles_are_recognized_whatever_their_case() {
+        // Gitea matches its WIP prefixes case-insensitively, so every spelling
+        // here is already a draft and must not collect a second marker.
+        for title in [
+            "WIP: a", "wip: a", "Wip: a", "  wip: a", "[WIP] a", "[wip] a",
+        ] {
+            assert!(is_draft_title(title), "{title} should read as a draft");
+        }
+        for title in ["a", "wipe out the cache", "fix: wip: a"] {
+            assert!(!is_draft_title(title), "{title} should not read as a draft");
+        }
+    }
+
+    #[test]
+    fn without_draft_prefix_strips_one_marker_in_any_case() {
+        assert_eq!(without_draft_prefix("WIP: a"), "a");
+        assert_eq!(without_draft_prefix("wip:a"), "a");
+        assert_eq!(without_draft_prefix("[wip] a"), "a");
+        // Only the leading marker goes; the rest of the title is the user's.
+        assert_eq!(without_draft_prefix("WIP: wip: a"), "wip: a");
+        assert_eq!(without_draft_prefix("a"), "a");
+    }
 
     #[test]
     fn gitea_review_from_maps_merged_closed_state() {
