@@ -141,6 +141,11 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
     stk(work, &["submit", "--stack", "--push"])?;
     wait_for_review_count(provider, slug, 2)?;
 
+    // --title retitles an existing review through each host's own CLI flag,
+    // which only a live run exercises.
+    stk(work, &["submit", "feat/a", "--title", "e2e retitled"])?;
+    wait_for_review_title(provider, slug, "feat/a", "e2e retitled")?;
+
     stk(work, &["bottom"])?;
     write(work, "a.txt", "a\na2\n")?;
     git(work, &["commit", "-am", "a work edit"])?;
@@ -423,6 +428,93 @@ fn wait_for_review_count(provider: Provider, slug: &str, want: usize) -> Result<
         "expected {want} open reviews, saw {} after retries",
         last.unwrap_or(want)
     ))
+}
+
+/// Poll until the branch's open review carries `want` as its title, so the
+/// provider's indexing lag after a retitle cannot flake the run.
+fn wait_for_review_title(
+    provider: Provider,
+    slug: &str,
+    branch: &str,
+    want: &str,
+) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..6 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(2));
+        }
+        last = review_title(provider, slug, branch)?;
+        if last == want {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "expected the review for {branch} to be titled {want:?}, saw {last:?}"
+    ))
+}
+
+/// The title of `branch`'s open review, or an empty string when it has none.
+fn review_title(provider: Provider, slug: &str, branch: &str) -> Result<String, String> {
+    let (output, branch_field) = match provider {
+        Provider::Github => (
+            sh(
+                "gh",
+                &[
+                    "pr",
+                    "list",
+                    "--repo",
+                    slug,
+                    "--state",
+                    "open",
+                    "--json",
+                    "title,headRefName",
+                ],
+                None,
+            )?,
+            "headRefName",
+        ),
+        Provider::Gitlab => (
+            sh(
+                "glab",
+                &["mr", "list", "-R", slug, "--output", "json"],
+                None,
+            )?,
+            "source_branch",
+        ),
+        // Gitea nests the head ref, so it is read separately below.
+        Provider::Gitea => (
+            sh(
+                "tea",
+                &[
+                    "api",
+                    "--login",
+                    &gitea_login(),
+                    &format!("repos/{slug}/pulls?state=open&limit=50"),
+                ],
+                None,
+            )?,
+            "head",
+        ),
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&output).map_err(|e| format!("parse review list: {e}: {output}"))?;
+    let head = |review: &serde_json::Value| -> String {
+        match provider {
+            Provider::Gitea => review["head"]["ref"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            _ => review[branch_field].as_str().unwrap_or_default().to_owned(),
+        }
+    };
+    Ok(value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|review| head(review) == branch)
+        .and_then(|review| review["title"].as_str())
+        .unwrap_or_default()
+        .to_owned())
 }
 
 /// Number of open reviews on the repo, parsed from the provider's list JSON.

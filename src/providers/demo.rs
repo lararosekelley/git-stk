@@ -29,7 +29,13 @@ impl ReviewProvider for DemoProvider {
         Ok(find(&state, branch, &["open", "merged", "closed"]).map(review_from))
     }
 
-    fn create_review(&self, branch: &str, base: &str, draft: bool) -> Result<String> {
+    fn create_review(
+        &self,
+        branch: &str,
+        base: &str,
+        draft: bool,
+        title: Option<&str>,
+    ) -> Result<String> {
         let mut state = load()?;
         if find(&state, branch, &["open"]).is_some() {
             bail!("demo review for {branch} already exists");
@@ -37,7 +43,10 @@ impl ReviewProvider for DemoProvider {
 
         let id = state["next_id"].as_u64().unwrap_or(1);
         state["next_id"] = json!(id + 1);
-        let title = command_output("git", &["log", "-1", "--format=%s", branch])?;
+        let title = match title {
+            Some(title) => title.to_owned(),
+            None => command_output("git", &["log", "-1", "--format=%s", branch])?,
+        };
         state["reviews"]
             .as_array_mut()
             .context("demo state")?
@@ -52,6 +61,15 @@ impl ReviewProvider for DemoProvider {
             }));
         save(&state)?;
         Ok(format!("demo://review/{id}"))
+    }
+
+    fn update_review_title(&self, review: &ReviewRequest, title: &str) -> Result<String> {
+        let mut state = load()?;
+        with_review(&mut state, review, |entry| {
+            entry["title"] = json!(title);
+        })?;
+        save(&state)?;
+        Ok(String::new())
     }
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String> {

@@ -13,6 +13,10 @@ use super::{
     command_output, merge_with_resettle, merge_with_retry,
 };
 
+/// GitLab keeps draft state in the MR title rather than a flag. `Draft:` is the
+/// current marker; `WIP:` is the legacy spelling GitLab still honors.
+const DRAFT_PREFIX: &str = "Draft: ";
+
 pub(super) struct GitLabProvider;
 
 impl ReviewProvider for GitLabProvider {
@@ -34,14 +38,23 @@ impl ReviewProvider for GitLabProvider {
         list_review(branch, Some("--closed"))
     }
 
-    fn create_review(&self, branch: &str, base: &str, draft: bool) -> Result<String> {
+    fn create_review(
+        &self,
+        branch: &str,
+        base: &str,
+        draft: bool,
+        title: Option<&str>,
+    ) -> Result<String> {
         // git-stk has already pushed the branch with the correct per-branch
         // refspec. glab's --fill would re-push the *current* checkout onto the
         // source ref (gh never pushes on create), clobbering a sibling branch
         // when submitting a stack from its leaf. So skip --fill and stay
         // non-interactive with an explicit title and description instead -
         // git-stk overwrites the body with the stack overview afterwards.
-        let title = git::commit_subject(branch)?;
+        let title = match title {
+            Some(title) => title.to_owned(),
+            None => git::commit_subject(branch)?,
+        };
         let body = git::commit_body(branch)?;
         let description = if body.trim().is_empty() {
             title.as_str()
@@ -76,6 +89,27 @@ impl ReviewProvider for GitLabProvider {
                 review.id_value(),
                 "--target-branch",
                 base,
+                "--yes",
+            ],
+        )
+    }
+
+    fn update_review_title(&self, review: &ReviewRequest, title: &str) -> Result<String> {
+        // GitLab keeps draft state in the title, so a bare retitle would ready
+        // the MR; re-apply the prefix glab itself writes.
+        let title = if review.draft && !is_draft_title(title) {
+            format!("{DRAFT_PREFIX}{title}")
+        } else {
+            title.to_owned()
+        };
+        command_output(
+            "glab",
+            &[
+                "mr",
+                "update",
+                review.id_value(),
+                "--title",
+                title.as_str(),
                 "--yes",
             ],
         )
@@ -270,6 +304,13 @@ impl ReviewProvider for GitLabProvider {
     fn enqueued_branches(&self, branches: &[String]) -> Result<BTreeSet<String>> {
         Ok(gitlab_enqueued_branches(branches))
     }
+}
+
+/// Whether a title already carries a draft marker, in either spelling, so a
+/// retitle does not double up the prefix.
+fn is_draft_title(title: &str) -> bool {
+    let lowered = title.trim_start().to_ascii_lowercase();
+    lowered.starts_with("draft:") || lowered.starts_with("wip:")
 }
 
 /// GitLab merge-train membership for `branches`. Unlike GitHub, pushing to a

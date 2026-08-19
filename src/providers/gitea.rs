@@ -25,10 +25,19 @@ impl ReviewProvider for GiteaProvider {
         find_review(branch, true)
     }
 
-    fn create_review(&self, branch: &str, base: &str, draft: bool) -> Result<String> {
+    fn create_review(
+        &self,
+        branch: &str,
+        base: &str,
+        draft: bool,
+        title: Option<&str>,
+    ) -> Result<String> {
         // Like the glab path: the branch is already pushed, so set title and
         // description explicitly and let git-stk overwrite the body afterward.
-        let title = git::commit_subject(branch)?;
+        let title = match title {
+            Some(title) => title.to_owned(),
+            None => git::commit_subject(branch)?,
+        };
         let body = git::commit_body(branch)?;
         let description = if body.trim().is_empty() {
             &title
@@ -55,6 +64,20 @@ impl ReviewProvider for GiteaProvider {
                 "--description",
                 description,
             ],
+        )
+    }
+
+    fn update_review_title(&self, review: &ReviewRequest, title: &str) -> Result<String> {
+        // Drafts are a `WIP:` title prefix here, so keep it on a retitle -
+        // dropping it would silently mark the PR ready.
+        let title = if review.draft && !title.starts_with(DRAFT_PREFIX) {
+            format!("{DRAFT_PREFIX}{title}")
+        } else {
+            title.to_owned()
+        };
+        command_output(
+            "tea",
+            &["pr", "edit", review.id_value(), "--title", title.as_str()],
         )
     }
 

@@ -42,6 +42,10 @@ pub struct Submit {
     /// Do not push branches, overriding stk.pushOnSubmit.
     #[arg(long, action = ArgAction::SetTrue)]
     no_push: bool,
+    /// Set the review's title, replacing the branch tip's commit subject.
+    /// Applies to the current or named branch only.
+    #[arg(long, short = 't', value_name = "TEXT")]
+    title: Option<String>,
     /// Set a description block at the top of the review body; an empty
     /// string clears it. Applies to the current or named branch only.
     #[arg(long, short = 'd')]
@@ -112,12 +116,21 @@ impl Run for Submit {
             None => self.desc,
         };
 
+        // Unlike a description, a title has no "clear it" meaning - every
+        // review must have one - so an empty string is a mistake, not a verb.
+        let title = match self.title {
+            Some(title) if title.trim().is_empty() => bail!("--title cannot be empty"),
+            Some(title) => Some(title.trim().to_owned()),
+            None => None,
+        };
+
         submit(SubmitOptions {
             branch: self.branch,
             submit_stack,
             downstack: self.downstack,
             dry_run: self.dry_run,
             push_mode: PushMode::from_flags(self.push, self.no_push),
+            title,
             desc,
             reviewers: normalize_reviewers(&self.reviewers),
             draft,
@@ -159,6 +172,7 @@ pub struct SubmitOptions {
     pub downstack: bool,
     pub dry_run: bool,
     pub push_mode: crate::cli::PushMode,
+    pub title: Option<String>,
     pub desc: Option<String>,
     pub reviewers: Vec<String>,
     pub draft: bool,
@@ -206,6 +220,7 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
         downstack,
         dry_run,
         push_mode,
+        title,
         desc,
         reviewers,
         draft,
@@ -214,8 +229,8 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     } = options;
 
     let branch = branch.map_or_else(git::current_branch, Ok)?;
-    // The description targets this branch's review even in stack mode.
-    let desc_branch = branch.clone();
+    // The title and description target this branch's review even in stack mode.
+    let target_branch = branch.clone();
 
     let branches = if downstack {
         // Bottom of the stack through the current branch: anything above is
@@ -270,7 +285,17 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
 
     let mut created = Vec::new();
     for (branch, parent) in &branch_parents {
-        let action = submit_branch(review_provider.as_ref(), branch, parent, dry_run, draft)?;
+        // A new review opens under the given title directly, so it is never
+        // briefly published under the commit subject.
+        let branch_title = title.as_deref().filter(|_| *branch == target_branch);
+        let action = submit_branch(
+            review_provider.as_ref(),
+            branch,
+            parent,
+            dry_run,
+            draft,
+            branch_title,
+        )?;
         if action == SubmitAction::Created {
             created.push(branch.clone());
         }
@@ -282,7 +307,7 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     // Without a user description the template is wrapped in the managed
     // description block; the branch that gets `--desc` keeps the template
     // freeform above a seam so the description reads as a distinct block below.
-    let desc_target = desc.as_ref().map(|_| desc_branch.as_str());
+    let desc_target = desc.as_ref().map(|_| target_branch.as_str());
     crate::notes::seed_template_notes(
         review_provider.as_ref(),
         provider.kind,
@@ -342,13 +367,20 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
         }
     }
 
-    // After every review exists, write the description, link any issue the
-    // branch name references, then (in stack mode) write the stack overview
+    // After every review exists, set the title and description, link any issue
+    // the branch name references, then (in stack mode) write the stack overview
     // into each body.
+    if let Some(title) = &title {
+        // Reviews created just now already carry the title; only one that
+        // existed before this submit needs the edit.
+        if !created.contains(&target_branch) {
+            apply_title(review_provider.as_ref(), &target_branch, title, dry_run)?;
+        }
+    }
     if let Some(desc) = desc {
         crate::notes::update_description_note(
             review_provider.as_ref(),
-            &desc_branch,
+            &target_branch,
             &desc,
             dry_run,
         )?;
@@ -418,6 +450,44 @@ fn close_superseded_review(
     Ok(true)
 }
 
+/// Retitle the branch's existing review. Mirrors the description step: a
+/// missing review, or one that heads a different branch, is passed over with a
+/// note rather than failing the submit.
+fn apply_title(
+    review_provider: &dyn ReviewProvider,
+    branch: &str,
+    title: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let Some(review) = review_provider.review_for_branch(branch)? else {
+        if dry_run {
+            anstream::println!("would set the title on the review for {branch}");
+        } else {
+            anstream::println!("skipped title: no review found for {branch}");
+        }
+        return Ok(());
+    };
+    if review.branch != branch {
+        anstream::println!(
+            "skipped title: review {} belongs to {}",
+            review.id,
+            review.branch
+        );
+        return Ok(());
+    }
+    if dry_run {
+        anstream::println!("would set the title in {}", review.id);
+        return Ok(());
+    }
+
+    let output = review_provider.update_review_title(&review, title)?;
+    anstream::println!("set title in {}", review.id);
+    if !output.is_empty() {
+        println!("{output}");
+    }
+    Ok(())
+}
+
 /// Request reviews from `reviewers` on every submitted branch's review. A
 /// merged review is skipped - there is nothing left to review - and a branch
 /// whose review is missing (or heads a different branch) is passed over with a
@@ -476,6 +546,7 @@ fn submit_branch(
     parent: &str,
     dry_run: bool,
     draft: bool,
+    title: Option<&str>,
 ) -> Result<SubmitAction> {
     if let Some(review) = review_provider.review_for_branch(branch)? {
         if review.base == parent {
@@ -517,13 +588,14 @@ fn submit_branch(
         let output = if dry_run {
             String::new()
         } else {
-            review_provider.create_review(branch, parent, draft)?
+            review_provider.create_review(branch, parent, draft, title)?
         };
         anstream::println!(
-            "{} {} -> {}",
+            "{} {} -> {}{}",
             if dry_run { "would create" } else { "created" },
             style::branch(branch),
-            style::branch(parent)
+            style::branch(parent),
+            title.map_or_else(String::new, |title| format!(" titled \"{title}\""))
         );
         if !output.is_empty() {
             println!("{output}");

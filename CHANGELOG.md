@@ -4,6 +4,28 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.11.6
+
+### Added
+
+- **submit:** `--title <text>` (`-t`) names the review for the current or named
+  branch, instead of taking the branch tip's commit subject. A new review is
+  created under the title directly; an existing one is retitled in place, and a
+  draft keeps the `WIP:`/`Draft:` prefix that Gitea and GitLab encode its state
+  in. Works on GitHub, GitLab, Gitea/Forgejo.
+
+## 0.11.5
+
+### Changed
+
+- **docs:** the README is now an overview, with the full per-command reference
+  split out into `docs/COMMANDS.md`.
+- **guide:** the tours cover the newer ground - `up`/`down` taking a distance,
+  `stk.cleanClosed` for reviews that are closed rather than merged, and
+  `setup --wrapper` for the navigation shell function. The worktree tour also
+  spells out that landing a review from inside that branch's own worktree keeps
+  the branch, to be cleaned up later from the main checkout.
+
 ## 0.11.4
 
 ### Fixed

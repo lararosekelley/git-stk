@@ -719,6 +719,118 @@ fn submit_desc_sets_replaces_and_clears_the_description_block() {
 }
 
 #[test]
+fn submit_title_names_a_new_github_pr() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.git(["config", "branch.feature/b.stkParent", "feature/a"]);
+    let fake = FakeProvider::new()
+        .on("pr list", "[]")
+        .record(
+            "pr create",
+            "create.txt",
+            "https://github.com/owner/repo/pull/12",
+        )
+        .fallback_fail("unexpected gh args")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--title", "Teach the parser about spans"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            r#"created feature/b -> feature/a titled "Teach the parser about spans""#,
+        ));
+
+    // The title goes in at create time, so the PR is never published under the
+    // commit subject and no follow-up edit is needed.
+    let args = fs::read_to_string(repo.path().join("create.txt")).expect("create args");
+    assert!(
+        args.contains("--title Teach the parser about spans"),
+        "create should carry the title: {args}"
+    );
+}
+
+#[test]
+fn submit_title_retitles_an_existing_github_pr() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.git(["config", "branch.feature/a.stkParent", "main"]);
+    let fake = FakeProvider::new()
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"wip"}]"##,
+        )
+        .record("pr edit 12 --title", "edit-title-12.txt", "")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--dry-run", "-t", "A better title"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("would set the title in #12"));
+    assert!(!repo.path().join("edit-title-12.txt").exists());
+
+    repo.stack_faked(&fake)
+        .args(["submit", "-t", "A better title"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("set title in #12"));
+
+    let args = fs::read_to_string(repo.path().join("edit-title-12.txt")).expect("edit args");
+    assert!(args.contains("--title A better title"), "edit args: {args}");
+}
+
+#[test]
+fn submit_title_keeps_a_gitlab_draft_prefix() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.git(["config", "branch.feature/a.stkParent", "main"]);
+    let fake = FakeProvider::new()
+        .commands(&["glab"])
+        .on(
+            "feature/a",
+            r##"[{"iid":34,"state":"opened","draft":true,"target_branch":"main","source_branch":"feature/a","web_url":"https://gitlab.com/owner/repo/-/merge_requests/34","title":"Draft: wip"}]"##,
+        )
+        .record("mr update 34 --title", "update-title-34.txt", "")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "-t", "A better title"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("set title in !34"));
+
+    // GitLab keeps draft state in the title, so the retitle must carry the
+    // prefix forward rather than quietly readying the MR.
+    let args = fs::read_to_string(repo.path().join("update-title-34.txt")).expect("update args");
+    assert!(
+        args.contains("--title Draft: A better title"),
+        "update args: {args}"
+    );
+}
+
+#[test]
+fn submit_title_rejects_an_empty_string() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.git(["config", "branch.feature/a.stkParent", "main"]);
+
+    // Unlike --desc, an empty title has no clearing meaning - a review always
+    // has one - so it is refused before any provider call.
+    repo.stack()
+        .args(["submit", "--title", "  "])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--title cannot be empty"));
+}
+
+#[test]
 fn submit_desc_file_reads_the_description_from_a_file() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
