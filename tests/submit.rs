@@ -815,6 +815,38 @@ fn submit_title_keeps_a_gitlab_draft_prefix() {
 }
 
 #[test]
+fn submit_draft_title_does_not_double_the_gitlab_draft_prefix() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.git(["config", "branch.feature/b.stkParent", "main"]);
+    let fake = FakeProvider::new()
+        .commands(&["glab"])
+        .on("mr list", "[]")
+        .record(
+            "mr create",
+            "create.txt",
+            "https://gitlab.com/owner/repo/-/merge_requests/34",
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    // glab spells --draft as the `Draft: ` title prefix, so a title that
+    // already says so is a draft already; asking for both would stack markers.
+    repo.stack_faked(&fake)
+        .args(["submit", "--draft", "-t", "Draft: a work"])
+        .assert()
+        .success();
+
+    let args = std::fs::read_to_string(repo.path().join("create.txt")).expect("create args");
+    assert!(
+        args.contains("--title Draft: a work"),
+        "create args: {args}"
+    );
+    assert!(!args.contains("--draft"), "create args: {args}");
+}
+
+#[test]
 fn submit_title_rejects_an_empty_string() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);

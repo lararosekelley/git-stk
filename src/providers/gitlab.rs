@@ -74,7 +74,10 @@ impl ReviewProvider for GitLabProvider {
             description,
             "--yes",
         ];
-        if draft {
+        // glab spells a draft as the `Draft: ` title prefix, so a title that
+        // already carries one is a draft already - asking for the flag too
+        // would stack a second prefix that `--ready` cannot clear in one go.
+        if draft && !is_draft_title(&title) {
             args.push("--draft");
         }
         command_output("glab", &args)
