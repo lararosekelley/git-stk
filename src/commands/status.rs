@@ -95,11 +95,9 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                     // merges and retargets it.
                     if let Ok(Some(found)) = review_provider.native_stack_for(&review.branch) {
                         let position = found
-                            .layers
-                            .iter()
-                            .position(|layer| layer.branch == review.branch)
-                            .map_or_else(String::new, |index| {
-                                format!(" ({} of {})", index + 1, found.layers.len())
+                            .position_of(&review.branch)
+                            .map_or_else(String::new, |at| {
+                                format!(" ({at} of {})", found.layers.len())
                             });
                         anstream::println!(
                             "stack: {} stack {}{position}",

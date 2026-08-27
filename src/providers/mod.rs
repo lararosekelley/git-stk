@@ -232,6 +232,16 @@ impl NativeStack {
         })
     }
 
+    /// Where `branch` sits in the stack, 1-based and bottom first - the same
+    /// number GraphQL reports as `stackEntry.position`. The one derivation
+    /// from this side, so the two sources cannot drift into disagreeing.
+    pub fn position_of(&self, branch: &str) -> Option<u32> {
+        self.layers
+            .iter()
+            .position(|layer| layer.branch == branch)
+            .map(|index| index as u32 + 1)
+    }
+
     /// The review id recorded for `branch`, for messages.
     pub fn review_id_for(&self, branch: &str) -> Option<&str> {
         self.layers
@@ -335,7 +345,10 @@ pub struct ReviewAnnotation {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct StackPosition {
     pub number: u64,
-    /// 1-based, bottom first - the order the stack lands in.
+    /// 1-based, bottom first - the order the stack lands in. Verified against
+    /// GitHub: `stackEntry.position` answers 1, 2, 3 for a three-layer stack,
+    /// matching [`NativeStack::position_of`], which is the other place this
+    /// number comes from.
     pub position: u32,
     pub size: u32,
 }

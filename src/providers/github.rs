@@ -500,12 +500,10 @@ thread_local! {
     };
 }
 
-/// Build the aliased GraphQL query for [`batched_annotate`]. Kept out of
-/// `format!` to dodge brace-escaping; the fields are exactly what
-/// [`ReviewAnnotation`] needs, no more.
 /// A review's place in GitHub's own stack, from the annotate query's
 /// `stack`/`stackEntry` fields. `None` when the pull request is in no stack -
-/// or when the fields are absent, which is what an older GitHub answers.
+/// or when the fields are absent, which is what a host without the preview
+/// answers.
 fn parse_stack_position(node: &serde_json::Value) -> Option<StackPosition> {
     let stack = node.get("stack")?;
     Some(StackPosition {
@@ -515,6 +513,9 @@ fn parse_stack_position(node: &serde_json::Value) -> Option<StackPosition> {
     })
 }
 
+/// Build the aliased GraphQL query for [`batched_annotate`]. Kept out of
+/// `format!` to dodge brace-escaping; the fields are exactly what
+/// [`ReviewAnnotation`] needs, no more.
 fn build_annotation_query(count: usize, detail: bool) -> String {
     build_annotation_query_with(
         count,
@@ -1742,5 +1743,21 @@ mod tests {
         let query = build_annotation_query(1, false);
         assert!(query.contains("stack{number size}"), "got: {query}");
         assert!(query.contains("stackEntry{position}"), "got: {query}");
+    }
+
+    #[test]
+    fn build_annotation_query_drops_the_stack_fields_when_unsupported() {
+        // A host whose schema lacks them rejects the whole query, so the
+        // retry has to be able to ask without them.
+        let plain = build_annotation_query_with(1, false, false);
+        assert!(!plain.contains("stack{number size}"), "got: {plain}");
+        assert!(!plain.contains("stackEntry"), "got: {plain}");
+        // Everything else the annotations need is still there.
+        assert!(plain.contains("mergeQueueEntry"));
+        assert!(plain.contains("statusCheckRollup"));
+
+        let full = build_annotation_query_with(1, false, true);
+        assert!(full.contains("stack{number size}"));
+        assert!(full.contains("stackEntry{position}"));
     }
 }
