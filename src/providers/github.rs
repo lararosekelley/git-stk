@@ -77,7 +77,20 @@ impl ReviewProvider for GitHubProvider {
         command_output("gh", &args)
     }
 
+    fn platform_manages_base(&self, review: &ReviewRequest) -> Result<bool> {
+        Ok(self.native_stack_for(&review.branch)?.is_some())
+    }
+
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String> {
+        // GitHub refuses to retarget a pull request that belongs to a stack -
+        // it moves the layers itself as each one lands, which is the whole
+        // point of registering. Report that rather than fail the submit.
+        if self.native_stack_for(&review.branch)?.is_some() {
+            return Ok(format!(
+                "{} is in a GitHub stack; GitHub retargets it as the stack lands",
+                review.id
+            ));
+        }
         command_output("gh", &["pr", "edit", review.id_value(), "--base", base])
     }
 
@@ -179,6 +192,13 @@ impl ReviewProvider for GitHubProvider {
             "merge" => "--merge",
             _ => "--squash",
         };
+        // A pull request in a stack cannot be merged through the synchronous
+        // endpoint `gh pr merge` uses - GitHub requires the async one, because
+        // landing a layer also retargets the layers above it.
+        if self.native_stack_for(&review.branch)?.is_some() {
+            return merge_with_retry(|| merge_async(review, strategy));
+        }
+
         let mut args = vec!["pr", "merge", review.id_value(), flag];
         if auto {
             args.push("--auto");
@@ -512,6 +532,69 @@ fn github_enqueued_branches(branches: &[String]) -> BTreeSet<String> {
         }
     }
     queued
+}
+
+/// How long to keep polling an enqueued async merge before giving up. The
+/// merge itself is quick; what this waits out is GitHub retargeting the layers
+/// above the one that landed.
+const ASYNC_MERGE_POLLS: u32 = 60;
+
+fn async_merge_poll_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(2)
+}
+
+/// Merge a stacked pull request through the asynchronous endpoint, then wait
+/// for the result. `PUT .../merge-async` enqueues and answers with a uuid;
+/// `GET .../merge-async/{uuid}` reports `pending`, `merged`, `enqueued` (a
+/// merge queue took it) or `failed`.
+fn merge_async(review: &ReviewRequest, strategy: &str) -> Result<String> {
+    let (owner, repo) = repo_owner_name().context("could not resolve the GitHub repository")?;
+    let number = review_number(&review.id)
+        .with_context(|| format!("could not read a pull request number from {}", review.id))?;
+    let path = format!("repos/{owner}/{repo}/pulls/{number}/merge-async");
+    let method = format!("merge_method={strategy}");
+    let output = command_output("gh", &["api", &path, "-X", "PUT", "-f", &method])?;
+
+    let (status, uuid) = parse_async_merge(&output)
+        .with_context(|| format!("unexpected response merging {}: {output}", review.id))?;
+    match status.as_str() {
+        "merged" => return Ok(format!("merged {} (stacked)", review.id)),
+        "enqueued" => return Ok(format!("{} added to the merge queue", review.id)),
+        "failed" => bail!("{} could not be merged: {output}", review.id),
+        _ => {}
+    }
+
+    let uuid = uuid.with_context(|| format!("{} was enqueued without a result id", review.id))?;
+    let result_path = format!("{path}/{uuid}");
+    for _ in 0..ASYNC_MERGE_POLLS {
+        std::thread::sleep(async_merge_poll_interval());
+        let output = command_output("gh", &["api", &result_path])?;
+        let Some((status, _)) = parse_async_merge(&output) else {
+            continue;
+        };
+        match status.as_str() {
+            "merged" => return Ok(format!("merged {} (stacked)", review.id)),
+            "enqueued" => return Ok(format!("{} added to the merge queue", review.id)),
+            "failed" => bail!("{} could not be merged: {output}", review.id),
+            _ => {}
+        }
+    }
+    bail!(
+        "{} is still merging; check it on GitHub, then rerun `git stk sync`",
+        review.id
+    )
+}
+
+/// `(status, uuid)` from an async-merge response.
+fn parse_async_merge(json: &str) -> Option<(String, Option<String>)> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let status = value.get("status")?.as_str()?.to_owned();
+    let uuid = value
+        .get("details")
+        .and_then(|details| details.get("uuid"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Some((status, uuid))
 }
 
 /// The digits of a review id like `#13`, for the REST payload.
@@ -1195,5 +1278,36 @@ mod tests {
             None
         );
         assert_eq!(parse_native_stack("not json", "fix/shared"), None);
+    }
+
+    #[test]
+    fn parse_async_merge_reads_status_and_the_result_id() {
+        let enqueued = r#"{"status":"pending","details":{"message":"Merge request enqueued.",
+            "uuid":"5f4d46b3-d67d-4310-91d2-d2e2717f0341","merge_method":"squash"}}"#;
+        assert_eq!(
+            parse_async_merge(enqueued),
+            Some((
+                "pending".to_owned(),
+                Some("5f4d46b3-d67d-4310-91d2-d2e2717f0341".to_owned())
+            ))
+        );
+
+        // The polled result carries no uuid - the status is the whole answer.
+        let done = r#"{"status":"merged","details":{"message":"Pull request was merged.",
+            "sha":"77775602411442f6864e4dd7c0823a7cfb957464"}}"#;
+        assert_eq!(parse_async_merge(done), Some(("merged".to_owned(), None)));
+
+        assert_eq!(parse_async_merge("{}"), None);
+        assert_eq!(parse_async_merge("not json"), None);
+    }
+
+    #[test]
+    fn review_number_reads_a_pull_request_id() {
+        assert_eq!(review_number("#13"), Some("13".to_owned()));
+        assert_eq!(review_number("13"), Some("13".to_owned()));
+        // A GitLab-style `!13` or anything non-numeric is not ours to send.
+        assert_eq!(review_number("!13"), None);
+        assert_eq!(review_number("#"), None);
+        assert_eq!(review_number(""), None);
     }
 }

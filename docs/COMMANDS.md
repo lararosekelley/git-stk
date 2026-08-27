@@ -276,6 +276,12 @@ when rebuilding metadata. Registering is presentation: if it fails, the reviews 
 still succeeds. Off by default while the GitHub feature is in public preview, and GitHub-only - GitLab and
 Gitea are unaffected.
 
+Registering hands two things to GitHub, and git-stk follows it there. A pull request in a stack cannot be
+merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merge and waits for the result;
+and its base cannot be changed by hand, because GitHub retargets each layer itself as the one below it
+lands - so `submit` and `cleanup` report that instead of retargeting. The local side is unchanged: git-stk
+still owns `restack`, `absorb`, worktrees, and the stack metadata.
+
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens
 new reviews as drafts; `--no-draft` overrides the config, and `submit --ready` flips the submitted

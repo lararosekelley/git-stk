@@ -288,6 +288,15 @@ pub trait ReviewProvider {
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String>;
 
+    /// Whether the platform owns this review's base and moves it itself - a
+    /// registered GitHub stack, where retargeting by hand is refused because
+    /// GitHub retargets each layer as the one below it lands. Callers skip
+    /// their own retarget rather than fight it.
+    fn platform_manages_base(&self, review: &ReviewRequest) -> Result<bool> {
+        let _ = review;
+        Ok(false)
+    }
+
     /// Retitle an existing review. Platforms that encode draft state in the
     /// title (Gitea's `WIP:`, GitLab's `Draft:`) re-apply their prefix, so a
     /// retitle never readies a draft.

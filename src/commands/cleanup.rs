@@ -424,6 +424,16 @@ fn update_child_review_base(
         style::dim(&format!("({})", review.id))
     );
     if !dry_run {
+        if review_provider.platform_manages_base(&review)? {
+            anstream::println!(
+                "{}",
+                style::dim(&format!(
+                    "{} is in a stack; the platform retargets it as the stack lands",
+                    review.id
+                ))
+            );
+            return Ok(());
+        }
         let output = review_provider.update_review_base(&review, parent)?;
         if !output.is_empty() {
             println!("{output}");
