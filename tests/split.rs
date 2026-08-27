@@ -97,9 +97,9 @@ fn split_interactive_without_a_terminal_points_at_per_commit() {
         .stderr(predicates::str::contains("--per-commit"));
 }
 
-/// A stack's base is not git-stk's to rewrite. Splitting would rewrite the
-/// branch into several *and* give it a stack parent - metadata the marker then
-/// outranks everywhere else, on a branch that is typically shared.
+/// Splitting a stack's base would stamp a `stkParent` on it, which a base has
+/// by design not got - leaving that metadata disagreeing with the marker that
+/// outranks it everywhere else.
 #[test]
 fn split_refuses_a_recorded_stack_base() {
     let repo = TestRepo::new();
@@ -115,7 +115,7 @@ fn split_refuses_a_recorded_stack_base() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "rc-20260817 is a stack's base, so it is not git-stk's to rewrite",
+            "rc-20260817 is a stack's base, so splitting it would give it a stack parent",
         ))
         .stderr(predicates::str::contains("git stk detach rc-20260817"));
 
