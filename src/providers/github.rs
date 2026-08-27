@@ -689,20 +689,6 @@ fn async_merge_outcome(status: &str, id: &str, body: &str) -> Option<Result<Stri
     }
 }
 
-/// What an async-merge status means for the caller: `Some` once it is final,
-/// `None` while the merge is still running. Shared by the enqueue response and
-/// each poll, which see the same statuses and must read them the same way.
-fn async_merge_outcome(status: &str, id: &str, body: &str) -> Option<Result<String>> {
-    match status {
-        "merged" => Some(Ok(format!("merged {id} (stacked)"))),
-        // A merge queue took it: it will land on its own schedule, and `sync`
-        // picks that up later. Not a failure, and not something to wait on.
-        "enqueued" => Some(Ok(format!("{id} added to the merge queue"))),
-        "failed" => Some(Err(anyhow!("{id} could not be merged: {body}"))),
-        _ => None,
-    }
-}
-
 /// `(status, uuid)` from an async-merge response.
 fn parse_async_merge(json: &str) -> Option<(String, Option<String>)> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
