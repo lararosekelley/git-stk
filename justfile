@@ -99,6 +99,9 @@ lint: lint-rust lint-md
 lint-rust:
     cargo fmt --check
     cargo clippy --all-targets --features test-fakes -- -D warnings
+    # The e2e binary is behind its own feature, so the sweep above never
+    # compiles it - it has shipped broken before.
+    cargo clippy --features e2e --bin git-stk-e2e -- -D warnings
 
 lint-md:
     npx markdownlint-cli2 "**/*.md"
