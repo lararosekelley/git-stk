@@ -484,6 +484,19 @@ fn collect_tree_lines(
             review.checks.dot()
         };
         tags.push(format!("{marker}{}", style::paint(style::DIM, &review.id)));
+        // The platform's own stack, when it keeps one - distinct from the tree
+        // itself, which is git-stk's view of the same branches.
+        if let Some(stack) = review.stack {
+            tags.push(style::paint(
+                style::DIM,
+                &format!(
+                    "{}{}/{}",
+                    crate::providers::STACKED_MARK,
+                    stack.position,
+                    stack.size
+                ),
+            ));
+        }
     }
     // An empty branch (same tip as its parent) shows no size rather than a
     // noisy "+0/-0".

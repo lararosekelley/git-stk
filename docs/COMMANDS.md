@@ -65,6 +65,10 @@ prompts; without it, an interactive picker lets you group commits and name each 
 `list --commits`. A stack's base is refused: `split` stamps a `stkParent` on the branch it splits, and a
 base has none by design.
 
+A review the platform holds in a stack of its own is marked with its position in that stack - `⛁2/3` in
+the `list` tree, and a `stack:` line in `status`. That is worth seeing: for those reviews GitHub, not
+git-stk, is what merges and retargets them.
+
 `status` and `list` append `hint:` lines pointing at the next command when there is one: `restack` when a
 branch is behind its parent, `submit` when a review base went stale, `sync` when a review in the stack
 merged. A stack's base gets none of those - nothing rebases, submits, or lands it - so `status` names it as

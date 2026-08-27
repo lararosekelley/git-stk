@@ -314,6 +314,11 @@ impl ReviewSummary {
 /// space so it sits before the CI dot / id.
 pub const QUEUED_MARK: &str = "🕑 ";
 
+/// Shown against a review the platform holds in a stack of its own, with the
+/// layer's position - `⛁2/3`. Distinct from git-stk's own stack, which the
+/// tree already draws.
+pub const STACKED_MARK: &str = "⛁";
+
 /// Per-branch review data threaded into the `list` tree: the id (e.g. `#12`),
 /// its CI dot, whether it sits in a merge queue/train, and - only with
 /// `--reviews` - the review tallies.
@@ -322,6 +327,17 @@ pub struct ReviewAnnotation {
     pub checks: CheckStatus,
     pub queued: bool,
     pub summary: Option<ReviewSummary>,
+    /// Where this review sits in the platform's own stack, when it keeps one.
+    pub stack: Option<StackPosition>,
+}
+
+/// A review's place in a platform-recorded stack.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct StackPosition {
+    pub number: u64,
+    /// 1-based, bottom first - the order the stack lands in.
+    pub position: u32,
+    pub size: u32,
 }
 
 /// The result of waiting on a review's checks before merging it.
@@ -590,6 +606,9 @@ fn generic_annotate<P: ReviewProvider + ?Sized>(
                 checks,
                 queued: is_queued,
                 summary,
+                // The generic path makes one call per branch and has no cheap
+                // way to ask; the GitHub batch fills this in.
+                stack: None,
             },
         );
     }

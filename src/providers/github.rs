@@ -11,8 +11,8 @@ use super::json::{
 };
 use super::{
     CheckStatus, MergeBlocker, NativeStack, NativeStackLayer, ReviewAnnotation, ReviewProvider,
-    ReviewRequest, ReviewState, ReviewSummary, WaitOutcome, command_output, generic_annotate,
-    merge_with_retry,
+    ReviewRequest, ReviewState, ReviewSummary, StackPosition, WaitOutcome, command_output,
+    generic_annotate, merge_with_retry,
 };
 use crate::settings;
 
@@ -477,13 +477,53 @@ fn batched_annotate(
     }
     args.extend(["-f", &query_arg]);
 
-    parse_annotation_batch(&command_output("gh", &args)?, detail)
+    match command_output("gh", &args) {
+        Ok(output) => parse_annotation_batch(&output, detail),
+        // `stack`/`stackEntry` are preview fields: a host whose schema lacks
+        // them rejects the *whole* query, which would silently drop `list` to
+        // the per-branch path for everyone on that host. Retry once without
+        // them and remember, so the cost is one query rather than two.
+        Err(error) if !STACK_FIELDS_UNSUPPORTED.with(std::cell::Cell::get) => {
+            STACK_FIELDS_UNSUPPORTED.with(|flag| flag.set(true));
+            let _ = error;
+            batched_annotate(branches, detail)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+thread_local! {
+    /// Set once a host rejects the stack fields, so the retry happens at most
+    /// once per command rather than per annotate call.
+    static STACK_FIELDS_UNSUPPORTED: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
 }
 
 /// Build the aliased GraphQL query for [`batched_annotate`]. Kept out of
 /// `format!` to dodge brace-escaping; the fields are exactly what
 /// [`ReviewAnnotation`] needs, no more.
+/// A review's place in GitHub's own stack, from the annotate query's
+/// `stack`/`stackEntry` fields. `None` when the pull request is in no stack -
+/// or when the fields are absent, which is what an older GitHub answers.
+fn parse_stack_position(node: &serde_json::Value) -> Option<StackPosition> {
+    let stack = node.get("stack")?;
+    Some(StackPosition {
+        number: stack.get("number")?.as_u64()?,
+        position: node.pointer("/stackEntry/position")?.as_u64()? as u32,
+        size: stack.get("size")?.as_u64()? as u32,
+    })
+}
+
 fn build_annotation_query(count: usize, detail: bool) -> String {
+    build_annotation_query_with(
+        count,
+        detail,
+        !STACK_FIELDS_UNSUPPORTED.with(std::cell::Cell::get),
+    )
+}
+
+fn build_annotation_query_with(count: usize, detail: bool, stack_fields: bool) -> String {
     let reviews_field = if detail {
         "latestReviews(first:100){nodes{state}} "
     } else {
@@ -497,6 +537,9 @@ fn build_annotation_query(count: usize, detail: bool) -> String {
             "p{index}:pullRequests(headRefName:$h{index},states:OPEN,first:1)"
         ));
         aliases.push_str("{nodes{number headRefName mergeQueueEntry{state} ");
+        if stack_fields {
+            aliases.push_str("stack{number size} stackEntry{position} ");
+        }
         aliases.push_str(reviews_field);
         aliases.push_str("commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}");
     }
@@ -539,6 +582,7 @@ fn parse_annotation_batch(json: &str, detail: bool) -> Result<BTreeMap<String, R
                 checks,
                 queued,
                 summary,
+                stack: parse_stack_position(node),
             },
         );
     }
@@ -1667,5 +1711,36 @@ mod tests {
             unknown.contains("conflicted"),
             "names the status: {unknown}"
         );
+    }
+
+    #[test]
+    fn parse_stack_position_reads_a_layer_or_nothing() {
+        let stacked = serde_json::json!({
+            "stack": {"number": 6, "size": 3},
+            "stackEntry": {"position": 2}
+        });
+        assert_eq!(
+            parse_stack_position(&stacked),
+            Some(StackPosition {
+                number: 6,
+                position: 2,
+                size: 3
+            })
+        );
+
+        // No stack, and an older GitHub that does not know the fields: both
+        // read as "not in a stack" rather than as an error.
+        assert_eq!(
+            parse_stack_position(&serde_json::json!({"stack": null})),
+            None
+        );
+        assert_eq!(parse_stack_position(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn build_annotation_query_asks_for_the_stack_fields() {
+        let query = build_annotation_query(1, false);
+        assert!(query.contains("stack{number size}"), "got: {query}");
+        assert!(query.contains("stackEntry{position}"), "got: {query}");
     }
 }
