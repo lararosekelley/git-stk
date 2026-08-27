@@ -188,6 +188,15 @@ impl ReviewProvider for GitHubProvider {
         settings::bool_setting(settings::GITHUB_STACKS_KEY).unwrap_or(false)
     }
 
+    fn unstack_reviews(&self, stack: &NativeStack) -> Result<Option<String>> {
+        let Some((owner, repo)) = repo_owner_name() else {
+            return Ok(None);
+        };
+        let path = format!("repos/{owner}/{repo}/stacks/{}/unstack", stack.number);
+        command_output("gh", &["api", &path, "-X", "POST"])?;
+        Ok(Some(format!("dissolved stack {} on GitHub", stack.number)))
+    }
+
     fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {
         let flag = match strategy {
             "rebase" => "--rebase",

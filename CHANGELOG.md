@@ -39,6 +39,12 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   dissolving the stack on the platform when nothing will move it - a re-rooted
   or reordered line, or the stack's own bottom. Registering itself needs
   `stk.githubStacks`; following a stack GitHub already holds does not.
+- **unstack:** `git stk unstack` dissolves the platform's own stack for the
+  stack you are on, leaving its reviews open and standalone. Registering one
+  was a one-way door: turning `stk.githubStacks` off left every stack git-stk
+  had created still registered, with GitHub still refusing the ordinary merge
+  and retarget for those reviews. Not gated on the setting - a stack outlives
+  it, and may have been made outside git-stk (#315).
 - **stack:** rooting a stack on a branch other than the trunk records that
   branch as the stack's base (`branch.<name>.stkFloor`). A base is never
   submitted, pushed, merged, or re-parented, and recording it is what makes

@@ -13,6 +13,7 @@ git stk children [branch]
 git stk list [--all] [--commits] [--format <markdown|plain>]
 git stk adopt [branch] [--parent <parent>] [--dry-run]   # defaults: current branch, trunk
 git stk detach [branch]
+git stk unstack [--dry-run]                              # dissolve the platform's own stack
 git stk rename [branch] <new-name> [--dry-run]
 git stk split [--per-commit] [--dry-run]
 ```
@@ -280,6 +281,11 @@ which keeps the landed layer, is the staler of the two. Registering is presentat
 reviews still exist and the submit
 still succeeds. Off by default while the GitHub feature is in public preview, and GitHub-only - GitLab and
 Gitea are unaffected.
+
+`git stk unstack` dissolves the GitHub stack for the stack you are on, leaving its reviews open and
+standalone; merged reviews stay in it, since that is history GitHub keeps. It is deliberately not gated on
+`stk.githubStacks` - a stack outlives the setting that created it, and may have been made outside git-stk
+entirely, so undoing one must not require the setting to still be on.
 
 The setting gates _registering_, not _noticing_. A stack can exist without git-stk creating it - a teammate's
 `gh stack submit`, the GitHub web UI - and GitHub refuses the ordinary merge and retarget for those pull
