@@ -121,6 +121,58 @@ impl ReviewProvider for GitHubProvider {
         Ok(parse_native_stack(&output, branch))
     }
 
+    fn register_stack(
+        &self,
+        reviews: &[String],
+        existing: Option<&NativeStack>,
+    ) -> Result<Option<String>> {
+        if !settings::bool_setting(settings::GITHUB_STACKS_KEY)? {
+            return Ok(None);
+        }
+        let Some((owner, repo)) = repo_owner_name() else {
+            return Ok(None);
+        };
+        let numbers: Vec<String> = reviews.iter().filter_map(|id| review_number(id)).collect();
+        if numbers.len() != reviews.len() {
+            // An id we cannot read means we would register a different stack
+            // than the one submitted. Say nothing rather than guess.
+            return Ok(None);
+        }
+
+        match existing {
+            // Already exactly this stack, in this order: nothing to do.
+            Some(stack) if stack_matches(stack, reviews) => Ok(None),
+            // On top of what is already there: append the new ones only.
+            Some(stack) => {
+                let recorded: Vec<&str> = stack.layers.iter().map(|l| l.id.as_str()).collect();
+                let fresh: Vec<String> = reviews
+                    .iter()
+                    .filter(|id| !recorded.contains(&id.as_str()))
+                    .filter_map(|id| review_number(id))
+                    .collect();
+                if fresh.is_empty() {
+                    return Ok(None);
+                }
+                let path = format!("repos/{owner}/{repo}/stacks/{}/add", stack.number);
+                post_pull_requests(&path, &fresh)?;
+                Ok(Some(format!(
+                    "extended stack {} with {}",
+                    stack.number,
+                    fresh
+                        .iter()
+                        .map(|n| format!("#{n}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )))
+            }
+            None => {
+                let path = format!("repos/{owner}/{repo}/stacks");
+                post_pull_requests(&path, &numbers)?;
+                Ok(Some(format!("registered {} as a stack", reviews.join(" "))))
+            }
+        }
+    }
+
     fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {
         let flag = match strategy {
             "rebase" => "--rebase",
@@ -460,6 +512,37 @@ fn github_enqueued_branches(branches: &[String]) -> BTreeSet<String> {
         }
     }
     queued
+}
+
+/// The digits of a review id like `#13`, for the REST payload.
+fn review_number(id: &str) -> Option<String> {
+    let digits = id.trim_start_matches('#');
+    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.to_owned())
+}
+
+/// Whether the recorded stack is already exactly `reviews`, in order.
+fn stack_matches(stack: &NativeStack, reviews: &[String]) -> bool {
+    stack.layers.len() == reviews.len()
+        && stack
+            .layers
+            .iter()
+            .zip(reviews)
+            .all(|(layer, id)| layer.id == *id)
+}
+
+/// `POST` an ordered `pull_requests` list to a stacks endpoint. `-F` sends the
+/// numbers typed, which the API requires - `-f` would make them strings.
+fn post_pull_requests(path: &str, numbers: &[String]) -> Result<String> {
+    let fields: Vec<String> = numbers
+        .iter()
+        .map(|number| format!("pull_requests[]={number}"))
+        .collect();
+    let mut args = vec!["api", path, "-X", "POST"];
+    for field in &fields {
+        args.push("-F");
+        args.push(field);
+    }
+    command_output("gh", &args)
 }
 
 /// The stack holding `branch`, from the `GET /repos/{owner}/{repo}/stacks`

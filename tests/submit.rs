@@ -2078,3 +2078,70 @@ fn submit_stack_overview_ends_at_an_off_trunk_base() {
     // the fake records `pr edit 99` above.
     assert!(!repo.path().join("edit-body-99.txt").exists());
 }
+
+/// With `stk.githubStacks` on, a stack-wide submit hands the ordered reviews
+/// to GitHub so the layers get a stack map and parallel review. Bottom first -
+/// the order the stack lands in.
+#[test]
+fn submit_stack_registers_the_stack_with_github() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        // `record` carries its own stdout, and matching is first-match-wins -
+        // so the POST recorder has to sit ahead of the GET.
+        .record("api repos/owner/repo/stacks -X POST", "register.txt", "{}")
+        .on("api repos/owner/repo/stacks", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("registered #12 #13 as a stack"));
+
+    let call = fs::read_to_string(repo.path().join("register.txt")).expect("register call");
+    assert!(
+        call.contains("pull_requests[]=12") && call.contains("pull_requests[]=13"),
+        "both reviews, bottom first: {call}"
+    );
+    assert!(
+        call.find("=12") < call.find("=13"),
+        "order is the order the stack lands in: {call}"
+    );
+}
+
+/// Off by default: no stack call, and no mention of one.
+#[test]
+fn submit_stack_does_not_register_unless_enabled() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    let fake = FakeProvider::new()
+        .record("api repos", "register.txt", "")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success()
+        .stdout(
+            predicates::str::contains("stack")
+                .and(predicates::str::contains("registered"))
+                .not(),
+        );
+
+    assert!(!repo.path().join("register.txt").exists());
+}
