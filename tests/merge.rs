@@ -1618,6 +1618,39 @@ fn unstack_finds_a_stack_that_does_not_start_at_the_local_bottom() {
     assert!(repo.path().join("unstack.txt").exists());
 }
 
+/// The headline case: a teammate's `gh stack submit` over branches this
+/// checkout has adopted nothing of. Nothing local records a parent, so a
+/// lookup over the branches git-stk tracks finds none - while GitHub still
+/// refuses `gh pr merge` and `gh pr edit --base` for the stack holding the
+/// branch you are standing on.
+#[test]
+fn unstack_dissolves_a_stack_over_branches_git_stk_never_adopted() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "ma/b"]);
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("stacks/5/unstack -X POST", "unstack.txt", "{}")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["unstack"])
+        .assert()
+        .success()
+        // And the reviews are named: the stack reaches past this line.
+        .stdout(predicates::str::contains(
+            "dissolved stack 5 on GitHub (#12 #13)",
+        ));
+    assert!(repo.path().join("unstack.txt").exists());
+}
+
 /// Two stacks can partition one local line. Dissolving only the first found
 /// would report success while leaving the rest of the line blocked.
 #[test]

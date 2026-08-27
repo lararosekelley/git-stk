@@ -210,14 +210,28 @@ impl ReviewProvider for GitHubProvider {
     }
 
     fn unstack_reviews(&self, stack: &NativeStack) -> Result<Option<String>> {
-        let Some((owner, repo)) = repo_owner_name() else {
-            return Ok(None);
-        };
+        // Strict, like `native_stacks_covering`: `Ok(None)` here reaches the
+        // user as "this provider does not keep stacks", which is false for
+        // GitHub however the lookup failed.
+        let (owner, repo) =
+            repo_owner_name_result().context("could not resolve the GitHub repository")?;
         let path = format!("repos/{owner}/{repo}/stacks/{}/unstack", stack.number);
         command_output("gh", &["api", &path, "-X", "POST"])?;
         // The listing still holds this stack as open until it is re-read.
         forget_stacks_listing();
-        Ok(Some(format!("dissolved stack {} on GitHub", stack.number)))
+        // Name the reviews: a stack is dissolved whole, so it can reach past
+        // the line that asked. Saying less than `--dry-run` did would hide
+        // exactly that.
+        Ok(Some(format!(
+            "dissolved stack {} on GitHub ({})",
+            stack.number,
+            stack
+                .layers
+                .iter()
+                .map(|layer| layer.id.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )))
     }
 
     fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {

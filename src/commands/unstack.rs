@@ -24,18 +24,18 @@ impl Run for Unstack {
     fn run(self) -> Result<()> {
         let current = crate::git::current_branch()?;
         let line = stack::stack_line(&current)?;
-        let layers = stack::stacked_layers(&line)?;
-        if layers.is_empty() {
-            bail!("no stacked branches here; nothing to unstack");
+        if line.is_empty() {
+            bail!("not on a stacked branch; nothing to unstack");
         }
 
-        // Every layer, not just the bottom: a stack need not begin where your
-        // local line does, and one made outside git-stk need not align with it
-        // at all. A failed lookup is an error here, not "no stack" - this is
-        // the whole command, so answering "already gone" for an expired token
-        // would be a lie.
+        // The whole line, not just the layers git-stk records a parent for:
+        // a stack need not begin where your local line does, one made outside
+        // git-stk need not align with it at all or be adopted here, and the
+        // line's own base can be a layer of the platform's. A failed lookup is
+        // an error here, not "no stack" - this is the whole command, so
+        // answering "already gone" for an expired token would be a lie.
         let (_, review_provider) = detect_review_provider()?;
-        let found = review_provider.native_stacks_covering(&layers)?;
+        let found = review_provider.native_stacks_covering(&line)?;
         if found.is_empty() {
             anstream::println!(
                 "{}",
