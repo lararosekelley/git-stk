@@ -115,7 +115,34 @@ pub fn repair(dry_run: bool) -> Result<()> {
         }
 
         let mut found: Option<(String, String)> = None;
-        if let Some((kind, review_provider)) = &provider
+
+        // The platform's own stack first, when it keeps one: it is an ordering
+        // someone stated rather than one inferred, it survives a wiped
+        // `.git/config`, and it is right even where the review base has since
+        // been retargeted. Best effort - `native_stack_for` answers `None` for
+        // every provider but GitHub, and for GitHub unless `stk.githubStacks`
+        // is on.
+        if let Some((_, review_provider)) = &provider
+            && let Ok(Some(stack)) = review_provider.native_stack_for(branch)
+            && let Some(parent) = stack.parent_of(branch)
+            && parent != branch
+        {
+            if branches.contains(&parent.to_owned()) {
+                let id = stack.review_id_for(branch).unwrap_or("");
+                found = Some((parent.to_owned(), format!("stack {} ({id})", stack.number)));
+            } else {
+                anstream::println!(
+                    "{}",
+                    style::warn(&format!(
+                        "{branch}: stack {} puts it on {parent}, which is not a local branch",
+                        stack.number
+                    ))
+                );
+            }
+        }
+
+        if found.is_none()
+            && let Some((kind, review_provider)) = &provider
             && let Ok(Some(review)) = owned_review_for_branch(&**review_provider, branch)
             && review.base != *branch
         {

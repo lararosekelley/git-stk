@@ -8,6 +8,14 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ### Added
 
+- **github:** `stk.githubStacks` (off by default) lets git-stk read GitHub's
+  native stacked pull requests. With it on, `repair` prefers the stack GitHub
+  records to the review base and to ancestry when rebuilding a branch's parent
+  - an ordering someone stated rather than one inferred, which survives a wiped
+  `.git/config` and is still right where a review has since been retargeted.
+  Off means today's behaviour byte for byte, and every other provider is
+  untouched. Read-only for now: git-stk does not yet register a stack with
+  GitHub (#306).
 - **stack:** rooting a stack on a branch other than the trunk records that
   branch as the stack's base (`branch.<name>.stkFloor`). A base is never
   submitted, pushed, merged, or re-parented, and recording it is what makes

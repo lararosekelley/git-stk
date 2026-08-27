@@ -20,6 +20,10 @@ pub const MERGE_WAIT_KEY: &str = "stk.mergeWait";
 pub const SUBMIT_DRAFT_KEY: &str = "stk.submitDraft";
 pub const NO_UPDATE_CHECK_KEY: &str = "stk.noUpdateCheck";
 pub const ABSORB_INCLUDE_UNSTAGED_KEY: &str = "stk.absorbIncludeUnstaged";
+/// Register a submitted stack with GitHub's native stacked pull requests, and
+/// read that stack back when rebuilding metadata. Off by default: the feature
+/// is in public preview, and off means today's behaviour byte for byte.
+pub const GITHUB_STACKS_KEY: &str = "stk.githubStacks";
 pub const GITLAB_HOST_KEY: &str = "stk.gitlabHost";
 pub const GITEA_HOST_KEY: &str = "stk.giteaHost";
 pub const CHECK_TIMEOUT_KEY: &str = "stk.checkTimeout";
@@ -48,6 +52,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     (SUBMIT_DRAFT_KEY, "false"),
     (NO_UPDATE_CHECK_KEY, "false"),
     (ABSORB_INCLUDE_UNSTAGED_KEY, "false"),
+    (GITHUB_STACKS_KEY, "false"),
     (GITLAB_HOST_KEY, "none; gitlab.com is always detected"),
     (
         GITEA_HOST_KEY,
