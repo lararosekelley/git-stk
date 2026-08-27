@@ -141,43 +141,55 @@ fn run() -> Result<(), String> {
 /// Everything here is what `FakeProvider` structurally cannot check - that the
 /// real API accepts these calls and answers in the shapes we parse.
 fn github_native_stack(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
-    if !stacks_enabled(slug)? {
-        eprintln!("skipping native stacks: not enabled for {slug}");
-        return Ok(());
+    match stacks_enabled(slug) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("skipping native stacks: not enabled for {slug}");
+            return Ok(());
+        }
+        // Anything other than "the feature is not here" - a 500, a rate limit,
+        // an expired token - must fail. Reading it as "unavailable" would skip
+        // a release-gating scenario and still report PASSED.
+        Err(error) => return Err(format!("could not tell if stacks are enabled: {error}")),
     }
     git(work, &["switch", "main"])?;
     git(work, &["pull", "--ff-only"])?;
     git(work, &["config", "stk.githubStacks", "true"])?;
+
+    // Earlier scenarios leave reviews open, so count relative to here rather
+    // than against an absolute the rest of the suite can shift under us.
+    let baseline = open_review_count(provider, slug)?;
 
     stk(work, &["new", "ns/one"])?;
     commit(work, "ns-one.txt", "one\n", "ns one")?;
     stk(work, &["new", "ns/two"])?;
     commit(work, "ns-two.txt", "two\n", "ns two")?;
 
-    // Registering: the reviews must come back as one stack, bottom first.
+    // Registering: exactly one open stack, holding both reviews bottom first.
     let submitted = stk(work, &["submit", "--stack", "--push"])?;
     if !submitted.contains("as a stack") {
         return Err(format!("submit did not register a stack:\n{submitted}"));
     }
-    wait_for_review_count(provider, slug, 2)?;
-    let stack = gh_json(&["api", &format!("repos/{slug}/stacks")])?;
-    let layers = stack.split("\"number\":").count().saturating_sub(1);
-    if layers < 3 {
-        return Err(format!("expected a stack of two reviews, got:\n{stack}"));
-    }
+    wait_for_review_count(provider, slug, baseline + 2)?;
+    expect_open_stack(slug, &["ns/one", "ns/two"])?;
 
     // Dissolving, then registering again - the one-way door this closes.
     stk(work, &["unstack"])?;
-    let after = gh_json(&["api", &format!("repos/{slug}/stacks")])?;
-    if after.contains("\"open\":true") {
-        return Err(format!("stack still open after unstack:\n{after}"));
+    if let Some(stack) = open_stack(slug)? {
+        return Err(format!("a stack is still open after unstack: {stack:?}"));
     }
-    stk(work, &["submit", "--stack"])?;
+    let resubmitted = stk(work, &["submit", "--stack"])?;
+    if !resubmitted.contains("as a stack") {
+        return Err(format!(
+            "submit did not re-register after unstack:\n{resubmitted}"
+        ));
+    }
+    expect_open_stack(slug, &["ns/one", "ns/two"])?;
 
     // Merging: `gh pr merge` is refused for a stacked review, so this only
     // passes if the asynchronous endpoint is being used.
     stk(work, &["merge", "--all", "--no-wait", "--yes"])?;
-    wait_for_review_count(provider, slug, 0)?;
+    wait_for_review_count(provider, slug, baseline)?;
     git(work, &["switch", "main"])?;
     git(work, &["pull", "--ff-only"])?;
     for file in ["ns-one.txt", "ns-two.txt"] {
@@ -188,10 +200,60 @@ fn github_native_stack(provider: Provider, slug: &str, work: &Path) -> Result<()
     Ok(())
 }
 
+/// Assert there is exactly one open stack and it holds `branches`, in order.
+fn expect_open_stack(slug: &str, branches: &[&str]) -> Result<(), String> {
+    let Some(stack) = open_stack(slug)? else {
+        return Err("expected an open stack, found none".to_owned());
+    };
+    let heads: Vec<String> = stack
+        .get("pull_requests")
+        .and_then(serde_json::Value::as_array)
+        .map(|reviews| {
+            reviews
+                .iter()
+                .filter_map(|review| review.pointer("/head/ref")?.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    if heads != branches {
+        return Err(format!("stack holds {heads:?}, expected {branches:?}"));
+    }
+    Ok(())
+}
+
+/// The repo's single open stack, if any. The listing keeps dissolved and
+/// landed stacks, so `open` is what separates a live one from history.
+fn open_stack(slug: &str) -> Result<Option<serde_json::Value>, String> {
+    let output = gh_json(&["api", &format!("repos/{slug}/stacks")])?;
+    let listing: serde_json::Value =
+        serde_json::from_str(&output).map_err(|e| format!("parse stacks: {e}: {output}"))?;
+    let mut open: Vec<serde_json::Value> = listing
+        .as_array()
+        .ok_or_else(|| format!("stacks listing was not an array: {output}"))?
+        .iter()
+        .filter(|stack| stack.get("open").and_then(serde_json::Value::as_bool) == Some(true))
+        .cloned()
+        .collect();
+    if open.len() > 1 {
+        return Err(format!(
+            "expected at most one open stack, found {}",
+            open.len()
+        ));
+    }
+    Ok(open.pop())
+}
+
 /// Whether the repo has stacked pull requests. The endpoint answers 200 with
-/// an empty list when it does, and 404 when it does not.
+/// a list when it does, and 404 when it does not - any other failure is a real
+/// one and must not read as "unavailable", or a release-gating scenario is
+/// skipped while the run still reports PASSED.
 fn stacks_enabled(slug: &str) -> Result<bool, String> {
-    Ok(gh_json(&["api", &format!("repos/{slug}/stacks")]).is_ok())
+    match gh_json(&["api", &format!("repos/{slug}/stacks")]) {
+        Ok(_) => Ok(true),
+        Err(error) if error.contains("404") || error.contains("Not Found") => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn gh_json(args: &[&str]) -> Result<String, String> {
