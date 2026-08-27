@@ -125,8 +125,77 @@ fn run() -> Result<(), String> {
     conflict_recovery(work)?;
     undo_check(work)?;
     split_check(work)?;
+    if let Provider::GitHub = provider {
+        github_native_stack(provider, &slug, work)?;
+    }
 
     Ok(())
+}
+
+/// GitHub's native stacked pull requests, end to end: register a stack on
+/// submit, merge it through the asynchronous endpoint GitHub requires for a
+/// stacked review, and dissolve one.
+///
+/// GitHub-only, and skipped when the repo does not have the feature: it is in
+/// public preview, so a runner whose account lacks it must not fail the suite.
+/// Everything here is what `FakeProvider` structurally cannot check - that the
+/// real API accepts these calls and answers in the shapes we parse.
+fn github_native_stack(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
+    if !stacks_enabled(slug)? {
+        eprintln!("skipping native stacks: not enabled for {slug}");
+        return Ok(());
+    }
+    git(work, &["switch", "main"])?;
+    git(work, &["pull", "--ff-only"])?;
+    git(work, &["config", "stk.githubStacks", "true"])?;
+
+    stk(work, &["new", "ns/one"])?;
+    commit(work, "ns-one.txt", "one\n", "ns one")?;
+    stk(work, &["new", "ns/two"])?;
+    commit(work, "ns-two.txt", "two\n", "ns two")?;
+
+    // Registering: the reviews must come back as one stack, bottom first.
+    let submitted = stk(work, &["submit", "--stack", "--push"])?;
+    if !submitted.contains("as a stack") {
+        return Err(format!("submit did not register a stack:\n{submitted}"));
+    }
+    wait_for_review_count(provider, slug, 2)?;
+    let stack = gh_json(&["api", &format!("repos/{slug}/stacks")])?;
+    let layers = stack.split("\"number\":").count().saturating_sub(1);
+    if layers < 3 {
+        return Err(format!("expected a stack of two reviews, got:\n{stack}"));
+    }
+
+    // Dissolving, then registering again - the one-way door this closes.
+    stk(work, &["unstack"])?;
+    let after = gh_json(&["api", &format!("repos/{slug}/stacks")])?;
+    if after.contains("\"open\":true") {
+        return Err(format!("stack still open after unstack:\n{after}"));
+    }
+    stk(work, &["submit", "--stack"])?;
+
+    // Merging: `gh pr merge` is refused for a stacked review, so this only
+    // passes if the asynchronous endpoint is being used.
+    stk(work, &["merge", "--all", "--no-wait", "--yes"])?;
+    wait_for_review_count(provider, slug, 0)?;
+    git(work, &["switch", "main"])?;
+    git(work, &["pull", "--ff-only"])?;
+    for file in ["ns-one.txt", "ns-two.txt"] {
+        if !work.join(file).exists() {
+            return Err(format!("{file} missing on main after the stack landed"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the repo has stacked pull requests. The endpoint answers 200 with
+/// an empty list when it does, and 404 when it does not.
+fn stacks_enabled(slug: &str) -> Result<bool, String> {
+    Ok(gh_json(&["api", &format!("repos/{slug}/stacks")]).is_ok())
+}
+
+fn gh_json(args: &[&str]) -> Result<String, String> {
+    sh("gh", args, None)
 }
 
 /// Build a two-branch stack, submit, amend + restack, then squash-merge the
