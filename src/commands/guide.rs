@@ -264,7 +264,8 @@ fn repair(tour: &mut Tour) -> Result<()> {
     tour.stk(&["list"])?;
     tour.say("Branches are the real state; metadata is always recoverable.");
     tour.say("Anything repair cannot resolve safely, it reports for a manual");
-    tour.say("`git stk adopt`.");
+    tour.say("`git stk adopt <branch> --parent <parent>` - naming both, because");
+    tour.say("a bare `adopt` means the branch you are on, onto the trunk.");
     tour.finish()
 }
 

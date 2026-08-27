@@ -169,8 +169,19 @@ fn group_starts(checked: &[usize], below: usize) -> Vec<usize> {
 }
 
 /// The branch's base: its recorded stack parent, or the trunk.
+///
+/// Refuses a recorded stack base outright. Splitting rewrites a branch into
+/// several and gives the original a stack parent, and a base is neither ours
+/// to rewrite nor a layer to give a parent to - it is the branch the stack
+/// sits on, typically shared.
 fn base_of(branch: &str) -> Result<String> {
-    if let Some(parent) = stack::parent_of(branch)? {
+    if stack::is_floor(branch)? {
+        bail!(
+            "{branch} is a stack's base, so it is not git-stk's to rewrite; \
+             `git stk detach {branch}` first if it should be"
+        );
+    }
+    if let Some(parent) = stack::stacked_parent_of(branch)? {
         return Ok(parent);
     }
     stack::trunk_branch(&git::local_branches()?)

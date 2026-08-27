@@ -214,7 +214,7 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                         )),
                         ReviewState::Closed => hints.push(format!(
                             "parent review {} was closed without merging - \
-                             retarget {branch} with `git stk adopt`",
+                             retarget with `git stk adopt {branch} --parent <parent>`",
                             parent_review.id
                         )),
                         _ => {}
