@@ -44,9 +44,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   the branch you are on _and_ to the trunk, so following the bare form while
   standing on a release line re-roots it - the footgun removed elsewhere in
   this release, in the four places that were outside those diffs (#318).
-- **split:** refuses a recorded stack base. Splitting rewrites a branch into
-  several and gives the original a stack parent; a base is neither git-stk's to
-  rewrite nor a layer to give a parent to (#318).
+- **split:** refuses a recorded stack base. `split` rewrites nothing, but it
+  does stamp a `stkParent` on the branch it splits, and a base has none by
+  design - the marker would outrank that metadata everywhere else, leaving the
+  two disagreeing (#318).
 - **unstack:** `git stk unstack` dissolves the platform's own stack for the
   stack you are on, leaving its reviews open and standalone. Registering one
   was a one-way door: turning `stk.githubStacks` off left every stack git-stk

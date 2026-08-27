@@ -62,7 +62,8 @@ can see the commit boundaries at a glance - handy before a `split`. The trunk an
 leaf (it keeps its name and tip). It is non-destructive: the new branches point at the existing commits, so
 nothing is rewritten. `--per-commit` makes one branch per commit, named from each commit's subject, with no
 prompts; without it, an interactive picker lets you group commits and name each branch. Inspect first with
-`list --commits`.
+`list --commits`. A stack's base is refused: `split` stamps a `stkParent` on the branch it splits, and a
+base has none by design.
 
 `status` and `list` append `hint:` lines pointing at the next command when there is one: `restack` when a
 branch is behind its parent, `submit` when a review base went stale, `sync` when a review in the stack
@@ -262,7 +263,8 @@ shared release line cannot be pulled into the stack and handed to `restack` to r
 which says it is a layer after all.
 
 A recorded base outranks a recorded parent everywhere the stack is walked in order to rewrite it -
-`restack`, `absorb`, `cleanup`, the metadata ref - so a base that picks up a `stkParent` elsewhere is still
+`restack`, `absorb`, `cleanup`, `split`, the metadata ref - so a base that picks up a `stkParent` elsewhere
+is still
 never rebased, deleted, or pushed. That protection needs the marker, though. A stack rooted before git-stk
 recorded bases does not have one: run `git stk adopt <lowest-layer> --parent <base>` once, which records the
 base as it attaches the layer.
