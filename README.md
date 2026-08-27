@@ -195,6 +195,7 @@ that takes `--dry-run` also accepts `-n` as a short alias.
 git stk new <branch>         # stack a new branch on the current one
 git stk adopt [branch]       # take an existing branch into the stack
 git stk detach [branch]      # drop a branch out of the stack, keeping the branch
+git stk unstack              # dissolve the platform's own stack (GitHub)
 git stk rename [branch] <to> # rename, retargeting children and the open review
 git stk split                # split one branch's commits into a stack
 git stk absorb               # fold staged fixes into the commits they belong to
