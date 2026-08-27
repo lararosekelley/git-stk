@@ -35,34 +35,36 @@ impl Run for Unstack {
         // the whole command, so answering "already gone" for an expired token
         // would be a lie.
         let (_, review_provider) = detect_review_provider()?;
-        let Some(found) = review_provider.native_stack_covering(&layers)? else {
+        let found = review_provider.native_stacks_covering(&layers)?;
+        if found.is_empty() {
             anstream::println!(
                 "{}",
                 style::dim("no platform stack recorded for this stack; nothing to dissolve")
             );
             return Ok(());
-        };
-
-        if self.dry_run {
-            anstream::println!(
-                "would dissolve stack {} ({})",
-                found.number,
-                found
-                    .layers
-                    .iter()
-                    .map(|layer| layer.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            );
-            return Ok(());
         }
 
-        match review_provider.unstack_reviews(&found)? {
-            Some(line) => anstream::println!("{line}"),
-            None => anstream::println!(
-                "{}",
-                style::dim("this provider does not keep stacks; nothing to dissolve")
-            ),
+        for stack in &found {
+            if self.dry_run {
+                anstream::println!(
+                    "would dissolve stack {} ({})",
+                    stack.number,
+                    stack
+                        .layers
+                        .iter()
+                        .map(|layer| layer.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                continue;
+            }
+            match review_provider.unstack_reviews(stack)? {
+                Some(line) => anstream::println!("{line}"),
+                None => anstream::println!(
+                    "{}",
+                    style::dim("this provider does not keep stacks; nothing to dissolve")
+                ),
+            }
         }
         Ok(())
     }
