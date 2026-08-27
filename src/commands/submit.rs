@@ -232,7 +232,7 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     // The title and description target this branch's review even in stack mode.
     let target_branch = branch.clone();
 
-    let branches = if downstack {
+    let mut branches = if downstack {
         // Bottom of the stack through the current branch: anything above is
         // work in progress that stays local.
         stack::path_from_root(&branch)?
@@ -251,12 +251,40 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     if submit_stack || downstack {
         let trunk = stack::trunk_branch(&git::local_branches()?);
         if Some(&branch) == trunk.as_ref() {
-            if stack::children_of(&branch)?.is_empty() {
+            if !stack::has_stacked_branches()? {
                 bail!("no stacked branches to submit");
             }
             bail!("you are on the trunk ({branch}); check out a stacked branch first");
         }
     }
+
+    // A line rooted off the trunk keeps its parentless root - the branch the
+    // one above it targets, not something to submit. Drop it so stack mode
+    // ships exactly what `--no-stack` does, rather than refusing a shape
+    // `new` and `adopt` both accept. Restack already treats such a root as
+    // the floor; this keeps submit, and the push below, in step with it.
+    let mut base = None;
+    if submit_stack || downstack {
+        let layers = stack::stacked_layers(&branches)?;
+        // A lone unstacked branch stays put so `branch_parents` can name it:
+        // it has no base to target, which is an error rather than a floor.
+        if !layers.is_empty() && layers.len() < branches.len() {
+            anstream::println!(
+                "{}",
+                style::dim(&format!(
+                    "{} is this stack's base (no stack parent recorded); not submitted",
+                    branches[0]
+                ))
+            );
+            base = Some(branches[0].clone());
+            branches = layers;
+        }
+    }
+
+    // `--title`/`--desc` act on the current branch. When that is the base the
+    // trim just dropped, it is not part of the stack and its review - a
+    // release PR, say - is not ours to retitle or write a description into.
+    let target_in_scope = branches.contains(&target_branch);
 
     let branch_parents = branch_parents(&branches)?;
 
@@ -264,6 +292,29 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     // review requires the branch to exist remotely, and -u --force-with-lease
     // covers both first pushes and safely updating rebased branches.
     let push = settings::push_enabled(push_mode, settings::PUSH_ON_SUBMIT_KEY)?;
+
+    // The base is not pushed with the stack - it is not ours to move - but it
+    // is the base of the review opened for the branch above it. Every other
+    // base is a branch we just pushed, so this is the one that can be missing
+    // from the remote; catch it here rather than let the forge reject the
+    // create with its own wording, after the push has already happened.
+    if let Some(base) = &base
+        && push
+    {
+        let remote = settings::remote()?;
+        if !git::remote_has_branch(&remote, base)? {
+            // Name the branch to re-root. `adopt` defaults to the branch you
+            // are on, and standing on the base is a supported position here -
+            // so a bare `adopt --parent` would re-root the base itself, the
+            // very thing this stack stopped suggesting.
+            let lowest = &branches[0];
+            bail!(
+                "{base} is this stack's base, but {remote} has no such branch; \
+                 push {base} to {remote} first, or re-root the stack with \
+                 `git stk adopt {lowest} --parent <parent>`"
+            );
+        }
+    }
     if push {
         let remote = settings::remote()?;
         if dry_run {
@@ -371,19 +422,25 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     // the branch name references, then (in stack mode) write the stack overview
     // into each body.
     if let Some(title) = &title {
-        // Reviews created just now already carry the title; only one that
-        // existed before this submit needs the edit.
-        if !created.contains(&target_branch) {
+        if !target_in_scope {
+            anstream::println!("skipped title: {target_branch} is this stack's base");
+        } else if !created.contains(&target_branch) {
+            // Reviews created just now already carry the title; only one that
+            // existed before this submit needs the edit.
             apply_title(review_provider.as_ref(), &target_branch, title, dry_run)?;
         }
     }
     if let Some(desc) = desc {
-        crate::notes::update_description_note(
-            review_provider.as_ref(),
-            &target_branch,
-            &desc,
-            dry_run,
-        )?;
+        if target_in_scope {
+            crate::notes::update_description_note(
+                review_provider.as_ref(),
+                &target_branch,
+                &desc,
+                dry_run,
+            )?;
+        } else {
+            anstream::println!("skipped description: {target_branch} is this stack's base");
+        }
     }
     crate::notes::update_closes_notes(review_provider.as_ref(), &branches, dry_run)?;
     if submit_stack || downstack {
@@ -533,7 +590,51 @@ fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {
     let mut branch_parents = Vec::new();
     for branch in branches {
         let Some(parent) = stack::parent_of(branch)? else {
-            bail!("{branch} has no stack parent; run `git stk adopt` or `git stk sync` first");
+            // The trunk has no parent, so it reaches this arm too - and it
+            // is not a base, whatever its children are. Its own message
+            // first, as `nothing_to_merge_hint` does. Most necessary in an
+            // off-trunk-only repo: without it the trunk falls through and
+            // gets an `adopt` remedy aimed at itself.
+            if Some(branch) == stack::trunk_branch(&git::local_branches()?).as_ref() {
+                // Position first, so every arm below inherits it. This is the
+                // one path that can be pointed at a branch you are not on
+                // (`--stack`/`--downstack` both conflict with naming one), and
+                // `children_of(trunk)` says nothing about where you stand -
+                // a stack rooted off the trunk leaves the trunk childless.
+                // `is_ok_and` because `submit <branch>` works on a detached HEAD.
+                if !git::current_branch().is_ok_and(|current| current == *branch) {
+                    bail!(
+                        "{branch} is the trunk, so it is never part of a stack - \
+                         name a stacked branch instead"
+                    );
+                }
+                if !stack::has_stacked_branches()? {
+                    bail!("no stacked branches to submit");
+                }
+                bail!("you are on the trunk ({branch}); check out a stacked branch first");
+            }
+            // Every entrance to "you named the base" lands here: a bare
+            // `submit` (`stk.submitStack` is off by default) or `--no-stack`,
+            // where the trim never ran; and `--downstack` standing on it,
+            // where `path_from_root` stops at the branch you are on so the
+            // slice is just the base and the trim had nothing to drop. Say
+            // what the branch is rather than offer to re-root it, and name it
+            // in the remedy: `--stack` conflicts with naming a branch, so it
+            // has to be run from there, not pointed at it.
+            if !stack::children_of(branch)?.is_empty() {
+                bail!(
+                    "{branch} is this stack's base; there is nothing below it to submit - \
+                     run `git stk submit --stack` from {branch} to submit the branches above it"
+                );
+            }
+            // Name the branch: `adopt` defaults to the one you are on, and
+            // `submit <branch>` can be pointed at another - so the bare form
+            // would re-root whatever you happen to be standing on.
+            bail!(
+                "{branch} has no stack parent; attach it with \
+                 `git stk adopt {branch} --parent <parent>`, \
+                 or rebuild its metadata with `git stk repair`"
+            );
         };
         branch_parents.push((branch.to_owned(), parent));
     }

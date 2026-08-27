@@ -619,6 +619,26 @@ pub fn path_from_root(branch: &str) -> Result<Vec<String>> {
     Ok(path)
 }
 
+/// The branches in `line` that actually stack on something - those with a
+/// recorded parent. A line rooted off the trunk keeps its parentless root
+/// (see [`path_from_root`]), and that root is the base the branch above it
+/// targets, not a layer of the stack: nothing submits, pushes, or merges it.
+/// `restack` and `absorb` already skip it; this is how the rest agree.
+///
+/// Only a line's first branch can be parentless - `path_from_root` stops
+/// where the parents run out, and descendants are found through theirs - so
+/// an empty result means the line is a single unstacked branch, which callers
+/// report rather than silently skip.
+pub fn stacked_layers(line: &[String]) -> Result<Vec<String>> {
+    let mut layers = Vec::with_capacity(line.len());
+    for branch in line {
+        if parent_of(branch)?.is_some() {
+            layers.push(branch.clone());
+        }
+    }
+    Ok(layers)
+}
+
 /// (branch, parent) pairs for the branches that have a stack parent;
 /// branches without one are skipped.
 pub fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {
@@ -656,6 +676,13 @@ fn collect_descendants(
             collect_descendants(child, children, branches, visited);
         }
     }
+}
+
+/// Whether the repo has any stacked branch at all. Not the same question as
+/// "does the trunk have children": a stack rooted off the trunk leaves the
+/// trunk childless, so that proxy answers no for a repo that plainly has one.
+pub(crate) fn has_stacked_branches() -> Result<bool> {
+    Ok(!parent_map()?.is_empty())
 }
 
 pub(crate) fn children_of(parent: &str) -> Result<Vec<String>> {

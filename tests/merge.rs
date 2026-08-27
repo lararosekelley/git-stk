@@ -771,3 +771,171 @@ fn merge_all_wait_stops_when_the_review_is_merged_out_of_band() {
         0
     );
 }
+
+/// A stack rooted on a release line: that base branch is not a layer of the
+/// stack, so its own review is never what `merge` lands (#307). Before the
+/// fix, the base's release PR was the stack bottom.
+#[test]
+fn merge_never_lands_the_review_of_a_parentless_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+
+    let fake = FakeProvider::new()
+        .record("pr merge", "merged.txt", "")
+        // The release branch has its own open PR into the trunk.
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would merge Shared fix (#13) into rc-20260817",
+        ))
+        .stdout(predicates::str::contains("#99").not());
+
+    assert!(!repo.path().join("merged.txt").exists());
+}
+
+/// `merge --all` plans and counts the stack's own layers, not the base it
+/// sits on.
+#[test]
+fn merge_all_excludes_a_parentless_base_from_the_plan_and_the_count() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.stack().args(["new", "fix/above"]).assert().success();
+
+    let fake = FakeProvider::new()
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .on("fix/above", r##"[{"number":14,"state":"OPEN","baseRefName":"fix/shared","headRefName":"fix/above","url":"https://example.com/14","title":"Above fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would merge Shared fix (#13) into rc-20260817",
+        ))
+        .stdout(predicates::str::contains(
+            "would merge Above fix (#14) into fix/shared",
+        ))
+        .stdout(predicates::str::contains("Release 20260817").not());
+}
+
+/// Standing on a branch with no stack parent, there is a branch but no base to
+/// merge it into. Say which branch, and point at the metadata commands.
+#[test]
+fn merge_on_an_unstacked_branch_names_it_and_the_remedy() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+
+    let fake = FakeProvider::new()
+        .record("pr merge", "merged.txt", "")
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "rc-20260817 has no stack parent, so there is no base to merge it into",
+        ))
+        .stderr(predicates::str::contains("git stk adopt --parent <parent>"))
+        .stderr(predicates::str::contains("git stk repair"));
+
+    assert!(!repo.path().join("merged.txt").exists());
+}
+
+/// `merge --all` syncs between merges, and `sync` re-records the base's parent
+/// from its own review - so the base can become the stack bottom mid-run and
+/// land unprompted on a later iteration. The up-front confirmation named it as
+/// the destination, so nothing ever offered its review for approval (#307).
+#[test]
+fn merge_all_never_lands_the_base_review_after_a_sync_readopts_it() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+    repo.stack().args(["new", "fix/above"]).assert().success();
+    repo.commit_file("above.txt", "above\n", "above work");
+    repo.git(["switch", "fix/shared"]);
+    let _bare = repo.add_bare_origin(&["main", "rc-20260817", "fix/shared", "fix/above"]);
+
+    let fake = FakeProvider::new()
+        .record("pr merge 13", "merge-13.txt", "")
+        .record("pr merge 14", "merge-14.txt", "")
+        .record("pr merge 99", "merge-99.txt", "")
+        .record("pr edit 14 --base", "base-14.txt", "")
+        // The release line's own PR into the trunk, open throughout.
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on_after("fix/shared --state merged", "merge-13.txt", r##"[{"number":13,"state":"MERGED","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .on("fix/shared --state merged", "[]")
+        .on_after("fix/shared", "merge-13.txt", "[]")
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .on_after("fix/above --state merged", "merge-14.txt", r##"[{"number":14,"state":"MERGED","baseRefName":"rc-20260817","headRefName":"fix/above","url":"https://example.com/14","title":"Above fix"}]"##)
+        .on("fix/above --state merged", "[]")
+        .on_after("fix/above", "merge-14.txt", "[]")
+        .on_after("fix/above", "base-14.txt", r##"[{"number":14,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/above","url":"https://example.com/14","title":"Above fix"}]"##)
+        .on("fix/above", r##"[{"number":14,"state":"OPEN","baseRefName":"fix/shared","headRefName":"fix/above","url":"https://example.com/14","title":"Above fix"}]"##)
+        .on("pr edit", "edited")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success();
+
+    // The release PR must never be merged, on any iteration.
+    assert!(
+        !repo.path().join("merge-99.txt").exists(),
+        "the base's own review was merged: {}",
+        fs::read_to_string(repo.path().join("merge-99.txt")).unwrap_or_default()
+    );
+    // And the stack's own top layer must not be stranded by it.
+    assert!(
+        repo.path().join("merge-14.txt").exists(),
+        "fix/above never landed"
+    );
+}
+
+/// Same question, same answer: `merge` from the trunk must see a stack rooted
+/// off it rather than reporting the repo has none.
+#[test]
+fn merge_on_the_trunk_sees_an_off_trunk_stack() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "main"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "you are on the trunk (main); check out a stacked branch first",
+        ))
+        .stderr(predicates::str::contains("no stacked branches").not());
+}

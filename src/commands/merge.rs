@@ -112,8 +112,20 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     // What is about to land, bottom-up, for the dry run and the prompt: the
     // current branch's own line, not sibling stacks sharing the trunk.
     let current = crate::git::current_branch()?;
-    let branches = stack::stack_line(&current)?;
+    let line = stack::stack_line(&current)?;
+    let branches = stack::stacked_layers(&line)?;
     let count = branches.len();
+
+    // An off-trunk line's base is not part of this landing, and it has to stay
+    // that way for the whole loop rather than be re-derived each iteration:
+    // the `sync` between merges re-records the base's parent from its own
+    // review (#308), which would otherwise make it the lowest stacked branch
+    // next time round and land it - unprompted, since the confirmation below
+    // names it as the destination, not as something being merged.
+    let pinned_base = line
+        .first()
+        .filter(|branch| !branches.contains(branch))
+        .cloned();
 
     if dry_run {
         for branch in &branches {
@@ -148,7 +160,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     // number of branches it started with.
     let mut landed = 0;
     for _ in 0..count {
-        let Some(bottom) = bottom_branch()? else {
+        let Some(bottom) = bottom_branch_excluding(pinned_base.as_deref())? else {
             break;
         };
         let review = open_review_for(review_provider.as_ref(), provider.kind, &bottom)?;
@@ -203,11 +215,24 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     Ok(())
 }
 
-/// The bottom of the stack containing the current branch: the first branch on
-/// its line above the trunk. (A rootless fragment's own root is its bottom.)
+/// The bottom of the stack containing the current branch: the lowest branch on
+/// its line that actually stacks on something. A line rooted off the trunk
+/// keeps its parentless root - the base the branch above targets - and that
+/// base is never merged: with no parent recorded there is nothing to check its
+/// review against, and it is typically not ours to land (a release line, say).
 fn bottom_branch() -> Result<Option<String>> {
+    bottom_branch_excluding(None)
+}
+
+/// [`bottom_branch`], with `exclude` held out of the search by name. `merge
+/// --all` pins the line's base this way: metadata written mid-run must not be
+/// able to promote it into the landing.
+fn bottom_branch_excluding(exclude: Option<&str>) -> Result<Option<String>> {
     let current = crate::git::current_branch()?;
-    Ok(stack::stack_line(&current)?.into_iter().next())
+    let line = stack::stack_line(&current)?;
+    Ok(stack::stacked_layers(&line)?
+        .into_iter()
+        .find(|branch| Some(branch.as_str()) != exclude))
 }
 
 /// "Nothing to merge" message, tailored to call out the trunk - a natural
@@ -216,15 +241,27 @@ fn bottom_branch() -> Result<Option<String>> {
 fn nothing_to_merge_hint() -> Result<String> {
     let current = crate::git::current_branch()?;
     let trunk = stack::trunk_branch(&crate::git::local_branches()?);
-    // Only blame the trunk when it actually carries stacks: then standing on it
-    // is the footgun. An empty repo on the trunk just has nothing to merge.
-    let on_trunk_with_stacks =
-        Some(&current) == trunk.as_ref() && !stack::children_of(&current)?.is_empty();
-    Ok(if on_trunk_with_stacks {
-        format!("you are on the trunk ({current}); check out a stacked branch first")
-    } else {
-        "no stacked branches to merge".to_owned()
-    })
+    // Only blame the trunk when the repo actually has a stack: then standing on
+    // it is the footgun. An empty repo on the trunk just has nothing to merge.
+    // "Has a stack" is not "the trunk has children" - a stack rooted off the
+    // trunk leaves the trunk childless while plainly being one.
+    let on_trunk_with_stacks = Some(&current) == trunk.as_ref() && stack::has_stacked_branches()?;
+    if on_trunk_with_stacks {
+        return Ok(format!(
+            "you are on the trunk ({current}); check out a stacked branch first"
+        ));
+    }
+    // Standing on a branch with no stack parent: there is a branch here, just
+    // no base recorded to merge it into. Say which, rather than implying the
+    // repo has no stacks.
+    if Some(&current) != trunk.as_ref() && stack::parent_of(&current)?.is_none() {
+        return Ok(format!(
+            "{current} has no stack parent, so there is no base to merge it into; \
+             attach it with `git stk adopt --parent <parent>`, or rebuild its metadata \
+             with `git stk repair`"
+        ));
+    }
+    Ok("no stacked branches to merge".to_owned())
 }
 
 /// The branch's review, validated as mergeable: it exists, is open, and

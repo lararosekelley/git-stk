@@ -525,30 +525,28 @@ fn submit_stack_creates_reviews_parent_first() {
     assert!(create_a < create_b, "parent should submit before child");
 }
 
+/// Standing on the parentless root itself: it is the base the line sits on,
+/// so the branches above it submit and it does not (#307).
 #[test]
-fn submit_stack_validates_parents_before_provider_calls() {
+fn submit_stack_from_a_parentless_root_submits_the_branches_above_it() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     repo.git(["switch", "-c", "feature/a"]);
     repo.git(["switch", "-c", "feature/b"]);
     repo.git(["config", "branch.feature/b.stkParent", "feature/a"]);
     repo.git(["switch", "feature/a"]);
-    let log_path = repo.path().join("submit.log");
-    let fake = FakeProvider::new()
-        .log_all("submit.log")
-        .fallback("[]")
-        .install(&repo);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
 
     repo.stack_faked(&fake)
-        .args(["submit", "--stack"])
+        .args(["submit", "--stack", "--dry-run"])
         .assert()
-        .failure()
-        .stderr(predicates::str::contains("feature/a has no stack parent"));
-
-    assert!(
-        !log_path.exists(),
-        "provider should not be called after validation failure"
-    );
+        .success()
+        .stdout(predicates::str::contains(
+            "feature/a is this stack's base (no stack parent recorded); not submitted",
+        ))
+        .stdout(predicates::str::contains(
+            "would create feature/b -> feature/a",
+        ));
 }
 
 #[test]
@@ -1569,4 +1567,487 @@ fn bare_submit_uses_submit_stack_config() {
         .success()
         .stdout(predicates::str::contains("would create feature/a -> main"))
         .stdout(predicates::str::contains("feature/b").not());
+}
+
+/// A stack rooted on a non-trunk branch - a release line, say - keeps that
+/// parentless root in its path as the base the branch above targets. Stack
+/// mode used to refuse the whole submit over it (#307), even though
+/// `--no-stack` handled it and `new`/`adopt` both create the shape.
+#[test]
+fn submit_stack_treats_a_parentless_root_as_the_base_not_a_branch_to_submit() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    // A release line off the trunk, with no stack metadata of its own.
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "rc-20260817 is this stack's base (no stack parent recorded); not submitted",
+        ))
+        .stdout(predicates::str::contains(
+            "would create fix/shared -> rc-20260817",
+        ))
+        .stdout(predicates::str::contains(
+            "submit complete: 1 created, 0 updated, 0 skipped",
+        ));
+}
+
+/// Same shape, reached through `stk.submitStack` rather than the flag - the
+/// configuration the bug was reported under.
+#[test]
+fn submit_stack_config_handles_a_parentless_root() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.submitStack", "true"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would create fix/shared -> rc-20260817",
+        ));
+}
+
+#[test]
+fn submit_downstack_treats_a_parentless_root_as_the_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.stack().args(["new", "fix/above"]).assert().success();
+    repo.git(["switch", "fix/shared"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--downstack", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would create fix/shared -> rc-20260817",
+        ))
+        .stdout(predicates::str::contains("fix/above").not());
+}
+
+/// The base is not ours to move: it must stay out of the `-u
+/// --force-with-lease` push that precedes the provider calls.
+#[test]
+fn submit_stack_does_not_push_a_parentless_root() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    // The base is on the remote already; it is simply not ours to push.
+    let _bare = repo.add_bare_origin(&["main", "rc-20260817"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--push", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("would push fix/shared to origin"))
+        .stdout(predicates::str::contains("would push rc-20260817").not());
+}
+
+/// A branch with no parent and nothing above it is still an error - there is
+/// no base to target - but the advice must not be a bare `git stk adopt`,
+/// which silently adopts onto the trunk (#307).
+#[test]
+fn submit_without_a_stack_parent_names_the_branch_and_a_safe_remedy() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    let log_path = repo.path().join("submit.log");
+    let fake = FakeProvider::new()
+        .log_all("submit.log")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "rc-20260817 has no stack parent; attach it with \
+             `git stk adopt rc-20260817 --parent <parent>`",
+        ))
+        .stderr(predicates::str::contains("`git stk repair`"));
+
+    assert!(
+        !log_path.exists(),
+        "provider should not be called after validation failure"
+    );
+}
+
+/// `--title`/`--desc` target the current branch. Standing on the stack's base,
+/// that branch is not part of the stack and its review is not ours to edit -
+/// so neither may reach it, even though it has an open review of its own.
+#[test]
+fn submit_stack_does_not_retitle_or_describe_the_base_review() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "rc-20260817"]);
+
+    let fake = FakeProvider::new()
+        .record("pr edit", "edits.txt", "")
+        // The release branch's own PR into the trunk.
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", "[]")
+        .on(
+            "pr create",
+            "https://github.com/lararosekelley/git-stk/pull/13",
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args([
+            "submit",
+            "--stack",
+            "--title",
+            "Retitled",
+            "--desc",
+            "Described.",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "created fix/shared -> rc-20260817",
+        ))
+        .stdout(predicates::str::contains(
+            "skipped title: rc-20260817 is this stack's base",
+        ))
+        .stdout(predicates::str::contains(
+            "skipped description: rc-20260817 is this stack's base",
+        ));
+
+    // Nothing was written to the base's own review.
+    let edits = fs::read_to_string(repo.path().join("edits.txt")).unwrap_or_default();
+    assert!(
+        !edits.contains("99"),
+        "the base review must not be edited, got: {edits}"
+    );
+}
+
+/// The base is the `--base` of the review opened for the branch above it, and
+/// git-stk does not push it. One the remote has never seen would make the
+/// forge reject the create, so say so first - and before pushing anything.
+#[test]
+fn submit_stack_rejects_a_base_the_remote_does_not_have() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    // The origin knows the trunk, but never saw the base.
+    let bare = repo.add_bare_origin(&["main"]);
+    let log_path = repo.path().join("submit.log");
+    let fake = FakeProvider::new()
+        .log_all("submit.log")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--push"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "rc-20260817 is this stack's base, but origin has no such branch",
+        ))
+        .stderr(predicates::str::contains(
+            "push rc-20260817 to origin first",
+        ))
+        // The branch to re-root is named: a bare `adopt --parent` would
+        // re-root the base itself when run from it.
+        .stderr(predicates::str::contains(
+            "git stk adopt fix/shared --parent <parent>",
+        ));
+
+    assert!(
+        !log_path.exists(),
+        "provider should not be called after validation failure"
+    );
+    // The check runs before the push, so nothing reached the remote.
+    let pushed = Command::new("git")
+        .args(["rev-parse", "fix/shared"])
+        .current_dir(bare.path())
+        .output()
+        .expect("check remote");
+    assert!(!pushed.status.success(), "nothing should have been pushed");
+}
+
+/// `--downstack` standing on the base submits nothing - everything stacked is
+/// above you - but the base is a valid base, not an unstacked branch, so the
+/// error must not offer to re-root it onto the trunk.
+#[test]
+fn submit_downstack_on_the_base_names_it_rather_than_offering_to_re_root() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "rc-20260817"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--downstack", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "rc-20260817 is this stack's base; there is nothing below it to submit",
+        ))
+        // The `from <branch>` clause, not just the shared prefix: it is the
+        // only evidence the two entrances share one bail, so without it
+        // re-specialising `--downstack` leaves the suite green.
+        .stderr(predicates::str::contains(
+            "`git stk submit --stack` from rc-20260817",
+        ))
+        .stderr(predicates::str::contains("adopt --parent").not());
+}
+
+/// Standing on the base is a supported `--stack` position, so the remote-base
+/// remedy must never be a bare `adopt --parent` - `adopt` defaults to the
+/// current branch, which would re-root the release line itself.
+#[test]
+fn submit_remote_base_error_never_offers_to_re_root_the_base_itself() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "rc-20260817"]);
+    let _bare = repo.add_bare_origin(&["main"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--push"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "git stk adopt fix/shared --parent <parent>",
+        ))
+        .stderr(predicates::str::contains("adopt --parent").not());
+}
+
+/// `submit <branch>` acts on a branch other than the one checked out, so its
+/// "no stack parent" remedy must name that branch - a bare `adopt --parent`
+/// would re-root whatever you happen to be standing on.
+#[test]
+fn submit_named_branch_error_names_that_branch_in_the_adopt_remedy() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.git(["switch", "-c", "orphan/branch"]);
+    repo.commit_file("orphan.txt", "o\n", "orphan work");
+    // Standing on the release line, submitting a different branch.
+    repo.git(["switch", "rc-20260817"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "orphan/branch", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "git stk adopt orphan/branch --parent <parent>",
+        ))
+        .stderr(predicates::str::contains("adopt --parent").not());
+}
+
+/// `stk.submitStack` is off by default, so a bare `submit` from a base takes
+/// the single-branch path, where the base trim never runs. It must still not
+/// offer to re-root the branch you are standing on.
+#[test]
+fn submit_default_path_from_a_base_points_at_stack_mode() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "rc-20260817"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "rc-20260817 is this stack's base; there is nothing below it to submit",
+        ))
+        // Named: `--stack` conflicts with naming a branch, so it has to be run
+        // from there rather than pointed at it.
+        .stderr(predicates::str::contains(
+            "`git stk submit --stack` from rc-20260817",
+        ))
+        .stderr(predicates::str::contains("adopt").not());
+}
+
+/// The trunk has no stack parent, so it reaches the same arm - but it is not a
+/// base, and the message it used to get pointed at `--stack`, which refuses on
+/// the trunk. A dead end.
+#[test]
+fn submit_on_the_trunk_gets_the_trunk_message_not_the_base_one() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.submitStack", "false"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "you are on the trunk (main); check out a stacked branch first",
+        ))
+        .stderr(predicates::str::contains("this stack's base").not());
+}
+
+/// `submit <trunk>` from a stacked checkout must not claim you are standing on
+/// the trunk - single-branch mode is the one path that can be pointed at a
+/// branch you are not on.
+#[test]
+fn submit_naming_the_trunk_does_not_claim_you_are_on_it() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.submitStack", "false"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "main", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "main is the trunk, so it is never part of a stack",
+        ))
+        .stderr(predicates::str::contains("you are on the trunk").not());
+}
+
+/// `children_of(trunk)` says nothing about where you stand, and a stack rooted
+/// off the trunk leaves the trunk childless - so the position check has to be
+/// the outer one, or `submit <trunk>` claims the repo has no stacks.
+#[test]
+fn submit_naming_the_trunk_with_only_an_off_trunk_stack_still_names_it() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.submitStack", "false"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "main", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "main is the trunk, so it is never part of a stack",
+        ))
+        .stderr(predicates::str::contains("no stacked branches to submit").not());
+}
+
+/// "no stacked branches" is about the repo, not about the trunk's children -
+/// a stack rooted off the trunk leaves the trunk childless while plainly being
+/// a stack.
+#[test]
+fn submit_on_the_trunk_sees_an_off_trunk_stack() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.submitStack", "false"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "main"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "you are on the trunk (main); check out a stacked branch first",
+        ))
+        .stderr(predicates::str::contains("no stacked branches").not());
+}
+
+/// The stack-mode trunk guard is a separate chain from the single-branch one -
+/// it has no outer position check - so it needs its own off-trunk fixture, or
+/// reverting it alone leaves the suite green.
+#[test]
+fn submit_stack_on_the_trunk_sees_an_off_trunk_stack() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "main"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "you are on the trunk (main); check out a stacked branch first",
+        ))
+        .stderr(predicates::str::contains("no stacked branches").not());
+}
+
+/// A stack rooted off the trunk: the overview must end at the base it sits on,
+/// not at the trunk - the bottom review targets the release line, and this is
+/// the only place the base appears in content git-stk publishes.
+#[test]
+fn submit_stack_overview_ends_at_an_off_trunk_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    let fake = FakeProvider::new()
+        .on("pr view 13", r##"{"body":"Shared fix description."}"##)
+        .record("pr edit 13 --body", "edit-body-13.txt", "")
+        .record("pr edit 99", "edit-body-99.txt", "")
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("updated stack note in #13"));
+
+    let body = fs::read_to_string(repo.path().join("edit-body-13.txt")).expect("body");
+    assert!(
+        body.contains("- `rc-20260817`"),
+        "overview must end at the base, got: {body}"
+    );
+    assert!(
+        !body.contains("- `main`"),
+        "overview must not end at the trunk, got: {body}"
+    );
+    // The base's own review is still never written to - load-bearing, because
+    // the fake records `pr edit 99` above.
+    assert!(!repo.path().join("edit-body-99.txt").exists());
 }

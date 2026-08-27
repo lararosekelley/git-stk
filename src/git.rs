@@ -941,6 +941,12 @@ pub fn fetch_tracking(remote: &str, branches: &[String]) -> Result<()> {
     status(&args).with_context(|| format!("failed to fetch branches from {remote}"))
 }
 
+/// Whether `remote` has a head for `branch`. Checks a stack base git-stk does
+/// not push itself, before a review is opened against it.
+pub(crate) fn remote_has_branch(remote: &str, branch: &str) -> Result<bool> {
+    Ok(!remote_branches_present(remote, std::slice::from_ref(&branch.to_owned()))?.is_empty())
+}
+
 /// The subset of `branches` that exist as heads on `remote`, learned in one
 /// `ls-remote` so a targeted fetch does not abort on a branch the remote has
 /// never seen.
