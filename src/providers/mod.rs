@@ -292,6 +292,16 @@ pub trait ReviewProvider {
     /// registered GitHub stack, where retargeting by hand is refused because
     /// GitHub retargets each layer as the one below it lands. Callers skip
     /// their own retarget rather than fight it.
+    ///
+    /// Defaults to `false`, and errs that way too, because the two mistakes
+    /// are not equally bad. Answering `false` wrongly means attempting a
+    /// retarget the platform refuses: a loud, recoverable error, and
+    /// `update_review_base` checks again itself, so a blip that clears in
+    /// between still lands on the friendly message. Answering `true` wrongly
+    /// means skipping a retarget that was needed - in `cleanup` the layer then
+    /// still points at a branch about to be deleted, and a platform that
+    /// auto-closes a review whose base disappears takes the review with it,
+    /// comments and approvals included, silently.
     fn platform_manages_base(&self, review: &ReviewRequest) -> Result<bool> {
         let _ = review;
         Ok(false)
