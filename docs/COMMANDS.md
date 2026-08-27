@@ -263,9 +263,9 @@ shared release line cannot be pulled into the stack and handed to `restack` to r
 which says it is a layer after all.
 
 A recorded base outranks a recorded parent everywhere the stack is walked in order to rewrite it -
-`restack`, `absorb`, `cleanup`, `split`, the metadata ref - so a base that picks up a `stkParent` elsewhere
-is still
-never rebased, deleted, or pushed. That protection needs the marker, though. A stack rooted before git-stk
+`restack`, `absorb`, `cleanup`, the metadata ref - so a base that picks up a `stkParent` elsewhere is still
+never rebased, deleted, or pushed. `split` is stronger: rather than skipping a base it refuses outright,
+because splitting would stamp a `stkParent` on it. That protection needs the marker, though. A stack rooted before git-stk
 recorded bases does not have one: run `git stk adopt <lowest-layer> --parent <base>` once, which records the
 base as it attaches the layer.
 
