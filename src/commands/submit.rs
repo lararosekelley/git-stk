@@ -265,19 +265,33 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
     // the floor; this keeps submit, and the push below, in step with it.
     let mut base = None;
     if submit_stack || downstack {
-        let layers = stack::stacked_layers(&branches)?;
-        // A lone unstacked branch stays put so `branch_parents` can name it:
-        // it has no base to target, which is an error rather than a floor.
-        if !layers.is_empty() && layers.len() < branches.len() {
+        base = stack::unanchored_base(&branches)?;
+        // `--downstack` standing on an unmarked base: `path_from_root` stops
+        // at the branch you are on, so the slice is just the base and there is
+        // nothing for `unanchored_base` to read the shape from. Its children
+        // still say what it is.
+        let unmarked_base = base.is_none()
+            && branches.len() == 1
+            && stack::parent_of(&branches[0])?.is_none()
+            && !stack::children_of(&branches[0])?.is_empty();
+
+        if let Some(found) = &base {
+            branches.retain(|branch| branch != found);
+        }
+
+        // Nothing left once the base is out: everything stacked here is above
+        // you. Name the base rather than report a no-op, or let
+        // `branch_parents` call it unstacked and offer to re-root it.
+        if unmarked_base || (base.is_some() && branches.is_empty()) {
+            let name = base.as_deref().unwrap_or_else(|| branches[0].as_str());
+            return Err(base_has_nothing_to_submit(name)?);
+        }
+
+        if let Some(found) = &base {
             anstream::println!(
                 "{}",
-                style::dim(&format!(
-                    "{} is this stack's base (no stack parent recorded); not submitted",
-                    branches[0]
-                ))
+                style::dim(&format!("{found} is this stack's base; not submitted"))
             );
-            base = Some(branches[0].clone());
-            branches = layers;
         }
     }
 
@@ -586,47 +600,63 @@ fn apply_reviewers(
     Ok(())
 }
 
+/// The error for a submit that resolves to nothing but the stack's base. Two
+/// sentences, on whether anything is stacked on it - shared because both the
+/// stack-mode trim and the single-branch path reach this state, and keeping
+/// two copies in step has already failed twice.
+fn base_has_nothing_to_submit(branch: &str) -> Result<anyhow::Error> {
+    if stack::children_of(branch)?.is_empty() {
+        return Ok(anyhow::anyhow!(
+            "{branch} is this stack's base, and nothing is stacked on it"
+        ));
+    }
+    // Name the branch in the remedy: `--stack` conflicts with naming one, so
+    // it has to be run from there rather than pointed at it - otherwise
+    // `submit <base>` from a sibling stack sends you to submit that one.
+    Ok(anyhow::anyhow!(
+        "{branch} is this stack's base; there is nothing below it to submit - \
+         run `git stk submit --stack` from {branch} to submit the branches above it"
+    ))
+}
+
 fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {
     let mut branch_parents = Vec::new();
     for branch in branches {
-        let Some(parent) = stack::parent_of(branch)? else {
-            // The trunk has no parent, so it reaches this arm too - and it
-            // is not a base, whatever its children are. Its own message
-            // first, as `nothing_to_merge_hint` does. Most necessary in an
-            // off-trunk-only repo: without it the trunk falls through and
-            // gets an `adopt` remedy aimed at itself.
-            if Some(branch) == stack::trunk_branch(&git::local_branches()?).as_ref() {
-                // Position first, so every arm below inherits it. This is the
-                // one path that can be pointed at a branch you are not on
-                // (`--stack`/`--downstack` both conflict with naming one), and
-                // `children_of(trunk)` says nothing about where you stand -
-                // a stack rooted off the trunk leaves the trunk childless.
-                // `is_ok_and` because `submit <branch>` works on a detached HEAD.
-                if !git::current_branch().is_ok_and(|current| current == *branch) {
-                    bail!(
-                        "{branch} is the trunk, so it is never part of a stack - \
-                         name a stacked branch instead"
-                    );
-                }
-                if !stack::has_stacked_branches()? {
-                    bail!("no stacked branches to submit");
-                }
-                bail!("you are on the trunk ({branch}); check out a stacked branch first");
-            }
-            // Every entrance to "you named the base" lands here: a bare
-            // `submit` (`stk.submitStack` is off by default) or `--no-stack`,
-            // where the trim never ran; and `--downstack` standing on it,
-            // where `path_from_root` stops at the branch you are on so the
-            // slice is just the base and the trim had nothing to drop. Say
-            // what the branch is rather than offer to re-root it, and name it
-            // in the remedy: `--stack` conflicts with naming a branch, so it
-            // has to be run from there, not pointed at it.
-            if !stack::children_of(branch)?.is_empty() {
+        // The trunk has no parent, so it would classify as a base below - it
+        // is not, whatever its children are. Its own message first, as
+        // `nothing_to_merge_hint` does. Most necessary in an off-trunk-only
+        // repo: without it the trunk falls through and gets an `adopt` remedy
+        // aimed at itself.
+        if Some(branch) == stack::trunk_branch(&git::local_branches()?).as_ref() {
+            // Position first, so every arm below inherits it. This is the one
+            // path that can be pointed at a branch you are not on
+            // (`--stack`/`--downstack` both conflict with naming one).
+            // `is_ok_and` because `submit <branch>` works on a detached HEAD.
+            if !git::current_branch().is_ok_and(|current| current == *branch) {
                 bail!(
-                    "{branch} is this stack's base; there is nothing below it to submit - \
-                     run `git stk submit --stack` from {branch} to submit the branches above it"
+                    "{branch} is the trunk, so it is never part of a stack - \
+                     name a stacked branch instead"
                 );
             }
+            if !stack::has_stacked_branches()? {
+                bail!("no stacked branches to submit");
+            }
+            bail!("you are on the trunk ({branch}); check out a stacked branch first");
+        }
+
+        // Every entrance to "you named the base" lands here: a bare `submit`
+        // (`stk.submitStack` is off by default) or `--no-stack`, where the
+        // trim never ran; and `--downstack` standing on it, where
+        // `path_from_root` stops at the branch you are on so the slice is just
+        // the base. A recorded base counts whatever parent it picked up;
+        // unmarked, its children are the only signal.
+        let is_base = stack::is_floor(branch)?
+            || (stack::parent_of(branch)?.is_none() && !stack::children_of(branch)?.is_empty());
+        if is_base {
+            return Err(base_has_nothing_to_submit(branch)?);
+        }
+
+        let Some(parent) = stack::parent_of(branch)? else {
             // Name the branch: `adopt` defaults to the one you are on, and
             // `submit <branch>` can be pointed at another - so the bare form
             // would re-root whatever you happen to be standing on.

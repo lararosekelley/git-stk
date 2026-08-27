@@ -1,6 +1,7 @@
 mod common;
 
 use common::TestRepo;
+use predicates::prelude::PredicateBooleanExt;
 
 /// main <- feature/a (adds foo.txt) <- feature/b (adds bar.txt). Each line is
 /// owned by a distinct commit, so blame attribution is unambiguous.
@@ -244,4 +245,86 @@ fn absorb_fork_conflict_is_resumable() {
     // The fold is applied (not rolled back), and a restack is in progress.
     assert_eq!(repo.git(["show", "feature/a:foo.txt"]), "alpha fixed");
     repo.stack().args(["abort"]).assert().success();
+}
+
+/// `absorb` spans `base..HEAD` with `--update-refs`, so a stack base carrying
+/// a stray `stkParent` would put the release line's commits in range and
+/// rewrite it. The marker outranks the recorded parent here too.
+#[test]
+fn absorb_never_rewrites_a_stack_base_that_acquired_a_parent() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    let base_before = repo.git(["rev-parse", "rc-20260817"]);
+
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "one\n", "shared work");
+    // What `repair` would write from the base's own release PR - both keys,
+    // since a recorded fork point would otherwise put the base's own commits
+    // back in the owners map.
+    repo.git(["config", "branch.rc-20260817.stkParent", "main"]);
+    let fork = repo.git(["rev-parse", "main"]);
+    repo.git(["config", "branch.rc-20260817.stkBase", &fork]);
+
+    // An edit that belongs to the layer's own commit.
+    repo.write("shared.txt", "two\n");
+    repo.git(["add", "shared.txt"]);
+
+    repo.stack()
+        .args(["absorb"])
+        .assert()
+        .success()
+        // Nor named in the force-push hint: it is not ours to move.
+        .stdout(predicates::str::contains(
+            "force-with-lease origin fix/shared",
+        ))
+        .stdout(predicates::str::contains("rc-20260817 fix/shared").not());
+
+    assert_eq!(
+        repo.git(["rev-parse", "rc-20260817"]),
+        base_before,
+        "the base must not have been rewritten"
+    );
+    // And the layer's own commit did absorb the edit.
+    assert_eq!(
+        repo.git(["show", "-s", "--format=%s", "fix/shared"]),
+        "shared work"
+    );
+    assert_eq!(
+        repo.git(["rev-list", "--count", "rc-20260817..fix/shared"]),
+        "1"
+    );
+}
+
+/// The fallthrough the previous test passes over. `repair` writes `stkBase`
+/// alongside the stray `stkParent`, and that recorded fork point would let a
+/// floor own its own commits again, routing a hunk of the base's into it.
+#[test]
+fn absorb_never_routes_a_hunk_into_the_stack_base() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "release\n", "release commit");
+    let base_before = repo.git(["rev-parse", "rc-20260817"]);
+
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "one\n", "shared work");
+    // Both keys, exactly as `repair` would leave them.
+    repo.git(["config", "branch.rc-20260817.stkParent", "main"]);
+    let fork = repo.git(["rev-parse", "main"]);
+    repo.git(["config", "branch.rc-20260817.stkBase", &fork]);
+
+    // A line the *base's* commit introduced: absorbable only if the base owns
+    // commits, which it must not.
+    repo.write("rc.txt", "release fixed\n");
+    repo.git(["add", "rc.txt"]);
+
+    repo.stack()
+        .args(["absorb"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "no changes could be attributed to a stack commit",
+        ));
+
+    assert_eq!(repo.git(["rev-parse", "rc-20260817"]), base_before);
 }

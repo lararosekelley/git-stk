@@ -32,6 +32,13 @@ const BASE_KEY: &str = "stkBase";
 /// Marks a branch as the rename of another that still has an open review, so
 /// the next submit can replace and close that review.
 const RENAMED_FROM_KEY: &str = "stkRenamedFrom";
+/// Marks a branch as a stack floor: the branch a stack sits on when it is
+/// rooted somewhere other than the trunk - a release line, say. git-stk does
+/// not manage a floor. It is never submitted, pushed, rebased, merged, or
+/// re-parented, so a shared branch cannot be pulled into a stack and rewritten.
+/// Recorded when a stack is rooted off-trunk, because the shape alone stops
+/// being visible once the branches above it land.
+const FLOOR_KEY: &str = "stkFloor";
 /// Records that git-stk created this branch's worktree, and where. Only these
 /// are ours to remove; a worktree the user made by hand stays theirs.
 const WORKTREE_KEY: &str = "stkWorktree";
@@ -59,6 +66,7 @@ pub fn create_branch(branch: &str, dry_run: bool) -> Result<()> {
         style::branch(branch),
         style::branch(&parent)
     );
+    mark_floor_if_rooting(&parent, dry_run)?;
     Ok(())
 }
 
@@ -89,7 +97,6 @@ pub fn create_branch_in_worktree(branch: &str, dry_run: bool) -> Result<()> {
         set_parent(branch, &parent)?;
         record_base(branch, &parent);
     }
-
     anstream::println!(
         "{} {} with parent {} in the worktree at {}",
         if dry_run { "would create" } else { "created" },
@@ -103,6 +110,7 @@ pub fn create_branch_in_worktree(branch: &str, dry_run: bool) -> Result<()> {
             style::dim(&format!("cd {}", git::display_path(&path)))
         );
     }
+    mark_floor_if_rooting(&parent, dry_run)?;
     Ok(())
 }
 
@@ -200,6 +208,7 @@ pub fn insert_branch(branch: &str, dry_run: bool) -> Result<()> {
             style::branch(branch)
         );
     }
+    mark_floor_if_rooting(&current, dry_run)?;
     Ok(())
 }
 
@@ -209,8 +218,8 @@ pub fn insert_branch(branch: &str, dry_run: bool) -> Result<()> {
 pub fn prepend_branch(branch: &str, dry_run: bool) -> Result<()> {
     ensure_absent(branch)?;
     let current = git::current_branch()?;
-    let parent =
-        parent_of(&current)?.context("current branch has no stack parent to prepend below")?;
+    let parent = stacked_parent_of(&current)?
+        .context("current branch has no stack parent to prepend below")?;
     if !git::worktree_is_clean()? {
         bail!(
             "working tree has uncommitted changes; commit or stash before `git stk new --prepend`"
@@ -244,6 +253,7 @@ pub fn prepend_branch(branch: &str, dry_run: bool) -> Result<()> {
         style::branch(&current),
         style::branch(branch)
     );
+    mark_floor_if_rooting(&parent, dry_run)?;
     Ok(())
 }
 
@@ -300,6 +310,27 @@ pub fn adopt_branch(branch: &str, parent: &str, dry_run: bool) -> Result<()> {
         style::branch(branch),
         style::branch(parent)
     );
+    // Adopting a branch onto a parent says it is a layer, so it is no longer a
+    // base - otherwise it stays out of `submit`/`merge` while `restack` treats
+    // it as ordinary. Announced like the recording, and on a dry run too: it
+    // removes protection, which is the direction that most wants saying.
+    if is_floor(branch)? {
+        if !dry_run {
+            clear_floor(branch)?;
+        }
+        anstream::println!(
+            "{}",
+            style::dim(&format!(
+                "{} {branch} is no longer a stack base",
+                if dry_run {
+                    "would record that"
+                } else {
+                    "recorded that"
+                }
+            ))
+        );
+    }
+    mark_floor_if_rooting(parent, dry_run)?;
     Ok(())
 }
 
@@ -309,7 +340,17 @@ pub fn detach_branch(branch: Option<&str>) -> Result<()> {
         .map_or_else(git::current_branch, Ok)?;
     unset_parent(&branch)?;
     unset_base(&branch)?;
+    // Also the way to say "stop treating this as a stack base" - and the
+    // escape every base hint names, so it confirms what it cleared.
+    let was_floor = is_floor(&branch)?;
+    clear_floor(&branch)?;
     anstream::println!("detached {}", style::branch(&branch));
+    if was_floor {
+        anstream::println!(
+            "{}",
+            style::dim(&format!("{branch} is no longer a stack base"))
+        );
+    }
     Ok(())
 }
 
@@ -514,8 +555,15 @@ fn try_publish_metadata(remote: &str) -> Result<()> {
     let trunk = trunk_branch(&git::local_branches()?);
 
     let mut parents = serde_json::Map::new();
+    let mut floors = Vec::new();
     for branch in current_stack_branches(&current)? {
-        if let Some(parent) = parent_of(&branch)? {
+        // Marker first, matching every reader: a base that picked up a stray
+        // parent must still publish as a base. Published as a layer it would
+        // arrive with `floors: []` and revoke the marker on the other clone -
+        // the protected machine exporting the damage.
+        if is_floor(&branch)? {
+            floors.push(Value::String(branch));
+        } else if let Some(parent) = parent_of(&branch)? {
             parents.insert(branch, Value::String(parent));
         }
     }
@@ -523,7 +571,7 @@ fn try_publish_metadata(remote: &str) -> Result<()> {
         return Ok(());
     }
 
-    let document = json!({ "trunk": trunk, "parents": parents });
+    let document = json!({ "trunk": trunk, "parents": parents, "floors": floors });
     git::write_blob_ref(METADATA_REF, METADATA_FILE, &document.to_string())?;
     git::push_ref(remote, METADATA_REF)
 }
@@ -565,13 +613,59 @@ pub fn apply_remote_metadata(remote: &str) -> Result<usize> {
         pairs.push((branch.clone(), parent.to_owned()));
     }
 
+    // The branch each stack sits on. It has no parent, so it is absent from the
+    // map above - and without it this machine cannot tell a stack's base from a
+    // branch whose metadata is missing. Untrusted names, same as the parents.
+    // A document written before bases were recorded has no `floors` key at all.
+    // That is not "no bases" - it is "this writer did not know about them" - so
+    // the revocation below must not run, or an un-upgraded clone (whose `sync`
+    // is the one that adopts the base) would clear the marker here and hand the
+    // release line back to `restack`.
+    let publishes_floors = document.get("floors").is_some();
+    let floors: Vec<String> = document
+        .get("floors")
+        .and_then(Value::as_array)
+        .map(|floors| {
+            floors
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|floor| is_safe_ref_name(floor))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+
     // Fetch every listed branch first, so each parent resolves locally before
-    // we record it.
+    // we record it. Bases included: a fresh clone has only the trunk, and the
+    // stack is unusable without the branch it sits on.
     let local: BTreeSet<String> = git::local_branches()?.into_iter().collect();
-    for (branch, _) in &pairs {
+    for branch in pairs.iter().map(|(branch, _)| branch).chain(floors.iter()) {
         if !local.contains(branch) {
             git::fetch_branch(remote, branch)
                 .with_context(|| format!("failed to fetch {branch} from {remote}"))?;
+        }
+    }
+
+    for floor in &floors {
+        if is_floor(floor)? {
+            continue;
+        }
+        mark_floor(floor);
+        // Recording a base another machine chose changes what this clone will
+        // rebase, so it is not something to do in silence - the revocation
+        // below announces the same membership change.
+        anstream::println!("{} is now a stack base", style::branch(floor));
+    }
+    // A branch the other machine lists with a parent is a layer there, so any
+    // floor recorded here is stale. Without this the ref can only ever add
+    // floors, and the two clones quietly disagree about what is in the stack.
+    for (branch, _) in pairs
+        .iter()
+        .filter(|(branch, _)| publishes_floors && !floors.contains(branch))
+    {
+        if is_floor(branch)? {
+            clear_floor(branch)?;
+            anstream::println!("{} is no longer a stack base", style::branch(branch));
         }
     }
 
@@ -607,11 +701,16 @@ pub fn path_from_root(branch: &str) -> Result<Vec<String>> {
     let mut seen = BTreeSet::from([branch.to_owned()]);
 
     let mut cursor = branch.to_owned();
-    while let Some(parent) = parent_of(&cursor)? {
+    while let Some(parent) = stacked_parent_of(&cursor)? {
         if Some(&parent) == trunk.as_ref() || !seen.insert(parent.clone()) {
             break;
         }
         path.push(parent.clone());
+        // A floor is where a line starts, like the trunk: keep it, as the base
+        // the branch above targets, but never walk past it.
+        if is_floor(&parent)? {
+            break;
+        }
         cursor = parent;
     }
 
@@ -630,21 +729,50 @@ pub fn path_from_root(branch: &str) -> Result<Vec<String>> {
 /// an empty result means the line is a single unstacked branch, which callers
 /// report rather than silently skip.
 pub fn stacked_layers(line: &[String]) -> Result<Vec<String>> {
-    let mut layers = Vec::with_capacity(line.len());
-    for branch in line {
-        if parent_of(branch)?.is_some() {
-            layers.push(branch.clone());
-        }
-    }
-    Ok(layers)
+    Ok(branch_parents(line)?
+        .into_iter()
+        .map(|(branch, _)| branch)
+        .collect())
 }
 
-/// (branch, parent) pairs for the branches that have a stack parent;
-/// branches without one are skipped.
+/// The base `branches` sits on, when that is a branch rather than the trunk:
+/// the parentless root of a line rooted off-trunk, with layers stacked on it.
+/// It is not part of the stack - nothing submits, pushes, merges, or
+/// re-parents it - so callers hold it out of whatever they are about to do.
+///
+/// A single unstacked branch is not a base: nothing is stacked on it, and it
+/// is usually a branch whose metadata is simply missing. That returns `None`,
+/// so callers treat it as an ordinary branch (an error to submit, something
+/// `sync` may still adopt) rather than silently skipping it.
+pub fn unanchored_base(branches: &[String]) -> Result<Option<String>> {
+    let layers = stacked_layers(branches)?;
+    if layers.len() == branches.len() {
+        return Ok(None);
+    }
+    if layers.is_empty() {
+        // Nothing is stacked here, so the shape says nothing: only a recorded
+        // floor is a base. This is what keeps a base a base after the branches
+        // above it land, and still lets `sync` adopt a lone branch whose
+        // metadata is simply missing.
+        let [lone] = branches else {
+            return Ok(None);
+        };
+        return Ok(is_floor(lone)?.then(|| lone.clone()));
+    }
+    Ok(branches
+        .iter()
+        .find(|branch| !layers.contains(branch))
+        .cloned())
+}
+
+/// (branch, parent) pairs for the branches that stack on something. A branch
+/// with no recorded parent is skipped, and so is a floor - it is the base the
+/// stack sits on, whatever parent it may have picked up, and callers use this
+/// to decide what to write to (review bodies, the metadata ref).
 pub fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {
     let mut pairs = Vec::new();
     for branch in branches {
-        if let Some(parent) = parent_of(branch)? {
+        if let Some(parent) = stacked_parent_of(branch)? {
             pairs.push((branch.clone(), parent));
         }
     }
@@ -654,7 +782,7 @@ pub fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {
 fn parent_map() -> Result<BTreeMap<String, String>> {
     let mut parents = BTreeMap::new();
     for branch in git::local_branches()? {
-        if let Some(parent) = parent_of(&branch)? {
+        if let Some(parent) = stacked_parent_of(&branch)? {
             parents.insert(branch, parent);
         }
     }
@@ -717,8 +845,69 @@ fn root_for(branch: &str, parents: &BTreeMap<String, String>) -> String {
     root
 }
 
+/// Record `parent` as a stack floor when a stack is being rooted on it: it is
+/// not the trunk, and has no stack parent of its own. Called only where the
+/// user says so - `new`, `adopt`, `insert`, `prepend` - never from `sync` or
+/// `repair`, where a parentless parent is far more likely to be a branch whose
+/// metadata has not been rebuilt yet than a base.
+fn mark_floor_if_rooting(parent: &str, dry_run: bool) -> Result<()> {
+    let trunk = trunk_branch(&git::local_branches()?);
+    if Some(parent) == trunk.as_deref() || stacked_parent_of(parent)?.is_some() || is_floor(parent)?
+    {
+        return Ok(());
+    }
+
+    // Stacking on an unadopted branch is ambiguous - a release line and a
+    // stack branch nobody has adopted yet look identical, and only the person
+    // typing knows which this is. Record the reading that makes the branch
+    // safe, but say so and name the way back, because the alternative reading
+    // means the branch is frozen out of its own restacks until someone does.
+    // Announced on a dry run too: this writes metadata to a branch the command
+    // does not name, which is the last thing to leave to a surprise.
+    if !dry_run {
+        mark_floor(parent);
+    }
+    anstream::println!(
+        "{}",
+        style::dim(&format!(
+            "{} {parent} as this stack's base; \
+             if it is a stacked branch, run `git stk detach {parent}`",
+            if dry_run { "would record" } else { "recorded" }
+        ))
+    );
+    Ok(())
+}
+
+/// Whether `branch` is a stack floor - see [`FLOOR_KEY`].
+pub fn is_floor(branch: &str) -> Result<bool> {
+    Ok(git::config_get(&floor_key(branch))?.is_some())
+}
+
+/// Record `branch` as a stack floor. Best effort: a floor that fails to record
+/// is still derived from the shape while branches sit on it, so a failure here
+/// costs persistence, not protection.
+pub fn mark_floor(branch: &str) {
+    let _ = git::config_set(&floor_key(branch), "true");
+}
+
+pub fn clear_floor(branch: &str) -> Result<()> {
+    git::config_unset(&floor_key(branch))
+}
+
 pub(crate) fn parent_of(branch: &str) -> Result<Option<String>> {
     git::config_get(&parent_key(branch))
+}
+
+/// The branch's stack parent for any purpose that walks or rewrites the stack:
+/// `None` for a floor, whatever `stkParent` it may have picked up, because the
+/// base a stack sits on is not ours to move. [`parent_of`] is the raw read,
+/// kept for `repair` - which exists to fix such metadata - and for snapshots,
+/// which record state exactly as it was.
+pub(crate) fn stacked_parent_of(branch: &str) -> Result<Option<String>> {
+    if is_floor(branch)? {
+        return Ok(None);
+    }
+    parent_of(branch)
 }
 
 pub(crate) fn base_of(branch: &str) -> Result<Option<String>> {
@@ -739,6 +928,10 @@ pub(crate) fn set_base(branch: &str, base: &str) -> Result<()> {
 
 pub(crate) fn unset_base(branch: &str) -> Result<()> {
     git::config_unset(&base_key(branch))
+}
+
+fn floor_key(branch: &str) -> String {
+    format!("branch.{branch}.{FLOOR_KEY}")
 }
 
 fn parent_key(branch: &str) -> String {

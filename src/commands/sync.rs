@@ -69,6 +69,15 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     let root = stack::stack_root(&current)?;
     let branches = stack::current_stack_branches(&current)?;
 
+    // A stack rooted off the trunk sits on a branch that is not part of it: no
+    // stack parent of its own, with layers stacked on top. Adopting it from
+    // its own review - a release PR into the trunk, say - would hand a shared
+    // branch to restack, which rebases and force-pushes it; letting it count
+    // as finished would delete it locally. It is the stack's base, so sync
+    // leaves its metadata and its ref alone. `repair` remains the explicit
+    // path for rebuilding a parent when that is genuinely what is wanted.
+    let base = stack::unanchored_base(&branches)?;
+
     let (provider, review_provider) = match detect_review_provider() {
         Ok(pair) => pair,
         // A bare local repo - no remote and no provider configured (the demo
@@ -102,6 +111,23 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     let mut skipped = 0;
 
     for branch in &branches {
+        if Some(branch) == base.as_ref() {
+            // A recorded base is a fact; one read off the shape is a guess -
+            // and skipping it means its own metadata never gets rebuilt here.
+            // Say which, and name the command that does rebuild it.
+            let note = if stack::is_floor(branch)? {
+                format!("skipped {branch}: this stack's base")
+            } else {
+                format!(
+                    "skipped {branch}: nothing below it in this stack, so it reads as the base; \
+                     `git stk repair` if it is a stacked branch"
+                )
+            };
+            anstream::println!("{}", style::dim(&note));
+            skipped += 1;
+            continue;
+        }
+
         // Closed-inclusive so a review closed without merging gets a
         // truthful skip instead of "no review found".
         let Some(review) = review_provider.review_for_branch_including_closed(branch)? else {
@@ -280,8 +306,12 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         )?;
     }
 
-    // 8. Where to look next.
-    match survivors.first() {
+    // 8. Where to look next: the lowest surviving layer. The base is not one -
+    //    there is nothing of ours to review or land on it.
+    match survivors
+        .iter()
+        .find(|branch| Some(*branch) != base.as_ref())
+    {
         Some(bottom) => match review_provider.review_for_branch(bottom)? {
             Some(review) => anstream::println!(
                 "next up: {} -> {} {}",
@@ -296,13 +326,15 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             ),
         },
         None => {
-            let base = trunk.unwrap_or(root);
+            // The layers landed in whatever the stack sits on: its own base
+            // when it is rooted off the trunk, the trunk otherwise.
+            let landed_into = base.clone().or(trunk).unwrap_or(root);
             // Only claim a merge when there was one: a stack cleaned up under
             // `stk.cleanClosed` may have been closed rather than landed.
             let ending = if closed.is_empty() {
-                format!("stack complete: everything merged into {base}")
+                format!("stack complete: everything merged into {landed_into}")
             } else {
-                format!("stack complete: nothing left above {base} - merged or closed")
+                format!("stack complete: nothing left above {landed_into} - merged or closed")
             };
             anstream::println!("{}", style::success(&ending));
         }

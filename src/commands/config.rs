@@ -25,7 +25,7 @@ pub fn print_config() -> Result<()> {
         }
     }
 
-    let metadata = git::config_get_regexp(r"^branch\..*\.stk(parent|base)$")?;
+    let metadata = git::config_get_regexp(r"^branch\..*\.stk(parent|base|floor)$")?;
     if metadata.is_empty() {
         anstream::println!();
         anstream::println!("{}", style::dim("no branch metadata (no stacked branches)"));

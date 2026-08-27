@@ -350,3 +350,177 @@ fn repair_from_remote_skips_unsafe_metadata_names() {
         "the malicious metadata name must not have executed anything"
     );
 }
+
+/// The branch a stack sits on has no parent, so it is absent from the parent
+/// map - and without it the other machine cannot tell a stack's base from a
+/// branch whose metadata is missing. It rides the metadata ref too.
+#[test]
+fn repair_from_remote_restores_the_stack_base() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let _origin = repo.add_bare_origin(&["main", "rc-20260817"]);
+    repo.stack().args(["restack", "--push"]).assert().success();
+
+    // A fresh clone: no local stack metadata, and no local base branch either -
+    // it is only a parent, so nothing else pulls it down.
+    repo.git(["config", "--unset", "branch.fix/shared.stkParent"]);
+    repo.git(["config", "--unset", "branch.rc-20260817.stkFloor"]);
+    repo.git(["branch", "-D", "rc-20260817"]);
+
+    repo.stack()
+        .args(["repair", "--from-remote"])
+        .assert()
+        .success()
+        // Recording a base another machine chose changes what this clone will
+        // rebase, so it is said out loud.
+        .stdout(predicates::str::contains("rc-20260817 is now a stack base"));
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.fix/shared.stkParent"]),
+        "rc-20260817"
+    );
+    assert!(
+        !repo
+            .git_status(["branch", "--list", "rc-20260817"])
+            .stdout
+            .is_empty(),
+        "the base should have been fetched: the stack is unusable without it"
+    );
+    assert_eq!(
+        repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
+        "true",
+        "the base should have been restored from the metadata ref"
+    );
+}
+
+/// The metadata ref has to be able to revoke a base, not only record one: a
+/// branch the other machine lists with a parent is a layer there, so a floor
+/// held here is stale.
+#[test]
+fn repair_from_remote_clears_a_base_the_other_machine_adopted() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let _origin = repo.add_bare_origin(&["main", "rc-20260817"]);
+    // The other machine decided the base is a layer after all, and pushed that.
+    repo.stack()
+        .args(["adopt", "rc-20260817", "--parent", "main"])
+        .assert()
+        .success();
+    repo.stack().args(["restack", "--push"]).assert().success();
+
+    // This clone still has it marked.
+    repo.git(["config", "branch.rc-20260817.stkFloor", "true"]);
+
+    repo.stack()
+        .args(["repair", "--from-remote"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "rc-20260817 is no longer a stack base",
+        ));
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkFloor"])
+            .stdout
+            .len(),
+        0
+    );
+}
+
+/// A base that picked up a stray `stkParent` must still publish as a base.
+/// Published as a layer it arrives with an empty `floors` list, and the
+/// revocation on the receiving clone then clears the marker there - the one
+/// protected machine exporting the damage.
+#[test]
+fn publish_metadata_keeps_a_base_a_base_even_with_a_stray_parent() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+    // What `repair` would write from the base's own release PR.
+    repo.git(["config", "branch.rc-20260817.stkParent", "main"]);
+
+    let _origin = repo.add_bare_origin(&["main", "rc-20260817"]);
+    repo.stack().args(["restack", "--push"]).assert().success();
+
+    // Simulate the other clone: drop the marker, then rebuild from the ref.
+    repo.git(["config", "--unset", "branch.rc-20260817.stkFloor"]);
+    repo.stack()
+        .args(["repair", "--from-remote"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
+        "true",
+        "a base with a stray parent must publish as a base, not a layer"
+    );
+}
+
+/// A recorded base is not a branch missing a parent. Inferring one from its
+/// own review writes metadata that contradicts the marker and that every
+/// rewrite path then ignores.
+#[test]
+fn repair_leaves_a_recorded_stack_base_alone() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    repo.stack()
+        .args(["repair"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "rc-20260817: stack base, left alone",
+        ));
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkParent"])
+            .stdout
+            .len(),
+        0,
+        "repair must not invent a parent for a recorded base"
+    );
+}
+
+/// Metadata written before bases were recorded has no `floors` key at all -
+/// which is "this writer did not know about them", not "there are none". An
+/// un-upgraded clone must not be able to revoke a marker here.
+#[test]
+fn repair_from_remote_keeps_a_base_when_the_remote_predates_floors() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let _origin = repo.add_bare_origin(&["main", "rc-20260817"]);
+    repo.stack().args(["restack", "--push"]).assert().success();
+
+    // An older git-stk publishing the same stack: it adopted the base, so the
+    // base appears as an ordinary layer and the document has no floors key.
+    let older = r#"{"trunk":"main","parents":{"fix/shared":"rc-20260817","rc-20260817":"main"}}"#;
+    repo.write_metadata_ref(older);
+
+    repo.stack()
+        .args(["repair", "--from-remote"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
+        "true",
+        "a floors-less document must not revoke a recorded base"
+    );
+}

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use super::{base_of, branch_and_descendants, parent_of, stack_root};
+use super::{base_of, branch_and_descendants, is_floor, parent_of, stack_root};
 use crate::git;
 use crate::style;
 
@@ -43,6 +43,9 @@ fn capture(label: &str) -> Result<()> {
                 "sha": git::branch_sha(&branch),
                 "parent": parent_of(&branch).ok().flatten(),
                 "base": base_of(&branch).ok().flatten(),
+                // Undoing a command that rooted a stack has to unmark the base
+                // it marked, or the branch stays held out of every stack.
+                "floor": is_floor(&branch).unwrap_or(false).then_some("true"),
             })
         })
         .collect();
@@ -106,6 +109,7 @@ pub fn undo() -> Result<()> {
         // Then metadata, set or cleared to match the snapshot.
         restore_config(name, "stkParent", entry["parent"].as_str())?;
         restore_config(name, "stkBase", entry["base"].as_str())?;
+        restore_config(name, "stkFloor", entry["floor"].as_str())?;
         restored += 1;
     }
 

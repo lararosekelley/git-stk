@@ -6,6 +6,28 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ## 0.12.0
 
+### Added
+
+- **stack:** rooting a stack on a branch other than the trunk records that
+  branch as the stack's base (`branch.<name>.stkFloor`). A base is never
+  submitted, pushed, merged, or re-parented, and recording it is what makes
+  that hold once the branches above it land - at which point nothing about the
+  shape says it is a base any more. `new`, `adopt`, and the `--insert` /
+  `--prepend` forms record it, saying so and naming `git stk detach <branch>`
+  as the way back - stacking on a branch that has no stack parent of its own is
+  ambiguous, since a release line and a branch nobody has adopted yet look
+  identical there. A stack
+  rooted before this shipped has no marker, and git-stk does not infer one -
+  shape alone cannot tell a base from a stack that is only half rebuilt, and
+  guessing wrong freezes an ordinary branch out of its own restacks. Record it
+  once with `git stk adopt <lowest-layer> --parent <base>`, which marks the
+  base as it attaches the layer. A base an older `sync` already adopted carries
+  a stack parent it should never have had, which makes it indistinguishable
+  from an ordinary branch: run `git stk detach <base>` first, then the adopt
+  above (#308). The base rides the shared metadata ref
+  (`refs/stk/metadata`) alongside the parent map, so `repair --from-remote`
+  rebuilds it on another machine; `adopt` and `undo` clear it again.
+
 ### Fixed
 
 - **submit:** a stack rooted on a branch other than the trunk - a release line,
@@ -25,6 +47,23 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   check that guards this is skipped for a branch with no recorded parent, so
   nothing caught it. `merge --all` also counted the base among the reviews it
   set out to land (#307).
+- **status:** a stack's base is named as one rather than shown as a branch
+  whose metadata went missing, and its hints changed with it: no `restack` when
+  it is behind the trunk (nothing rebases it), and no `sync` when its own
+  review lands, or when the review of a base a branch sits on lands - `sync`
+  skips a base by design, so both pointed at a command that would never act.
+  Each now names what is actually left to do (#308).
+- **sync:** a stack rooted on a branch other than the trunk no longer has that
+  base adopted into the stack. `sync` recorded a parent for every branch in
+  scope from its own review, and the base is in scope - so a release line with
+  an open PR into the trunk picked up `stkParent = <trunk>`, which `restack`
+  would then rebase and force-push, and a merged release PR would have deleted
+  the branch locally. A branch with no parent and nothing stacked on it is
+  still adopted: that is metadata to rebuild, not a base (#308).
+- **sync:** the closing "next up" line names the lowest surviving layer rather
+  than the stack's base, which has nothing of ours to review or land (#308).
+- **sync:** a stack rooted off the trunk reports as complete into its own base
+  rather than into the trunk, which is not where its layers landed (#308).
 - **merge:** `merge --all` pins the stack's base for the whole run. The `sync`
   between merges re-records that base's parent from its own review (#308), so
   recomputing the bottom each iteration could promote it into the landing and

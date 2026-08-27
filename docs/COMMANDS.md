@@ -65,7 +65,9 @@ prompts; without it, an interactive picker lets you group commits and name each 
 
 `status` and `list` append `hint:` lines pointing at the next command when there is one: `restack` when a
 branch is behind its parent, `submit` when a review base went stale, `sync` when a review in the stack
-merged.
+merged. A stack's base gets none of those - nothing rebases, submits, or lands it - so `status` names it as
+the base and points at `git stk detach` instead; a base whose own review landed, and a layer sitting on
+one, are told that finishing it is theirs to do rather than sent to a command that would skip it.
 
 `list --format markdown` prints a shareable summary instead - a status line and the PRs in merge order
 with links and states, ready to paste into a tracking issue or PR comment:
@@ -232,16 +234,39 @@ of its own, even when it has one (`merge` lands the stack's own layers, never th
 the base is what the lowest review targets, `--push` first checks the base is on the remote and stops with
 something actionable if it is not. Submitting the base itself has nothing below it to submit, and says so
 rather than treating the base as unstacked - `--downstack` from it, and equally a bare `submit`,
-`--no-stack`, or `submit <base>`, since `stk.submitStack` is off by default. The message points at
-`git stk submit --stack` run _from_ that branch, because `--stack` cannot be pointed at a named one.
+`--no-stack`, or `submit <base>`, since `stk.submitStack` is off by default. While layers are still stacked
+on it the message points at `git stk submit --stack` run _from_ that branch (`--stack` cannot be pointed at
+a named one); once they have landed it simply names it as a base.
 
 A branch with no stack parent _and_ nothing above it is not a stack at all - there is no base to target or
 merge into - so `submit` and `merge` both say so. `submit` names the branch in its remedy
 (`git stk adopt <branch> --parent <parent>`), because `submit <branch>` can be pointed at a branch other
 than the one checked out and `adopt` defaults to the one you are on; `merge` always means the current
-branch, so it leaves the name out. Either way, `git stk repair` rebuilds the metadata instead. The trunk
-matches that description too but is not a stack branch, so it gets its own message rather than an `adopt`
-remedy - naming it, or standing on it, both say so.
+branch, so it leaves the name out. Either way, `git stk repair` rebuilds the metadata instead. Two things
+match that description without being it: the trunk, which is not a stack branch and gets its own message
+rather than an `adopt` remedy; and a _recorded base_ standing alone, which is not missing metadata - its
+stack has simply landed.
+
+Rooting a stack on a branch records it as that stack's base (`branch.<name>.stkFloor`), because the shape
+alone stops showing it once the branches above it land - and shape alone cannot tell a base from a stack
+whose metadata is only half rebuilt, so git-stk records intent rather than guessing. Stacking on a branch
+that has no stack parent of its own is the ambiguous case: a release line and a branch nobody has adopted
+yet look identical there, so `new` and `adopt` say which reading they recorded and name `git stk detach` as
+the way back. `sync` then leaves the
+base alone: it will not adopt a parent for it from its own review, and never counts it as finished, so a
+shared release line cannot be pulled into the stack and handed to `restack` to rebase and force-push, or to
+`cleanup` to delete. `git stk detach <branch>` clears the marker - as does adopting the base onto something,
+which says it is a layer after all.
+
+A recorded base outranks a recorded parent everywhere the stack is walked in order to rewrite it -
+`restack`, `absorb`, `cleanup`, the metadata ref - so a base that picks up a `stkParent` elsewhere is still
+never rebased, deleted, or pushed. That protection needs the marker, though. A stack rooted before git-stk
+recorded bases does not have one: run `git stk adopt <lowest-layer> --parent <base>` once, which records the
+base as it attaches the layer.
+
+If an older git-stk already adopted that base into the stack, it carries a stack parent it should never have
+had - and that makes it indistinguishable from an ordinary branch, so the adopt above records nothing. Clear
+the stray parent first with `git stk detach <base>`, then run it.
 
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens

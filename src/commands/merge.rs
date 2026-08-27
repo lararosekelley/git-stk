@@ -122,10 +122,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     // review (#308), which would otherwise make it the lowest stacked branch
     // next time round and land it - unprompted, since the confirmation below
     // names it as the destination, not as something being merged.
-    let pinned_base = line
-        .first()
-        .filter(|branch| !branches.contains(branch))
-        .cloned();
+    let pinned_base = stack::unanchored_base(&line)?;
 
     if dry_run {
         for branch in &branches {
@@ -254,6 +251,15 @@ fn nothing_to_merge_hint() -> Result<String> {
     // Standing on a branch with no stack parent: there is a branch here, just
     // no base recorded to merge it into. Say which, rather than implying the
     // repo has no stacks.
+    // A recorded base standing alone is not missing metadata - it is the
+    // branch a stack sat on. Suggesting `adopt` here would re-root it: `adopt`
+    // defaults to the branch you are on.
+    if stack::is_floor(&current)? {
+        return Ok(format!(
+            "{current} is a stack's base, and nothing is stacked on it - \
+             there is nothing to merge"
+        ));
+    }
     if Some(&current) != trunk.as_ref() && stack::parent_of(&current)?.is_none() {
         return Ok(format!(
             "{current} has no stack parent, so there is no base to merge it into; \
