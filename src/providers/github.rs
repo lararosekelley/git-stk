@@ -188,6 +188,20 @@ impl ReviewProvider for GitHubProvider {
         settings::bool_setting(settings::GITHUB_STACKS_KEY).unwrap_or(false)
     }
 
+    fn native_stack_covering(&self, branches: &[String]) -> Result<Option<NativeStack>> {
+        let Some((owner, repo)) = repo_owner_name() else {
+            return Ok(None);
+        };
+        // Errors propagate here: the caller is acting on the answer, and
+        // "no stack" for an expired token would report the stack already gone
+        // while it is still registered.
+        let listing = stacks_listing(&owner, &repo)
+            .context("could not read this repository's stacks from GitHub")?;
+        Ok(branches
+            .iter()
+            .find_map(|branch| parse_native_stack(&listing, branch)))
+    }
+
     fn unstack_reviews(&self, stack: &NativeStack) -> Result<Option<String>> {
         let Some((owner, repo)) = repo_owner_name() else {
             return Ok(None);

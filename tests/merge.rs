@@ -1562,3 +1562,58 @@ fn unstack_says_so_when_there_is_no_platform_stack() {
         .success()
         .stdout(predicates::str::contains("no platform stack recorded"));
 }
+
+/// The lookup *is* this command, so a failed one must not read as "already
+/// dissolved" - that would tell the user the stack is gone while it is still
+/// registered.
+#[test]
+fn unstack_surfaces_a_failed_lookup_rather_than_calling_it_gone() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .fail("api repos/owner/repo/stacks", "HTTP 401: Bad credentials")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["unstack"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "could not read this repository's stacks from GitHub",
+        ))
+        .stderr(predicates::str::contains("nothing to dissolve").not());
+}
+
+/// A stack need not begin where the local line does - one made outside git-stk
+/// need not align with it at all - so every layer is searched, not the bottom.
+#[test]
+fn unstack_finds_a_stack_that_does_not_start_at_the_local_bottom() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+
+    // The stack holds only the upper layer.
+    let stacks = r##"[{"number":5,"base":{"ref":"ma/a"},"pull_requests":[
+        {"number":13,"head":{"ref":"ma/b"}},
+        {"number":14,"head":{"ref":"elsewhere"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("stacks/5/unstack -X POST", "unstack.txt", "{}")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", stacks)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["unstack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dissolved stack 5"));
+    assert!(repo.path().join("unstack.txt").exists());
+}
