@@ -186,7 +186,7 @@ fn status_hints_adopt_when_parent_review_closed() {
         .success()
         .stdout(predicates::str::contains(
             "hint: parent review #12 was closed without merging - \
-             retarget feature/b with `git stk adopt`",
+             retarget with `git stk adopt feature/b --parent <parent>`",
         ));
 }
 

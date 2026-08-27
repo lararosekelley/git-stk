@@ -86,7 +86,8 @@ pub fn repair(dry_run: bool) -> Result<()> {
                     "{}",
                     style::warn(&format!(
                         "{branch}: parent {parent} does not exist locally; \
-                         fix with `git stk adopt` or `git stk detach {branch}`"
+                         fix with `git stk adopt {branch} --parent <parent>` \
+                         or `git stk detach {branch}`"
                     ))
                 );
                 unresolved += 1;
@@ -187,7 +188,7 @@ pub fn repair(dry_run: bool) -> Result<()> {
                         "{}",
                         style::warn(&format!(
                             "{branch}: ambiguous parent candidates ({}); attach manually with \
-                             `git stk adopt`",
+                             `git stk adopt {branch} --parent <parent>`",
                             candidates.join(", ")
                         ))
                     );
