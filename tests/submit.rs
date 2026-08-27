@@ -2145,3 +2145,43 @@ fn submit_stack_does_not_register_unless_enabled() {
 
     assert!(!repo.path().join("register.txt").exists());
 }
+
+/// GitHub refuses to retarget a review that belongs to a stack - it moves each
+/// layer itself as the one below lands. `submit` must say so rather than claim
+/// a change it did not make, or fail against the forge.
+#[test]
+fn submit_does_not_retarget_a_review_github_owns() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    let stacks = r##"[{"number":3,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        // Narrow: `pr edit --body` is the overview, which still happens.
+        .record("pr edit 13 --base", "retarget.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        // Stale base: git-stk would normally retarget this one.
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "#13 targets main and is in a stack; the platform moves it as the stack lands",
+        ))
+        .stdout(predicates::str::contains("updated feature/b").not());
+
+    assert!(
+        !repo.path().join("retarget.txt").exists(),
+        "no `pr edit --base` may be attempted: GitHub rejects it"
+    );
+}

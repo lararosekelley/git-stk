@@ -939,3 +939,42 @@ fn merge_on_the_trunk_sees_an_off_trunk_stack() {
         ))
         .stderr(predicates::str::contains("no stacked branches").not());
 }
+
+/// A stacked pull request cannot go through `gh pr merge` - GitHub requires
+/// the asynchronous endpoint, because landing a layer also retargets the ones
+/// above it. `merge` must take that path and wait for the result.
+#[test]
+fn merge_uses_githubs_async_endpoint_for_a_stacked_review() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        .record(
+            "api repos/owner/repo/pulls/12/merge-async -X PUT",
+            "async.txt",
+            r##"{"status":"merged","details":{"message":"Pull request was merged.","sha":"abc"}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success();
+
+    let call = fs::read_to_string(repo.path().join("async.txt")).expect("async merge call");
+    assert!(call.contains("merge_method=squash"), "got: {call}");
+    assert!(
+        !repo.path().join("sync-merge.txt").exists(),
+        "`gh pr merge` must not be attempted: GitHub rejects it for a stacked review"
+    );
+}
