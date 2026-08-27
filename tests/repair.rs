@@ -539,12 +539,12 @@ fn repair_prefers_githubs_stack_to_the_review_base() {
     repo.git(["switch", "-c", "feature/b"]);
     repo.commit_file("b.txt", "b\n", "b work");
 
-    let stacks = r##"[{"number":4,"base":{"ref":"main"},"pull_requests":[
+    let stacks = r##"[{"number":4,"open":true,"base":{"ref":"main"},"pull_requests":[
         {"number":12,"head":{"ref":"feature/a"}},
         {"number":13,"head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", stacks)
+        .on("repos/owner/repo/stacks", stacks)
         // The review says something else - retargeted since, say.
         .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
         .fallback("[]")
@@ -575,12 +575,12 @@ fn repair_ignores_githubs_stack_unless_it_is_enabled() {
     repo.git(["switch", "-c", "feature/b"]);
     repo.commit_file("b.txt", "b\n", "b work");
 
-    let stacks = r##"[{"number":4,"base":{"ref":"main"},"pull_requests":[
+    let stacks = r##"[{"number":4,"open":true,"base":{"ref":"main"},"pull_requests":[
         {"number":12,"head":{"ref":"feature/a"}},
         {"number":13,"head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", stacks)
+        .on("repos/owner/repo/stacks", stacks)
         .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
         .fallback("[]")
         .install(&repo);

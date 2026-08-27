@@ -2095,7 +2095,7 @@ fn submit_stack_registers_the_stack_with_github() {
         // `record` carries its own stdout, and matching is first-match-wins -
         // so the POST recorder has to sit ahead of the GET.
         .record("api repos/owner/repo/stacks -X POST", "register.txt", "{}")
-        .on("api repos/owner/repo/stacks", "[]")
+        .on("repos/owner/repo/stacks", "[]")
         .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
         .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13"}]"##)
         .fallback("[]")
@@ -2157,14 +2157,14 @@ fn submit_does_not_retarget_a_review_github_owns() {
     repo.stack().args(["new", "feature/a"]).assert().success();
     repo.stack().args(["new", "feature/b"]).assert().success();
 
-    let stacks = r##"[{"number":3,"base":{"ref":"main"},"pull_requests":[
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
         {"number":12,"head":{"ref":"feature/a"}},
         {"number":13,"head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         // Narrow: `pr edit --body` is the overview, which still happens.
         .record("pr edit 13 --base", "retarget.txt", "")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", stacks)
+        .on("repos/owner/repo/stacks", stacks)
         .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
         // Stale base: git-stk would normally retarget this one.
         .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)

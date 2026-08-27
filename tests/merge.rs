@@ -951,7 +951,7 @@ fn merge_uses_githubs_async_endpoint_for_a_stacked_review() {
     repo.stack().args(["new", "feature/a"]).assert().success();
     repo.commit_file("a.txt", "a\n", "a work");
 
-    let stacks = r##"[{"number":3,"base":{"ref":"main"},"pull_requests":[
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
         {"number":12,"head":{"ref":"feature/a"}}]}]"##;
     let fake = FakeProvider::new()
         .record("pr merge", "sync-merge.txt", "")
@@ -961,7 +961,7 @@ fn merge_uses_githubs_async_endpoint_for_a_stacked_review() {
             r##"{"status":"merged","details":{"message":"Pull request was merged.","sha":"abc"}}"##,
         )
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", stacks)
+        .on("repos/owner/repo/stacks", stacks)
         .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
         .fallback("[]")
         .install(&repo);
@@ -990,13 +990,13 @@ fn merge_auto_refuses_a_stacked_review_rather_than_merging_now() {
     repo.stack().args(["new", "feature/a"]).assert().success();
     repo.commit_file("a.txt", "a\n", "a work");
 
-    let stacks = r##"[{"number":3,"base":{"ref":"main"},"pull_requests":[
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
         {"number":12,"head":{"ref":"feature/a"}}]}]"##;
     let fake = FakeProvider::new()
         .record("merge-async", "async.txt", "")
         .record("pr merge", "sync-merge.txt", "")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", stacks)
+        .on("repos/owner/repo/stacks", stacks)
         .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
         .fallback("[]")
         .install(&repo);

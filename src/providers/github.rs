@@ -127,8 +127,12 @@ impl ReviewProvider for GitHubProvider {
         // Best effort: the endpoint is in public preview, and a repo without
         // the feature answers 404. Either way "no stack" is the right read -
         // never an error that fails the command that asked.
-        let Ok(output) = command_output("gh", &["api", &format!("repos/{owner}/{repo}/stacks")])
-        else {
+        // `--paginate`: the listing keeps every dissolved and landed stack, so
+        // on a long-lived repo the live one is not necessarily on page one.
+        let Ok(output) = command_output(
+            "gh",
+            &["api", "--paginate", &format!("repos/{owner}/{repo}/stacks")],
+        ) else {
             return Ok(None);
         };
         Ok(parse_native_stack(&output, branch))
@@ -670,11 +674,17 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
     let stacks: serde_json::Value = serde_json::from_str(json).ok()?;
     for stack in stacks.as_array()? {
         // The listing keeps dissolved and landed stacks - `open` is the only
-        // thing separating a live one from history, and a branch that was in
-        // a closed stack is not in a stack now. Absent reads as open: the
-        // field is always there today, and guessing "closed" would disable
-        // every stack path if it ever moved.
-        if stack.get("open").and_then(serde_json::Value::as_bool) == Some(false) {
+        // thing separating a live one from history, and a branch that was in a
+        // closed stack is not in a stack now.
+        //
+        // Requires an explicit `true`, so a renamed or absent field fails
+        // closed. The two mistakes are not equal: reading a live stack as dead
+        // costs a refused merge or retarget, loud and recoverable. Reading a
+        // dead one as live makes `cleanup` skip a retarget it needed, and
+        // GitHub then closes the child review when its base branch goes -
+        // silently, with its comments and approvals. Same asymmetry the
+        // `platform_manages_base` default is built on.
+        if stack.get("open").and_then(serde_json::Value::as_bool) != Some(true) {
             continue;
         }
         let reviews = stack.get("pull_requests")?.as_array()?;
@@ -1274,10 +1284,10 @@ mod tests {
     #[test]
     fn parse_native_stack_finds_the_stack_holding_a_branch_bottom_first() {
         let json = r#"[
-          {"number": 4, "base": {"ref": "develop"},
+          {"number": 4, "open": true, "base": {"ref": "develop"},
            "pull_requests": [{"number": 13, "head": {"ref": "fix/shared"}},
                              {"number": 14, "head": {"ref": "fix/above"}}]},
-          {"number": 7, "base": {"ref": "main"},
+          {"number": 7, "open": true, "base": {"ref": "main"},
            "pull_requests": [{"number": 20, "head": {"ref": "other/work"}}]}
         ]"#;
 
@@ -1325,21 +1335,17 @@ mod tests {
             9
         );
 
-        // Absent reads as open: the field is always there today, and guessing
-        // "closed" would disable every stack path if it ever moved.
+        // Absent fails closed: reading a dead stack as live makes `cleanup`
+        // skip a retarget, after which GitHub closes the child review
+        // silently. A live stack read as dead only costs a refused merge.
         let no_field = r#"[{"number": 4, "base": {"ref": "main"},
             "pull_requests": [{"number": 13, "head": {"ref": "fix/shared"}}]}]"#;
-        assert_eq!(
-            parse_native_stack(no_field, "fix/shared")
-                .expect("stack")
-                .number,
-            4
-        );
+        assert_eq!(parse_native_stack(no_field, "fix/shared"), None);
     }
 
     #[test]
     fn parse_native_stack_reads_an_unknown_branch_or_shape_as_no_stack() {
-        let json = r#"[{"number": 4, "base": {"ref": "develop"},
+        let json = r#"[{"number": 4, "open": true, "base": {"ref": "develop"},
                         "pull_requests": [{"number": 13, "head": {"ref": "fix/shared"}}]}]"#;
         assert_eq!(parse_native_stack(json, "not/in/it"), None);
 
