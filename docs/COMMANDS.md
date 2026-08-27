@@ -265,9 +265,9 @@ which says it is a layer after all.
 A recorded base outranks a recorded parent everywhere the stack is walked in order to rewrite it -
 `restack`, `absorb`, `cleanup`, the metadata ref - so a base that picks up a `stkParent` elsewhere is still
 never rebased, deleted, or pushed. `split` is stronger: rather than skipping a base it refuses outright,
-because splitting would stamp a `stkParent` on it. That protection needs the marker, though. A stack rooted before git-stk
-recorded bases does not have one: run `git stk adopt <lowest-layer> --parent <base>` once, which records the
-base as it attaches the layer.
+because splitting would stamp a `stkParent` on it. That protection needs the marker, though. A stack
+rooted before git-stk recorded bases does not have one: run `git stk adopt <lowest-layer> --parent <base>`
+once, which records the base as it attaches the layer.
 
 If an older git-stk already adopted that base into the stack, it carries a stack parent it should never have
 had - and that makes it indistinguishable from an ordinary branch, so the adopt above records nothing. Clear
