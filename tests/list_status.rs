@@ -251,3 +251,29 @@ fn list_says_so_when_the_host_rejects_the_stack_fields() {
         ))
         .stdout(predicates::str::contains("⛁").not());
 }
+
+/// And a failure that is not the fields must not be blamed on them. Offline,
+/// rate-limited, or no `gh` at all: dropping the fields does not help, so the
+/// warning would be a confident wrong diagnosis - and `list` still prints the
+/// tree without annotations, as it promises to.
+#[test]
+fn list_stays_quiet_when_the_provider_fails_for_another_reason() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        // Both attempts fail, with and without the fields.
+        .fail("api graphql", "error connecting to api.github.com")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("feature/a"))
+        .stderr(predicates::str::contains("stacked-pull-request fields").not());
+}

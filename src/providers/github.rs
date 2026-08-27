@@ -485,6 +485,15 @@ fn batched_annotate(
         // them and remember, so the cost is one query rather than two.
         Err(error) if !STACK_FIELDS_UNSUPPORTED.with(std::cell::Cell::get) => {
             STACK_FIELDS_UNSUPPORTED.with(|flag| flag.set(true));
+            let retried = batched_annotate(branches, detail);
+            if retried.is_err() {
+                // Dropping the fields did not help, so they were not what
+                // failed - offline, rate-limited, no `gh`. Leave the flag
+                // clear and report what actually went wrong, rather than
+                // blaming the host's schema for every provider failure.
+                STACK_FIELDS_UNSUPPORTED.with(|flag| flag.set(false));
+                return Err(error);
+            }
             // Say so once. Retrying silently would make a host that rejects
             // the fields indistinguishable from one with no stacks: the `⛁`
             // marker would simply never appear, with nothing to explain it.
@@ -495,7 +504,7 @@ fn batched_annotate(
                      so `list` will not mark stack layers: {error}"
                 ))
             );
-            batched_annotate(branches, detail)
+            retried
         }
         Err(error) => Err(error),
     }
