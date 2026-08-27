@@ -320,6 +320,24 @@ pub trait ReviewProvider {
         Ok(None)
     }
 
+    /// Record `reviews` (bottom first) as a stack on the platform, extending
+    /// `existing` when the stack is already there and the new reviews sit on
+    /// top of it. Returns a line describing what happened, or `None` when
+    /// there was nothing to do.
+    ///
+    /// Default `None`: only GitHub keeps stacks, and only when
+    /// `stk.githubStacks` is on. Registering is presentation - the stack map
+    /// and parallel review - so a failure here is reported, never fatal to a
+    /// submit whose reviews already exist.
+    fn register_stack(
+        &self,
+        reviews: &[String],
+        existing: Option<&NativeStack>,
+    ) -> Result<Option<String>> {
+        let _ = (reviews, existing);
+        Ok(None)
+    }
+
     /// Merge the review with the given strategy: squash, rebase, or merge.
     /// With `auto`, schedule the merge for when required checks pass
     /// instead of merging now.

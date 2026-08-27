@@ -292,9 +292,10 @@ Everything is optional; defaults shown below:
     absorbIncludeUnstaged = true
     ; Skip the once-a-day check for a newer release. Default: false.
     noUpdateCheck = true
-    ; Read GitHub's native stacked pull requests: `repair` prefers the stack
-    ; GitHub records to the review base and to ancestry. GitHub only, and in
-    ; public preview there. Default: false.
+    ; Use GitHub's native stacked pull requests: `submit --stack` registers the
+    ; stack so its layers get GitHub's stack map, and `repair` prefers that
+    ; stack to the review base and to ancestry. GitHub only, and in public
+    ; preview there. Default: false.
     githubStacks = true
     ; Where `new --worktree` puts a branch's worktree. Default: a
     ; <repo>-worktrees directory beside the repo.

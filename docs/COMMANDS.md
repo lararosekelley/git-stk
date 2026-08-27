@@ -268,6 +268,14 @@ If an older git-stk already adopted that base into the stack, it carries a stack
 had - and that makes it indistinguishable from an ordinary branch, so the adopt above records nothing. Clear
 the stray parent first with `git stk detach <base>`, then run it.
 
+With `git config stk.githubStacks true`, `submit --stack` also hands the submitted reviews to GitHub as a
+[native stack](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) - bottom first, the
+order it lands in - so its layers get GitHub's own stack map and parallel review. An existing stack is
+extended rather than replaced, and `repair` prefers that stack to the review base and to branch ancestry
+when rebuilding metadata. Registering is presentation: if it fails, the reviews still exist and the submit
+still succeeds. Off by default while the GitHub feature is in public preview, and GitHub-only - GitLab and
+Gitea are unaffected.
+
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens
 new reviews as drafts; `--no-draft` overrides the config, and `submit --ready` flips the submitted

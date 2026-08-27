@@ -8,7 +8,7 @@ use clap_complete::engine::ArgValueCompleter;
 use crate::cli::PushMode;
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{ReviewProvider, ReviewState, detect_review_provider};
+use crate::providers::{NativeStack, ReviewProvider, ReviewState, detect_review_provider};
 use crate::settings;
 use crate::style;
 use crate::{git, stack};
@@ -465,6 +465,9 @@ pub fn submit(options: SubmitOptions) -> Result<()> {
             rebuild_overview,
         )?;
     }
+    if submit_stack || downstack {
+        register_native_stack(review_provider.as_ref(), &branches, dry_run)?;
+    }
     apply_reviewers(review_provider.as_ref(), &branches, &reviewers, dry_run)?;
 
     // The ledger has now pruned the superseded entries, so drop the markers -
@@ -617,6 +620,85 @@ fn base_has_nothing_to_submit(branch: &str) -> Result<anyhow::Error> {
         "{branch} is this stack's base; there is nothing below it to submit - \
          run `git stk submit --stack` from {branch} to submit the branches above it"
     ))
+}
+
+/// Hand the submitted stack to the platform, when it keeps stacks of its own -
+/// GitHub, with `stk.githubStacks` on. `branches` is bottom-first, which is
+/// the order a stack lands in, and every review now targets the branch below
+/// it, which is the shape the stack is recorded against.
+///
+/// Best effort by design: the reviews already exist, and what this adds is
+/// presentation - the stack map, and parallel review across layers. A failure
+/// is reported and the submit still succeeds.
+fn register_native_stack(
+    review_provider: &dyn ReviewProvider,
+    branches: &[String],
+    dry_run: bool,
+) -> Result<()> {
+    let Some(bottom) = branches.first() else {
+        return Ok(());
+    };
+    let existing = review_provider.native_stack_for(bottom).unwrap_or(None);
+
+    let mut reviews = Vec::with_capacity(branches.len());
+    for branch in branches {
+        let Some(review) = review_provider.review_for_branch(branch)? else {
+            // A branch whose review is missing would register a stack with a
+            // hole in it. On a dry run there is simply nothing to look at yet.
+            if !dry_run {
+                anstream::println!("skipped stack registration: no review found for {branch}");
+            }
+            return Ok(());
+        };
+        if review.branch != *branch {
+            return Ok(());
+        }
+        reviews.push(review.id);
+    }
+
+    if dry_run {
+        // Only say so when it would actually do something.
+        if let Some(action) = would_register(&reviews, existing.as_ref()) {
+            anstream::println!("would {action}");
+        }
+        return Ok(());
+    }
+
+    match review_provider.register_stack(&reviews, existing.as_ref()) {
+        Ok(Some(line)) => anstream::println!("{line}"),
+        Ok(None) => {}
+        Err(error) => anstream::println!(
+            "{}",
+            style::warn(&format!("stack registration failed: {error}"))
+        ),
+    }
+    Ok(())
+}
+
+/// What `register_stack` would report, for `--dry-run`. Mirrors its decision
+/// without making the call.
+fn would_register(reviews: &[String], existing: Option<&NativeStack>) -> Option<String> {
+    match existing {
+        None => Some(format!("register {} as a stack", reviews.join(" "))),
+        Some(stack) => {
+            let recorded: Vec<&str> = stack.layers.iter().map(|l| l.id.as_str()).collect();
+            let fresh: Vec<&String> = reviews
+                .iter()
+                .filter(|id| !recorded.contains(&id.as_str()))
+                .collect();
+            (!fresh.is_empty()).then(|| {
+                format!(
+                    "extend stack {} with {}",
+                    stack.number,
+                    fresh
+                        .iter()
+                        .map(|id| id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            })
+        }
+    }
 }
 
 fn branch_parents(branches: &[String]) -> Result<Vec<(String, String)>> {
