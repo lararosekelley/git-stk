@@ -669,6 +669,14 @@ fn post_pull_requests(path: &str, numbers: &[String]) -> Result<String> {
 fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
     let stacks: serde_json::Value = serde_json::from_str(json).ok()?;
     for stack in stacks.as_array()? {
+        // The listing keeps dissolved and landed stacks - `open` is the only
+        // thing separating a live one from history, and a branch that was in
+        // a closed stack is not in a stack now. Absent reads as open: the
+        // field is always there today, and guessing "closed" would disable
+        // every stack path if it ever moved.
+        if stack.get("open").and_then(serde_json::Value::as_bool) == Some(false) {
+            continue;
+        }
         let reviews = stack.get("pull_requests")?.as_array()?;
         let holds_branch = reviews.iter().any(|review| {
             review
@@ -1295,6 +1303,37 @@ mod tests {
                 .expect("stack")
                 .number,
             7
+        );
+    }
+
+    #[test]
+    fn parse_native_stack_ignores_a_stack_that_is_no_longer_open() {
+        // The listing keeps dissolved and landed stacks. A branch that was in
+        // one is not in a stack now, and treating it as stacked would send its
+        // merge down the async path for a review GitHub no longer stacks.
+        let json = r#"[
+          {"number": 3, "open": false, "base": {"ref": "main"},
+           "pull_requests": [{"number": 1, "head": {"ref": "feature/a"}},
+                             {"number": 2, "head": {"ref": "feature/b"}}]},
+          {"number": 9, "open": true, "base": {"ref": "main"},
+           "pull_requests": [{"number": 20, "head": {"ref": "live/one"}},
+                             {"number": 21, "head": {"ref": "live/two"}}]}
+        ]"#;
+        assert_eq!(parse_native_stack(json, "feature/a"), None);
+        assert_eq!(
+            parse_native_stack(json, "live/two").expect("stack").number,
+            9
+        );
+
+        // Absent reads as open: the field is always there today, and guessing
+        // "closed" would disable every stack path if it ever moved.
+        let no_field = r#"[{"number": 4, "base": {"ref": "main"},
+            "pull_requests": [{"number": 13, "head": {"ref": "fix/shared"}}]}]"#;
+        assert_eq!(
+            parse_native_stack(no_field, "fix/shared")
+                .expect("stack")
+                .number,
+            4
         );
     }
 
