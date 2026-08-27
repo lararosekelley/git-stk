@@ -125,7 +125,7 @@ fn run() -> Result<(), String> {
     conflict_recovery(work)?;
     undo_check(work)?;
     split_check(work)?;
-    if let Provider::GitHub = provider {
+    if let Provider::Github = provider {
         github_native_stack(provider, &slug, work)?;
     }
 
