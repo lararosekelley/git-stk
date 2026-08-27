@@ -191,14 +191,14 @@ fn list_and_status_show_a_platform_stack() {
     let graphql = r##"{"data":{"repository":{"p0":{"nodes":[{"number":12,"headRefName":"feature/a",
         "mergeQueueEntry":null,"stack":{"number":6,"size":3},"stackEntry":{"position":2},
         "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}]}}}}"##;
-    let stacks = r##"[{"number":6,"base":{"ref":"main"},"pull_requests":[
+    let stacks = r##"[{"number":6,"open":true,"base":{"ref":"main"},"pull_requests":[
         {"number":11,"head":{"ref":"below"}},
         {"number":12,"head":{"ref":"feature/a"}},
         {"number":13,"head":{"ref":"above"}}]}]"##;
     let fake = FakeProvider::new()
         .on("api graphql", graphql)
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", stacks)
+        .on("repos/owner/repo/stacks", stacks)
         .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
         .fallback("[]")
         .install(&repo);
@@ -214,4 +214,40 @@ fn list_and_status_show_a_platform_stack() {
         .assert()
         .success()
         .stdout(predicates::str::contains("stack: github stack 6 (2 of 3)"));
+}
+
+/// A host that rejects the preview fields must say so once. Retrying silently
+/// would make it indistinguishable from a repo with no stacks - the `⛁` marker
+/// would just never appear, with nothing to explain why.
+#[test]
+fn list_says_so_when_the_host_rejects_the_stack_fields() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let without = r##"{"data":{"repository":{"p0":{"nodes":[{"number":12,"headRefName":"feature/a",
+        "mergeQueueEntry":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}]}}}}"##;
+    let fake = FakeProvider::new()
+        // The first query carries the stack fields and is rejected; the retry
+        // drops them and succeeds.
+        .fail_with_stdout(
+            "stackEntry",
+            "",
+            "Field 'stack' doesn't exist on type 'PullRequest'",
+        )
+        .on("api graphql", without)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["list"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "did not accept the stacked-pull-request fields",
+        ))
+        .stdout(predicates::str::contains("⛁").not());
 }

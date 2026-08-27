@@ -485,7 +485,16 @@ fn batched_annotate(
         // them and remember, so the cost is one query rather than two.
         Err(error) if !STACK_FIELDS_UNSUPPORTED.with(std::cell::Cell::get) => {
             STACK_FIELDS_UNSUPPORTED.with(|flag| flag.set(true));
-            let _ = error;
+            // Say so once. Retrying silently would make a host that rejects
+            // the fields indistinguishable from one with no stacks: the `⛁`
+            // marker would simply never appear, with nothing to explain it.
+            anstream::eprintln!(
+                "{}",
+                crate::style::warn(&format!(
+                    "this host did not accept the stacked-pull-request fields, \
+                     so `list` will not mark stack layers: {error}"
+                ))
+            );
             batched_annotate(branches, detail)
         }
         Err(error) => Err(error),
