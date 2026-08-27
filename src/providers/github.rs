@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::git;
 
@@ -568,11 +568,8 @@ fn merge_async(review: &ReviewRequest, strategy: &str) -> Result<String> {
 
     let (status, uuid) = parse_async_merge(&output)
         .with_context(|| format!("unexpected response merging {}: {output}", review.id))?;
-    match status.as_str() {
-        "merged" => return Ok(format!("merged {} (stacked)", review.id)),
-        "enqueued" => return Ok(format!("{} added to the merge queue", review.id)),
-        "failed" => bail!("{} could not be merged: {output}", review.id),
-        _ => {}
+    if let Some(outcome) = async_merge_outcome(&status, &review.id, &output) {
+        return outcome;
     }
 
     let uuid = uuid.with_context(|| format!("{} was enqueued without a result id", review.id))?;
@@ -583,17 +580,43 @@ fn merge_async(review: &ReviewRequest, strategy: &str) -> Result<String> {
         let Some((status, _)) = parse_async_merge(&output) else {
             continue;
         };
-        match status.as_str() {
-            "merged" => return Ok(format!("merged {} (stacked)", review.id)),
-            "enqueued" => return Ok(format!("{} added to the merge queue", review.id)),
-            "failed" => bail!("{} could not be merged: {output}", review.id),
-            _ => {}
+        if let Some(outcome) = async_merge_outcome(&status, &review.id, &output) {
+            return outcome;
         }
     }
-    bail!(
-        "{} is still merging; check it on GitHub, then rerun `git stk sync`",
+    // Not an error: `merge_and_check` re-reads the review after this returns
+    // and reports "merge scheduled ... rerun `git stk sync`", which `--all`
+    // breaks on cleanly with an accurate count. Returning `Err` instead would
+    // route through `explain_merge_failure`, where a mid-merge state can be
+    // classified as pending checks - replacing this with a wrong diagnosis and
+    // aborting the run.
+    Ok(format!(
+        "{} is still merging on GitHub; `git stk sync` picks it up once it lands",
         review.id
-    )
+    ))
+}
+
+/// What an async-merge status means for the caller: `Some` once it is final,
+/// `None` only while the merge is genuinely still running. Shared by the
+/// enqueue response and each poll, which see the same statuses and must read
+/// them the same way.
+///
+/// Only `pending` continues. This is a public-preview API, so its vocabulary
+/// can grow: an unrecognised status is reported rather than polled against for
+/// two minutes, since the likeliest fifth status is a terminal one this
+/// version has never heard of.
+fn async_merge_outcome(status: &str, id: &str, body: &str) -> Option<Result<String>> {
+    match status {
+        "merged" => Some(Ok(format!("merged {id} (stacked)"))),
+        // A merge queue took it: it lands on its own schedule, and `sync`
+        // picks that up later. Not a failure, and not something to wait on.
+        "enqueued" => Some(Ok(format!("{id} added to the merge queue"))),
+        "failed" => Some(Err(anyhow!("{id} could not be merged: {body}"))),
+        "pending" => None,
+        other => Some(Err(anyhow!(
+            "GitHub reported an unknown merge status {other:?} for {id}: {body}"
+        ))),
+    }
 }
 
 /// `(status, uuid)` from an async-merge response.
@@ -1320,5 +1343,43 @@ mod tests {
         assert_eq!(review_number("!13"), None);
         assert_eq!(review_number("#"), None);
         assert_eq!(review_number(""), None);
+    }
+
+    #[test]
+    fn async_merge_outcome_continues_only_while_pending() {
+        assert_eq!(
+            async_merge_outcome("merged", "#12", "{}")
+                .expect("final")
+                .unwrap(),
+            "merged #12 (stacked)"
+        );
+        assert_eq!(
+            async_merge_outcome("enqueued", "#12", "{}")
+                .expect("final")
+                .unwrap(),
+            "#12 added to the merge queue"
+        );
+        assert!(
+            async_merge_outcome("failed", "#12", "{}")
+                .expect("final")
+                .unwrap_err()
+                .to_string()
+                .contains("#12 could not be merged")
+        );
+
+        // Only `pending` keeps polling.
+        assert!(async_merge_outcome("pending", "#12", "{}").is_none());
+
+        // A public-preview vocabulary can grow: an unrecognised status is
+        // reported, not polled against for two minutes.
+        let unknown = async_merge_outcome("conflicted", "#12", "{}")
+            .expect("final")
+            .unwrap_err()
+            .to_string();
+        assert!(unknown.contains("unknown merge status"), "got: {unknown}");
+        assert!(
+            unknown.contains("conflicted"),
+            "names the status: {unknown}"
+        );
     }
 }
