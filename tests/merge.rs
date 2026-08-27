@@ -1513,13 +1513,13 @@ fn unstack_dissolves_the_platform_stack() {
     repo.commit_file("a.txt", "a\n", "a work");
     repo.stack().args(["new", "ma/b"]).assert().success();
 
-    let stacks = r##"[{"number":5,"base":{"ref":"main"},"pull_requests":[
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
         {"number":12,"head":{"ref":"ma/a"}},
         {"number":13,"head":{"ref":"ma/b"}}]}]"##;
     let fake = FakeProvider::new()
         .record("stacks/5/unstack -X POST", "unstack.txt", "{}")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", stacks)
+        .on("repos/owner/repo/stacks", stacks)
         .fallback("[]")
         .install(&repo);
 
@@ -1552,7 +1552,7 @@ fn unstack_says_so_when_there_is_no_platform_stack() {
 
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", "[]")
+        .on("repos/owner/repo/stacks", "[]")
         .fallback("[]")
         .install(&repo);
 
@@ -1575,7 +1575,7 @@ fn unstack_surfaces_a_failed_lookup_rather_than_calling_it_gone() {
 
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .fail("api repos/owner/repo/stacks", "HTTP 401: Bad credentials")
+        .fail("repos/owner/repo/stacks", "HTTP 401: Bad credentials")
         .fallback("[]")
         .install(&repo);
 
@@ -1600,13 +1600,13 @@ fn unstack_finds_a_stack_that_does_not_start_at_the_local_bottom() {
     repo.stack().args(["new", "ma/b"]).assert().success();
 
     // The stack holds only the upper layer.
-    let stacks = r##"[{"number":5,"base":{"ref":"ma/a"},"pull_requests":[
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"ma/a"},"pull_requests":[
         {"number":13,"head":{"ref":"ma/b"}},
         {"number":14,"head":{"ref":"elsewhere"}}]}]"##;
     let fake = FakeProvider::new()
         .record("stacks/5/unstack -X POST", "unstack.txt", "{}")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
-        .on("api repos/owner/repo/stacks", stacks)
+        .on("repos/owner/repo/stacks", stacks)
         .fallback("[]")
         .install(&repo);
 
@@ -1616,4 +1616,67 @@ fn unstack_finds_a_stack_that_does_not_start_at_the_local_bottom() {
         .success()
         .stdout(predicates::str::contains("dissolved stack 5"));
     assert!(repo.path().join("unstack.txt").exists());
+}
+
+/// Two stacks can partition one local line. Dissolving only the first found
+/// would report success while leaving the rest of the line blocked.
+#[test]
+fn unstack_dissolves_every_stack_covering_the_line() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[
+        {"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+            {"number":12,"head":{"ref":"ma/a"}},{"number":98,"head":{"ref":"other"}}]},
+        {"number":6,"open":true,"base":{"ref":"ma/a"},"pull_requests":[
+            {"number":13,"head":{"ref":"ma/b"}},{"number":99,"head":{"ref":"another"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("stacks/5/unstack -X POST", "unstack-5.txt", "{}")
+        .record("stacks/6/unstack -X POST", "unstack-6.txt", "{}")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["unstack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dissolved stack 5"))
+        .stdout(predicates::str::contains("dissolved stack 6"));
+
+    assert!(repo.path().join("unstack-5.txt").exists());
+    assert!(repo.path().join("unstack-6.txt").exists());
+}
+
+/// `gh repo view` is the first call to fail under an expired token, and its
+/// error carries the "run `gh auth login`" hint. Discarding it let a failed
+/// lookup read as "nothing to dissolve".
+#[test]
+fn unstack_surfaces_a_failed_repo_lookup() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .fail(
+            "repo view",
+            "gh: To get started with GitHub CLI, please run: gh auth login",
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["unstack"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "could not resolve the GitHub repository",
+        ))
+        .stderr(predicates::str::contains("nothing to dissolve").not());
 }

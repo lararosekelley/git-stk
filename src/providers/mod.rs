@@ -444,15 +444,16 @@ pub trait ReviewProvider {
         false
     }
 
-    /// Like [`native_stack_for`](Self::native_stack_for), but for a caller
-    /// where the answer *is* the command rather than a hint: a lookup failure
-    /// is returned instead of read as "no stack", and every branch given is
-    /// searched, not only the first - a stack need not begin at the bottom of
-    /// your local line, and one made outside git-stk need not align with it
-    /// at all.
-    fn native_stack_covering(&self, branches: &[String]) -> Result<Option<NativeStack>> {
+    /// Every platform stack covering any of `branches`, for a caller where the
+    /// answer *is* the command rather than a hint: a lookup failure is
+    /// returned instead of read as "no stack".
+    ///
+    /// All of them, not the first - two stacks can partition one local line,
+    /// and dissolving only the one you happened to find would report success
+    /// while leaving the rest of the line blocked.
+    fn native_stacks_covering(&self, branches: &[String]) -> Result<Vec<NativeStack>> {
         let _ = branches;
-        Ok(None)
+        Ok(Vec::new())
     }
 
     /// Dissolve `stack` on the platform, leaving its reviews open and

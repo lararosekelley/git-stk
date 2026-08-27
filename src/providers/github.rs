@@ -188,18 +188,25 @@ impl ReviewProvider for GitHubProvider {
         settings::bool_setting(settings::GITHUB_STACKS_KEY).unwrap_or(false)
     }
 
-    fn native_stack_covering(&self, branches: &[String]) -> Result<Option<NativeStack>> {
-        let Some((owner, repo)) = repo_owner_name() else {
-            return Ok(None);
-        };
-        // Errors propagate here: the caller is acting on the answer, and
-        // "no stack" for an expired token would report the stack already gone
-        // while it is still registered.
+    fn native_stacks_covering(&self, branches: &[String]) -> Result<Vec<NativeStack>> {
+        // Errors propagate all the way here: the caller is acting on the
+        // answer, and "no stack" for an expired token would report a stack
+        // already gone while it is still registered. `gh repo view` is the
+        // first call to fail that way, so it carries its error too.
+        let (owner, repo) =
+            repo_owner_name_result().context("could not resolve the GitHub repository")?;
         let listing = stacks_listing(&owner, &repo)
             .context("could not read this repository's stacks from GitHub")?;
-        Ok(branches
-            .iter()
-            .find_map(|branch| parse_native_stack(&listing, branch)))
+
+        let mut found: Vec<NativeStack> = Vec::new();
+        for branch in branches {
+            if let Some(stack) = parse_native_stack(&listing, branch)
+                && !found.iter().any(|seen| seen.number == stack.number)
+            {
+                found.push(stack);
+            }
+        }
+        Ok(found)
     }
 
     fn unstack_reviews(&self, stack: &NativeStack) -> Result<Option<String>> {
@@ -208,6 +215,8 @@ impl ReviewProvider for GitHubProvider {
         };
         let path = format!("repos/{owner}/{repo}/stacks/{}/unstack", stack.number);
         command_output("gh", &["api", &path, "-X", "POST"])?;
+        // The listing still holds this stack as open until it is re-read.
+        forget_stacks_listing();
         Ok(Some(format!("dissolved stack {} on GitHub", stack.number)))
     }
 
@@ -882,24 +891,40 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
 /// them (not a GitHub repo, or gh unavailable).
 fn repo_owner_name() -> Option<(String, String)> {
     // Cached: it cannot change while a command runs, and it costs a `gh`
-    // subprocess on paths that ask per branch. The stack listing is cached
-    // too, but with invalidation - see [`stacks_listing`] - because git-stk
-    // and GitHub both reshape a stack midway through a command.
-    thread_local! {
-        static REPO: std::cell::OnceCell<Option<(String, String)>> =
-            const { std::cell::OnceCell::new() };
-    }
-    REPO.with(|repo| repo.get_or_init(resolve_repo_owner_name).clone())
+    // subprocess on paths that now ask per branch. The stack listing is cached
+    // too, but with invalidation - see `stacks_listing` - because git-stk and
+    // GitHub both reshape a stack midway through a command.
+    repo_owner_name_result().ok()
 }
 
-fn resolve_repo_owner_name() -> Option<(String, String)> {
-    let output = command_output("gh", &["repo", "view", "--json", "nameWithOwner"]).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&output).ok()?;
+/// [`repo_owner_name`], keeping the failure. `gh repo view` is the first call
+/// to fail under an expired token, and discarding its error - which carries
+/// `command_output`'s own "run `gh auth login`" hint - is what let a failed
+/// lookup read as "no stack".
+fn repo_owner_name_result() -> Result<(String, String)> {
+    thread_local! {
+        static REPO: std::cell::OnceCell<Result<(String, String), String>> =
+            const { std::cell::OnceCell::new() };
+    }
+    REPO.with(|repo| {
+        repo.get_or_init(|| resolve_repo_owner_name().map_err(|error| error.to_string()))
+            .clone()
+            .map_err(|message| anyhow!("{message}"))
+    })
+}
+
+fn resolve_repo_owner_name() -> Result<(String, String)> {
+    let output = command_output("gh", &["repo", "view", "--json", "nameWithOwner"])?;
+    let value: serde_json::Value =
+        serde_json::from_str(&output).context("failed to parse gh repo view JSON")?;
     let full = value
         .get("nameWithOwner")
-        .and_then(serde_json::Value::as_str)?;
-    let (owner, repo) = full.split_once('/')?;
-    Some((owner.to_owned(), repo.to_owned()))
+        .and_then(serde_json::Value::as_str)
+        .context("gh repo view did not report nameWithOwner")?;
+    let (owner, repo) = full
+        .split_once('/')
+        .with_context(|| format!("unexpected repository name {full}"))?;
+    Ok((owner.to_owned(), repo.to_owned()))
 }
 
 fn branch_in_merge_queue(owner: &str, repo: &str, branch: &str) -> Result<bool> {
