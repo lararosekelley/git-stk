@@ -10,9 +10,11 @@ use super::json::{
     required_string,
 };
 use super::{
-    CheckStatus, MergeBlocker, ReviewAnnotation, ReviewProvider, ReviewRequest, ReviewState,
-    ReviewSummary, WaitOutcome, command_output, generic_annotate, merge_with_retry,
+    CheckStatus, MergeBlocker, NativeStack, NativeStackLayer, ReviewAnnotation, ReviewProvider,
+    ReviewRequest, ReviewState, ReviewSummary, WaitOutcome, command_output, generic_annotate,
+    merge_with_retry,
 };
+use crate::settings;
 
 pub(super) struct GitHubProvider;
 
@@ -100,6 +102,23 @@ impl ReviewProvider for GitHubProvider {
             .get("state")
             .and_then(serde_json::Value::as_str)
             .map(parse_state))
+    }
+
+    fn native_stack_for(&self, branch: &str) -> Result<Option<NativeStack>> {
+        if !settings::bool_setting(settings::GITHUB_STACKS_KEY)? {
+            return Ok(None);
+        }
+        let Some((owner, repo)) = repo_owner_name() else {
+            return Ok(None);
+        };
+        // Best effort: the endpoint is in public preview, and a repo without
+        // the feature answers 404. Either way "no stack" is the right read -
+        // never an error that fails the command that asked.
+        let Ok(output) = command_output("gh", &["api", &format!("repos/{owner}/{repo}/stacks")])
+        else {
+            return Ok(None);
+        };
+        Ok(parse_native_stack(&output, branch))
     }
 
     fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {
@@ -441,6 +460,45 @@ fn github_enqueued_branches(branches: &[String]) -> BTreeSet<String> {
         }
     }
     queued
+}
+
+/// The stack holding `branch`, from the `GET /repos/{owner}/{repo}/stacks`
+/// payload. Bottom-first, since that is the order the API lists and the order
+/// a stack lands in. Anything unparseable reads as "no stack" - this informs a
+/// guess, so a shape we do not recognise must not fail the caller.
+fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
+    let stacks: serde_json::Value = serde_json::from_str(json).ok()?;
+    for stack in stacks.as_array()? {
+        let reviews = stack.get("pull_requests")?.as_array()?;
+        let holds_branch = reviews.iter().any(|review| {
+            review
+                .get("head")
+                .and_then(|head| head.get("ref"))
+                .and_then(serde_json::Value::as_str)
+                == Some(branch)
+        });
+        if !holds_branch {
+            continue;
+        }
+        return Some(NativeStack {
+            number: stack.get("number")?.as_u64()?,
+            base: stack.get("base")?.get("ref")?.as_str().map(str::to_owned)?,
+            layers: reviews
+                .iter()
+                .filter_map(|review| {
+                    Some(NativeStackLayer {
+                        id: format!("#{}", review.get("number")?.as_u64()?),
+                        branch: review
+                            .get("head")?
+                            .get("ref")?
+                            .as_str()
+                            .map(str::to_owned)?,
+                    })
+                })
+                .collect(),
+        });
+    }
+    None
 }
 
 /// The current repository's `owner` and `name`, or None when gh cannot resolve
@@ -1003,5 +1061,56 @@ mod tests {
         assert_eq!(summary.comments, 1);
         // No reviews at all -> an empty summary.
         assert_eq!(count_latest_reviews(None), ReviewSummary::default());
+    }
+
+    #[test]
+    fn parse_native_stack_finds_the_stack_holding_a_branch_bottom_first() {
+        let json = r#"[
+          {"number": 4, "base": {"ref": "develop"},
+           "pull_requests": [{"number": 13, "head": {"ref": "fix/shared"}},
+                             {"number": 14, "head": {"ref": "fix/above"}}]},
+          {"number": 7, "base": {"ref": "main"},
+           "pull_requests": [{"number": 20, "head": {"ref": "other/work"}}]}
+        ]"#;
+
+        let stack = parse_native_stack(json, "fix/above").expect("stack");
+        assert_eq!(stack.number, 4);
+        assert_eq!(stack.base, "develop");
+        assert_eq!(
+            stack
+                .layers
+                .iter()
+                .map(|l| l.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["#13", "#14"]
+        );
+        // The parent each layer stacks on, per the platform.
+        assert_eq!(stack.parent_of("fix/shared"), Some("develop"));
+        assert_eq!(stack.parent_of("fix/above"), Some("fix/shared"));
+        assert_eq!(stack.parent_of("not/in/it"), None);
+
+        // The other stack is found by its own branch, not by position.
+        assert_eq!(
+            parse_native_stack(json, "other/work")
+                .expect("stack")
+                .number,
+            7
+        );
+    }
+
+    #[test]
+    fn parse_native_stack_reads_an_unknown_branch_or_shape_as_no_stack() {
+        let json = r#"[{"number": 4, "base": {"ref": "develop"},
+                        "pull_requests": [{"number": 13, "head": {"ref": "fix/shared"}}]}]"#;
+        assert_eq!(parse_native_stack(json, "not/in/it"), None);
+
+        // Empty listing, and payloads this version does not recognise: all
+        // "no stack" rather than an error, since this only informs a guess.
+        assert_eq!(parse_native_stack("[]", "fix/shared"), None);
+        assert_eq!(
+            parse_native_stack(r#"{"message":"Not Found"}"#, "fix/shared"),
+            None
+        );
+        assert_eq!(parse_native_stack("not json", "fix/shared"), None);
     }
 }

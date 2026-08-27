@@ -1,6 +1,7 @@
 mod common;
 
 use common::{FakeProvider, TestRepo};
+use predicates::prelude::PredicateBooleanExt;
 
 /// Run a git plumbing command in `dir`, feeding `stdin`, returning trimmed
 /// stdout. For crafting refs the TestRepo helper can't (it has no stdin).
@@ -522,5 +523,77 @@ fn repair_from_remote_keeps_a_base_when_the_remote_predates_floors() {
         repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
         "true",
         "a floors-less document must not revoke a recorded base"
+    );
+}
+
+/// GitHub's own stack outranks the review base: it is an ordering someone
+/// stated rather than one inferred, and it is right even where a review has
+/// since been retargeted.
+#[test]
+fn repair_prefers_githubs_stack_to_the_review_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":4,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", stacks)
+        // The review says something else - retargeted since, say.
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["repair"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "feature/b: set parent feature/a (from stack 4 (#13))",
+        ));
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "feature/a"
+    );
+}
+
+/// Off by default: the feature is in public preview, so an unset
+/// `stk.githubStacks` must leave `repair` inferring exactly as before.
+#[test]
+fn repair_ignores_githubs_stack_unless_it_is_enabled() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":4,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", stacks)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["repair"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("from github review #13"))
+        .stdout(predicates::str::contains("from stack").not());
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "main"
     );
 }

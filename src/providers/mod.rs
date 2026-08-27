@@ -129,6 +129,50 @@ pub enum MergeBlocker {
     None,
 }
 
+/// One review in a platform-recorded stack.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NativeStackLayer {
+    pub id: String,
+    pub branch: String,
+}
+
+/// A stack as the platform records it: its layers bottom first - the order it
+/// lands in - and the branch the bottom one targets. Read-only here;
+/// registering one is a separate step, gated behind `stk.githubStacks`.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NativeStack {
+    /// The platform's own number for the stack, for messages.
+    pub number: u64,
+    /// The branch the bottom review targets.
+    pub base: String,
+    /// Layers bottom first.
+    pub layers: Vec<NativeStackLayer>,
+}
+
+impl NativeStack {
+    /// What `branch` stacks on according to the platform: the branch below it,
+    /// or the stack's base when it is the bottom. `None` when the stack does
+    /// not hold `branch` at all.
+    pub fn parent_of(&self, branch: &str) -> Option<&str> {
+        let index = self
+            .layers
+            .iter()
+            .position(|layer| layer.branch == branch)?;
+        Some(match index.checked_sub(1) {
+            Some(below) => &self.layers[below].branch,
+            None => &self.base,
+        })
+    }
+
+    /// The review id recorded for `branch`, for messages.
+    pub fn review_id_for(&self, branch: &str) -> Option<&str> {
+        self.layers
+            .iter()
+            .find(|layer| layer.branch == branch)
+            .map(|layer| layer.id.as_str())
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct ReviewRequest {
     pub id: String,
@@ -261,6 +305,18 @@ pub trait ReviewProvider {
     /// the caller treats any error as "leave it as-is" (best-effort refresh).
     fn review_state(&self, review: &ReviewRequest) -> Result<Option<ReviewState>> {
         let _ = review;
+        Ok(None)
+    }
+
+    /// The platform's own record of the stack `branch` belongs to, when it
+    /// keeps one. An authoritative ordering that outlives local metadata, so
+    /// `repair` can prefer it to guessing from ancestry.
+    ///
+    /// Default `None`: no platform but GitHub records stacks, and GitHub only
+    /// when `stk.githubStacks` is on. An error here is the caller's to treat
+    /// as "no stack" - this is a hint, never a precondition.
+    fn native_stack_for(&self, branch: &str) -> Result<Option<NativeStack>> {
+        let _ = branch;
         Ok(None)
     }
 

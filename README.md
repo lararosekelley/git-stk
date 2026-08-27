@@ -292,6 +292,10 @@ Everything is optional; defaults shown below:
     absorbIncludeUnstaged = true
     ; Skip the once-a-day check for a newer release. Default: false.
     noUpdateCheck = true
+    ; Read GitHub's native stacked pull requests: `repair` prefers the stack
+    ; GitHub records to the review base and to ancestry. GitHub only, and in
+    ; public preview there. Default: false.
+    githubStacks = true
     ; Where `new --worktree` puts a branch's worktree. Default: a
     ; <repo>-worktrees directory beside the repo.
     worktreeDir = ~/code/myrepo-worktrees
@@ -312,7 +316,9 @@ at which point nothing about the shape says it is a base any more. `git stk deta
 
 Branches are the real state; the metadata is just annotation. If it is ever lost or stale, `git stk repair`
 rebuilds it from review bases (when the provider CLI - `gh`/`glab`/`tea` - is available) and branch
-ancestry, and verifies recorded fork points. Anything it cannot resolve safely is reported for a manual `git stk adopt`.
+ancestry, and verifies recorded fork points. Anything it cannot resolve safely is reported for a manual
+`git stk adopt`. With `stk.githubStacks` on, it prefers the stack GitHub itself records to both - that
+ordering was stated rather than inferred, and it is still right where a review has since been retargeted.
 
 Working across machines? The parent map - and which branch a stack sits on - rides along on a shared ref
 (`refs/stk/metadata`), published automatically whenever git-stk pushes branches
