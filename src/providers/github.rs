@@ -196,6 +196,17 @@ impl ReviewProvider for GitHubProvider {
         // endpoint `gh pr merge` uses - GitHub requires the async one, because
         // landing a layer also retargets the layers above it.
         if self.native_stack_for(&review.branch)?.is_some() {
+            // `--auto` schedules a merge for when checks pass, which the async
+            // endpoint has no equivalent for - GitHub's auto-merge is a
+            // separate mutation and refuses a stacked pull request too. Say so
+            // rather than merge now, which is the opposite of what was asked.
+            if auto {
+                bail!(
+                    "{} is in a GitHub stack, which cannot be scheduled with --auto; \
+                     rerun without it once checks pass",
+                    review.id
+                );
+            }
             return merge_with_retry(|| merge_async(review, strategy));
         }
 

@@ -978,3 +978,40 @@ fn merge_uses_githubs_async_endpoint_for_a_stacked_review() {
         "`gh pr merge` must not be attempted: GitHub rejects it for a stacked review"
     );
 }
+
+/// `--auto` asks for a merge *when checks pass*. The async endpoint has no
+/// such mode, so a stacked review must refuse rather than merge now - which
+/// would land the code early, the opposite of what was asked.
+#[test]
+fn merge_auto_refuses_a_stacked_review_rather_than_merging_now() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("merge-async", "async.txt", "")
+        .record("pr merge", "sync-merge.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y", "--auto"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "#12 is in a GitHub stack, which cannot be scheduled with --auto",
+        ));
+
+    assert!(
+        !repo.path().join("async.txt").exists(),
+        "must not merge now"
+    );
+    assert!(!repo.path().join("sync-merge.txt").exists());
+}
