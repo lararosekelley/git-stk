@@ -118,7 +118,7 @@ fn apply(current: &str, routes: Vec<Route>) -> Result<()> {
     }
     for (index, branch) in path.iter().enumerate() {
         let parent = if index == 0 {
-            stack::parent_of(branch)?
+            stack::stacked_parent_of(branch)?
         } else {
             Some(path[index - 1].clone())
         };
@@ -142,7 +142,10 @@ fn apply(current: &str, routes: Vec<Route>) -> Result<()> {
             false,
         )
     } else {
-        report_push_hint(&path)
+        // The base is in `path` as the branch the line sits on, but nothing
+        // rewrote it and it is not ours to move - so it must not appear in a
+        // force-push hint.
+        report_push_hint(&stack::stacked_layers(&path)?)
     }
 }
 
@@ -216,7 +219,13 @@ fn absorb_base(path: &[String]) -> Result<String> {
     let Some(bottom) = path.first() else {
         bail!("current branch is not in a stack");
     };
-    if let Some(parent) = stack::parent_of(bottom)? {
+    // A stack rooted off the trunk sits on its base: that is where the replay
+    // starts, and the base's own commits stay out of range. Without this the
+    // bottom looks rootless and absorb cannot place the stack at all.
+    if stack::is_floor(bottom)? {
+        return Ok(bottom.clone());
+    }
+    if let Some(parent) = stack::stacked_parent_of(bottom)? {
         return Ok(parent);
     }
     if let Some(base) = stack::base_of(bottom)? {
@@ -233,8 +242,16 @@ fn commit_owners(current: &str) -> Result<BTreeMap<String, String>> {
     let mut owners = BTreeMap::new();
 
     for (index, branch) in path.iter().enumerate() {
+        // The base owns nothing absorbable: its commits are not the stack's.
+        // Skipping it outright, rather than letting a `None` parent fall
+        // through, matters because `repair` writes `stkBase` alongside the
+        // stray `stkParent` - and that fork point would put the base's own
+        // commits back in the map.
+        if stack::is_floor(branch)? {
+            continue;
+        }
         let parent = if index == 0 {
-            stack::parent_of(branch)?
+            stack::stacked_parent_of(branch)?
         } else {
             Some(path[index - 1].clone())
         };

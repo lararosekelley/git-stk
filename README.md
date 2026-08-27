@@ -298,17 +298,25 @@ Everything is optional; defaults shown below:
 ```
 
 The tool also manages per-branch metadata: `branch.<name>.stkParent` (the stack parent),
-`branch.<name>.stkBase` (the recorded fork point), and - for branches made with `new --worktree` -
-`branch.<name>.stkWorktree`, recording that git-stk created that worktree and so may remove it. These
-are written by `new`, `adopt`, `rename`, `sync`, `restack`, `cleanup`, and `repair`; you normally never
-touch them by hand.
+`branch.<name>.stkBase` (the recorded fork point), `branch.<name>.stkFloor` (marking a branch as a
+stack's base - see below), and - for branches made with `new --worktree` - `branch.<name>.stkWorktree`,
+recording that git-stk created that worktree and so may remove it. These are written by `new`, `adopt`,
+`rename`, `sync`, `restack`, `cleanup`, and `repair`; you normally never touch them by hand.
+
+A stack does not have to sit on the trunk. Root one on any branch - a release line, say - and git-stk
+records that branch as the stack's **base** (`stkFloor`). A base is not part of the stack: it is never
+submitted, pushed, rebased, merged, or deleted, so a shared branch cannot be pulled into a stack and
+rewritten. The marker outranks a `stkParent` too, so a base that picks one up elsewhere - metadata from an
+older git-stk, say - is still left alone. The marker is what keeps that true after the branches above it land,
+at which point nothing about the shape says it is a base any more. `git stk detach <branch>` clears it.
 
 Branches are the real state; the metadata is just annotation. If it is ever lost or stale, `git stk repair`
 rebuilds it from review bases (when the provider CLI - `gh`/`glab`/`tea` - is available) and branch
 ancestry, and verifies recorded fork points. Anything it cannot resolve safely is reported for a manual `git stk adopt`.
 
-Working across machines? The parent map rides along on a shared ref (`refs/stk/metadata`), published
-automatically whenever git-stk pushes branches (`submit`/`restack`/`sync` with push). On another clone,
+Working across machines? The parent map - and which branch a stack sits on - rides along on a shared ref
+(`refs/stk/metadata`), published automatically whenever git-stk pushes branches
+(`submit`/`restack`/`sync` with push). On another clone,
 `git stk repair --from-remote` fetches that ref, pulls down any of its branches you do not have yet, and
 rebuilds the local metadata - no platform or open PRs required. (Local-only commits you have not pushed
 still can't transfer, of course.)

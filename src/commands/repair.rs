@@ -65,6 +65,21 @@ pub fn repair(dry_run: bool) -> Result<()> {
             continue;
         }
 
+        // A recorded base is not missing a parent - it is the branch the stack
+        // sits on. Inferring one from its own review would write metadata that
+        // contradicts the marker, and that every rewrite path then ignores.
+        if stack::is_floor(branch)? {
+            anstream::println!(
+                "{}",
+                style::dim(&format!(
+                    "{branch}: stack base, left alone \
+                     (`git stk detach {branch}` if it is not)"
+                ))
+            );
+            verified += 1;
+            continue;
+        }
+
         if let Some(parent) = stack::parent_of(branch)? {
             if !branches.contains(&parent) {
                 anstream::println!(

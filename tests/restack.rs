@@ -1072,3 +1072,39 @@ fn restack_dry_run_reports_remote_only_commits() {
     assert_eq!(repo.remote_sha(&bare, "feature/a"), remote_a);
     assert!(!repo.path().join("web.txt").exists());
 }
+
+/// The base a stack sits on is never rebased or force-pushed, even when it has
+/// picked up a stack parent from somewhere else - `git stk repair` reading its
+/// own release PR, say. The marker outranks the recorded parent (#308).
+#[test]
+fn restack_never_rewrites_a_stack_base_that_acquired_a_parent() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let bare = repo.add_bare_origin(&["main", "rc-20260817", "fix/shared"]);
+    let base_before = repo.remote_sha(&bare, "rc-20260817");
+
+    // What `repair` would write from the base's own release PR into the trunk.
+    repo.git(["config", "branch.rc-20260817.stkParent", "main"]);
+    // And the trunk moves, so a rebase would have something to replay onto.
+    repo.git(["switch", "main"]);
+    repo.commit_file("trunk.txt", "t\n", "trunk moves");
+    repo.git(["switch", "fix/shared"]);
+
+    repo.stack()
+        .args(["restack", "--push"])
+        .assert()
+        .success()
+        // It may be named as the parent above it targets, never as something
+        // being rebased.
+        .stdout(predicates::str::contains("rc-20260817 onto").not());
+
+    assert_eq!(
+        repo.remote_sha(&bare, "rc-20260817"),
+        base_before,
+        "the base must not have been rewritten or force-pushed"
+    );
+}

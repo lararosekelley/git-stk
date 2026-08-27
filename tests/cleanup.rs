@@ -451,3 +451,37 @@ fn cleanup_keep_branch_keeps_cleaned_merged_branch() {
         Some(1)
     );
 }
+
+/// `cleanup` reaches `landing_for` by a second path that `sync` does not, so a
+/// merged release PR on the stack's base would have detached the layers above
+/// it and deleted the branch - the destructive half of the same hazard.
+#[test]
+fn cleanup_never_finishes_the_stack_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let fake = FakeProvider::new()
+        .on("rc-20260817", r##"[{"number":99,"state":"MERGED","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake).args(["cleanup"]).assert().success();
+
+    assert!(
+        !repo
+            .git_status(["branch", "--list", "rc-20260817"])
+            .stdout
+            .is_empty(),
+        "the base must not be deleted"
+    );
+    assert_eq!(
+        repo.git(["config", "--get", "branch.fix/shared.stkParent"]),
+        "rc-20260817",
+        "the layers above the base must not be detached"
+    );
+}

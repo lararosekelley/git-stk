@@ -873,3 +873,647 @@ fn sync_degrades_without_a_remote() {
         ))
         .stdout(predicates::str::contains("could not detect provider").not());
 }
+
+/// A stack rooted on a release line: `sync` must not adopt that base from its
+/// own review. Doing so records `stkParent = <trunk>` on a shared branch,
+/// which `restack` then rebases and force-pushes (#308).
+#[test]
+fn sync_does_not_adopt_the_stack_base_from_its_own_review() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+
+    let fake = FakeProvider::new()
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "skipped rc-20260817: this stack's base",
+        ))
+        .stdout(predicates::str::contains("rc-20260817 -> main").not())
+        // Nor is the base ever what to look at next.
+        .stdout(predicates::str::contains("next up: fix/shared"));
+
+    // Not a dry-run artefact: a real sync must not write it either.
+    repo.stack_faked(&fake).args(["sync"]).assert().success();
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkParent"])
+            .stdout
+            .len(),
+        0,
+        "the base must not have been adopted into the stack"
+    );
+}
+
+/// A branch with no parent and nothing stacked on it is not a base - it is a
+/// branch whose metadata is missing, which is exactly what `sync` rebuilds.
+#[test]
+fn sync_still_adopts_a_lone_branch_with_no_parent() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.git(["switch", "-c", "feature/b"]);
+    let fake = FakeProvider::new()
+        .on("feature/b", r##"[{"number":12,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/12"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake).args(["sync"]).assert().success();
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "feature/a"
+    );
+}
+
+/// The hole a shape-only rule leaves: once the branches above the base land,
+/// nothing about the shape says it is a base any more, and the next `sync`
+/// would adopt it. The recorded floor outlives them.
+#[test]
+fn sync_does_not_adopt_the_base_after_the_stack_above_it_lands() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+
+    // Rooting the stack records the base.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
+        "true"
+    );
+
+    // The stack lands and is cleaned up, leaving the base standing alone -
+    // indistinguishable, by shape, from a branch whose metadata is missing.
+    repo.git(["switch", "rc-20260817"]);
+    repo.git(["branch", "-D", "fix/shared"]);
+
+    let fake = FakeProvider::new()
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake).args(["sync"]).assert().success();
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkParent"])
+            .stdout
+            .len(),
+        0,
+        "a recorded base must stay a base once its stack has landed"
+    );
+}
+
+/// Shape alone cannot tell a base from a stack that is only half rebuilt, so
+/// `sync` never records one it merely inferred. Marking `feature/a` here would
+/// freeze the bottom of an ordinary stack out of its own restacks for good.
+#[test]
+fn sync_does_not_mark_a_branch_it_merely_inferred_is_a_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let fake = FakeProvider::new()
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13","title":"B work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    // First sync adopts feature/b onto feature/a, which makes feature/a look
+    // exactly like a base: parentless, with a layer stacked on it.
+    repo.stack_faked(&fake).args(["sync"]).assert().success();
+    repo.stack_faked(&fake)
+        .args(["sync"])
+        .assert()
+        .success()
+        // And says the skip is a reading of the shape, naming what rebuilds it
+        // - not a recorded fact.
+        // One assertion spanning the join, so stray indentation inside the
+        // literal cannot hide between two half-matches.
+        .stdout(predicates::str::contains(
+            "reads as the base; `git stk repair` if it is a stacked branch",
+        ));
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.feature/a.stkFloor"])
+            .stdout
+            .len(),
+        0,
+        "an inferred base must not be recorded"
+    );
+    // Unrecorded, it stays an ordinary branch: `repair` still adopts it, and
+    // nothing has frozen it out of its own restacks.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "feature/a"
+    );
+    repo.stack_faked(&fake).args(["repair"]).assert().success();
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
+    );
+}
+
+/// `detach` is how you say a branch is no longer a stack base.
+#[test]
+fn detach_clears_the_floor_marker() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "rc-20260817"]);
+
+    repo.stack()
+        .args(["detach"])
+        .assert()
+        .success()
+        // It is the escape every base hint names, so it confirms what it did.
+        .stdout(predicates::str::contains(
+            "rc-20260817 is no longer a stack base",
+        ));
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkFloor"])
+            .stdout
+            .len(),
+        0
+    );
+}
+
+/// The other half of holding the base out of `sync`: a merged review on it
+/// must not count as finished, or cleanup deletes the branch locally. The
+/// skip sits above `landing_for`, which is what makes this hold.
+#[test]
+fn sync_does_not_clean_up_the_base_when_its_own_review_merges() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let fake = FakeProvider::new()
+        // The release line landed in the trunk, on its own schedule.
+        .on("rc-20260817", r##"[{"number":99,"state":"MERGED","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake).args(["sync"]).assert().success();
+
+    assert!(
+        !repo
+            .git_status(["branch", "--list", "rc-20260817"])
+            .stdout
+            .is_empty(),
+        "the base must not be deleted by cleanup"
+    );
+}
+
+/// A stack rooted off the trunk lands in its base, not in the trunk - so the
+/// closing line must not claim the trunk.
+#[test]
+fn sync_reports_an_off_trunk_stack_as_complete_into_its_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let fake = FakeProvider::new()
+        .on("rc-20260817", r##"[{"number":99,"state":"OPEN","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"MERGED","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "stack complete: everything merged into rc-20260817",
+        ));
+}
+
+/// Undoing the command that rooted a stack has to unmark the base it marked,
+/// or the branch stays held out of every stack for good.
+#[test]
+fn undo_clears_a_floor_marker_the_undone_command_set() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+
+    // `new --insert` roots a stack on rc, marking it - and snapshots first.
+    repo.stack()
+        .args(["new", "--insert", "fix/shared"])
+        .assert()
+        .success();
+    assert_eq!(
+        repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
+        "true"
+    );
+
+    repo.stack().args(["undo"]).assert().success();
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkFloor"])
+            .stdout
+            .len(),
+        0,
+        "undo should have unmarked the base it marked"
+    );
+}
+
+/// Adopting a base onto a parent says it is a layer now. Leaving the marker
+/// would hold it out of `submit`/`merge` while `restack` treats it as ordinary
+/// - and `adopt` is what every "no stack parent" hint points at.
+#[test]
+fn adopt_clears_the_floor_marker_on_the_branch_it_attaches() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    assert_eq!(
+        repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
+        "true"
+    );
+
+    repo.stack()
+        .args(["adopt", "rc-20260817", "--parent", "main"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkFloor"])
+            .stdout
+            .len(),
+        0,
+        "an adopted branch is a layer, not a base"
+    );
+}
+
+/// The documented migration for a repo an older `sync` already bit. The base
+/// carries a stack parent it should never have had, which makes it look like
+/// an ordinary branch - so `adopt` alone records nothing and `detach` has to
+/// clear the stray parent first.
+#[test]
+fn detach_then_adopt_records_a_base_an_older_sync_had_adopted() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.git(["switch", "-c", "fix/shared"]);
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+    // The damage: the base adopted onto the trunk.
+    repo.git(["config", "branch.rc-20260817.stkParent", "main"]);
+
+    // Adopt alone cannot tell it from an ordinary trunk-anchored branch.
+    repo.stack()
+        .args(["adopt", "fix/shared", "--parent", "rc-20260817"])
+        .assert()
+        .success();
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkFloor"])
+            .stdout
+            .len(),
+        0,
+        "the shapes are identical here; marking would hit ordinary stacks too"
+    );
+
+    // The documented two-step does record it.
+    repo.stack()
+        .args(["detach", "rc-20260817"])
+        .assert()
+        .success();
+    repo.stack()
+        .args(["adopt", "fix/shared", "--parent", "rc-20260817"])
+        .assert()
+        .success();
+    assert_eq!(
+        repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
+        "true"
+    );
+}
+
+/// Neither `merge` nor plain `submit` may suggest `adopt` from a recorded
+/// base: `adopt` defaults to the current branch, so following that advice
+/// re-roots the release line.
+#[test]
+fn a_lone_base_is_never_told_to_adopt_itself() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    // The stack lands and is cleaned up, leaving the recorded base alone.
+    repo.git(["switch", "rc-20260817"]);
+    repo.git(["branch", "-D", "fix/shared"]);
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("nothing to merge"))
+        .stderr(predicates::str::contains("adopt").not());
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--no-stack", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "rc-20260817 is this stack's base, and nothing is stacked on it",
+        ))
+        .stderr(predicates::str::contains("adopt").not());
+}
+
+/// Stacking on a branch with no parent of its own is ambiguous - a release
+/// line and a branch nobody has adopted yet look identical. git-stk records
+/// the safe reading, but must say so and name the way back, or an ordinary
+/// branch is frozen out of its own restacks with nothing pointing at the fix.
+#[test]
+fn new_says_when_it_records_the_branch_below_as_a_base() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    repo.stack()
+        .args(["new", "feature/b"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "recorded feature/a as this stack's base",
+        ))
+        .stdout(predicates::str::contains("git stk detach feature/a"));
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkFloor"]),
+        "true"
+    );
+
+    // And the way back works, leaving an ordinary branch behind.
+    repo.stack()
+        .args(["detach", "feature/a"])
+        .assert()
+        .success();
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.feature/a.stkFloor"])
+            .stdout
+            .len(),
+        0
+    );
+}
+
+/// Stacking on the trunk, or on a branch that is already stacked, is not
+/// ambiguous - nothing is recorded and nothing is said.
+#[test]
+fn new_is_quiet_when_the_branch_below_is_not_a_candidate_base() {
+    let repo = TestRepo::new();
+
+    repo.stack()
+        .args(["new", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("base").not());
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    repo.stack()
+        .args(["new", "feature/b"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("base").not());
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.feature/a.stkFloor"])
+            .stdout
+            .len(),
+        0
+    );
+}
+
+/// The recording lands on a branch the command does not name, so a dry run
+/// has to preview it - and write nothing.
+#[test]
+fn new_dry_run_previews_the_base_recording_without_writing_it() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    repo.stack()
+        .args(["new", "feature/b", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would record feature/a as this stack's base",
+        ));
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.feature/a.stkFloor"])
+            .stdout
+            .len(),
+        0,
+        "a dry run must not write the marker"
+    );
+}
+
+/// The documented migration, previewed: `adopt --dry-run` marks a third
+/// branch, so it must say which.
+#[test]
+fn adopt_dry_run_previews_the_base_it_would_record() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.git(["switch", "-c", "fix/shared"]);
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    repo.stack()
+        .args([
+            "adopt",
+            "fix/shared",
+            "--parent",
+            "rc-20260817",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("would attach fix/shared"))
+        .stdout(predicates::str::contains(
+            "would record rc-20260817 as this stack's base",
+        ));
+
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkFloor"])
+            .stdout
+            .len(),
+        0
+    );
+}
+
+/// `adopt` removes a base's protection, which is the direction that most wants
+/// saying - and `--dry-run` has to preview it, since the write lands on the
+/// branch being adopted rather than the one named by `--parent`.
+#[test]
+fn adopt_announces_and_previews_clearing_a_base() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+
+    repo.stack()
+        .args(["adopt", "rc-20260817", "--parent", "main", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would record that rc-20260817 is no longer a stack base",
+        ));
+    assert_eq!(
+        repo.git(["config", "--get", "branch.rc-20260817.stkFloor"]),
+        "true",
+        "a dry run must not clear the marker"
+    );
+
+    repo.stack()
+        .args(["adopt", "rc-20260817", "--parent", "main"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "recorded that rc-20260817 is no longer a stack base",
+        ));
+    assert_eq!(
+        repo.git_status(["config", "--get", "branch.rc-20260817.stkFloor"])
+            .stdout
+            .len(),
+        0
+    );
+}
+
+/// `status` reads the marker like every other reader: a base carrying a stray
+/// `stkParent` has no parent for any purpose, and reporting one produced a
+/// "run `git stk restack`" hint that `restack` cannot act on.
+#[test]
+fn status_on_a_base_names_it_and_offers_no_restack_hint() {
+    let repo = TestRepo::new();
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+    // What an older git-stk left behind, plus commits so the trunk is ahead.
+    repo.git(["config", "branch.rc-20260817.stkParent", "main"]);
+    repo.git(["switch", "main"]);
+    repo.commit_file("trunk.txt", "t\n", "trunk moves");
+    repo.git(["switch", "rc-20260817"]);
+
+    repo.stack()
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "parent: none (this stack's base)",
+        ))
+        .stdout(predicates::str::contains("git stk detach rc-20260817"))
+        .stdout(predicates::str::contains("parent: main").not())
+        .stdout(predicates::str::contains("git stk restack").not());
+}
+
+/// `sync` and `cleanup` both skip a base on purpose, so "run `git stk sync`"
+/// can never be satisfied for one - it would reprint every run while the thing
+/// the user actually has to do went unnamed.
+#[test]
+fn status_on_a_base_with_a_merged_review_does_not_send_you_to_sync() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.git(["switch", "rc-20260817"]);
+
+    let fake = FakeProvider::new()
+        .on("rc-20260817", r##"[{"number":99,"state":"MERGED","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "git-stk leaves a stack's base alone, so this is yours to finish",
+        ))
+        .stdout(predicates::str::contains("run `git stk sync`").not());
+}
+
+/// The twin of the base's own dead end: a layer stacked on a base whose
+/// release PR merged was told to run `git stk sync`, which skips the base
+/// before `landing_for` and so never retargets the layer.
+#[test]
+fn status_on_a_layer_over_a_landed_base_does_not_send_you_to_sync() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let fake = FakeProvider::new()
+        .on("rc-20260817", r##"[{"number":99,"state":"MERGED","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "rc-20260817 is this stack's base, so git-stk does not retarget off it",
+        ))
+        .stdout(predicates::str::contains(
+            "git stk adopt fix/shared --parent <parent>",
+        ))
+        .stdout(predicates::str::contains("run `git stk sync`").not());
+}
+
+/// `Unknown(_)` is not "landed" - GitLab's `locked` reaches it, and
+/// `landing_for` returns `None` for it - so neither base hint may fire on a
+/// review that is still running. Both printed nothing before this PR.
+#[test]
+fn status_says_nothing_about_a_base_whose_review_is_still_running() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    repo.commit_file("shared.txt", "shared\n", "shared work");
+
+    let fake = FakeProvider::new()
+        .on("rc-20260817", r##"[{"number":99,"state":"LOCKED","baseRefName":"main","headRefName":"rc-20260817","url":"https://example.com/99","title":"Release 20260817"}]"##)
+        .on("fix/shared", r##"[{"number":13,"state":"OPEN","baseRefName":"rc-20260817","headRefName":"fix/shared","url":"https://example.com/13","title":"Shared fix"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    // From the layer: no "re-root off the base" advice for a base still running.
+    repo.stack_faked(&fake)
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("does not retarget off it").not());
+
+    // And from the base itself: nothing is "yours to finish" yet.
+    repo.git(["switch", "rc-20260817"]);
+    repo.stack_faked(&fake)
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("yours to finish").not());
+}

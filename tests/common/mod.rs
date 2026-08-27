@@ -308,6 +308,44 @@ impl TestRepo {
 }
 
 impl TestRepo {
+    /// `git` with `input` on stdin, for the plumbing that reads it.
+    fn git_stdin<const N: usize>(&self, args: [&str; N], input: &str) -> String {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut command = Command::new("git");
+        Self::isolate_git_config(&mut command);
+        let mut child = command
+            .args(args)
+            .current_dir(self.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn git command");
+        child
+            .stdin
+            .as_mut()
+            .expect("git stdin")
+            .write_all(input.as_bytes())
+            .expect("write git stdin");
+        let output = child.wait_with_output().expect("run git command");
+        assert!(output.status.success(), "git failed");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Publish `json` as the shared stack metadata ref on `origin`, mirroring
+    /// `git::write_blob_ref`. Lets a test stand in for another machine - an
+    /// older git-stk, say - writing a document this version has to cope with.
+    pub fn write_metadata_ref(&self, json: &str) {
+        let blob = self.git_stdin(["hash-object", "-w", "--stdin"], json);
+        let entry = format!("100644 blob {blob}\tstack.json\n");
+        let tree = self.git_stdin(["mktree"], &entry);
+        let commit = self.git(["commit-tree", &tree, "-m", "stack metadata"]);
+        self.git(["update-ref", "refs/stk/metadata", &commit]);
+        self.git(["push", "--force", "origin", "refs/stk/metadata"]);
+    }
+
     /// Create a bare repo, add it as origin, and push the given branches.
     pub fn add_bare_origin(&self, branches: &[&str]) -> TempDir {
         let bare = tempfile::tempdir().expect("create bare remote");

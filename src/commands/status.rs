@@ -25,7 +25,11 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
     let branch = branch
         .map(str::to_owned)
         .map_or_else(git::current_branch, Ok)?;
-    let parent = stack::parent_of(&branch)?;
+    // Marker-aware, like every other reader: a base with a stray `stkParent`
+    // has no parent for any purpose, and reporting one here would produce a
+    // "run `git stk restack`" hint that `restack` cannot act on.
+    let is_base = stack::is_floor(&branch)?;
+    let parent = stack::stacked_parent_of(&branch)?;
     let children = stack::children_of(&branch)?;
 
     anstream::println!("branch: {}", style::paint(style::CURRENT, &branch));
@@ -36,6 +40,9 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
     }
     match parent.as_deref() {
         Some(parent) => anstream::println!("parent: {}", style::paint(style::BRANCH, parent)),
+        // A recorded base has no parent by design, not by omission - say which,
+        // so it is not read as a branch whose metadata went missing.
+        None if is_base => anstream::println!("parent: none (this stack's base)"),
         None => anstream::println!("parent: none"),
     }
     if children.is_empty() {
@@ -107,7 +114,26 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
     // Teach the loop: the next command, derived from review states and
     // local drift. A sync covers the restack, so the nudges don't stack.
     let mut hints = Vec::new();
+    if is_base {
+        hints.push(format!(
+            "{branch} is this stack's base, so nothing rebases, submits, or lands it - \
+             `git stk detach {branch}` if it should be"
+        ));
+    }
     match &review {
+        // `sync` and `cleanup` both skip a base on purpose, so the usual
+        // remedies can never be satisfied here. Say what actually happened
+        // rather than reprint a dead end every run.
+        Some(review)
+            if is_base && matches!(review.state, ReviewState::Merged | ReviewState::Closed) =>
+        {
+            hints.push(format!(
+                "review {} is {} - git-stk leaves a stack's base alone, so this is yours to \
+                 finish; `git stk detach {branch}` first if it should be managed",
+                review.id,
+                style::state(&review.state)
+            ));
+        }
         Some(review) if review.state == ReviewState::Merged => {
             hints.push(format!(
                 "review {} is merged - run `git stk sync`",
@@ -126,7 +152,28 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
         if let Some((_, review_provider)) = &detected {
             match review_provider.review_for_branch_including_closed(parent) {
                 Ok(Some(parent_review)) if parent_review.branch == parent => {
+                    // `sync` skips a base before `landing_for`, so it never
+                    // retargets a layer off one - pointing there would reprint
+                    // every run. Name the re-root instead.
+                    let parent_is_base = stack::is_floor(parent)?;
                     match parent_review.state {
+                        // Only the states `landing_for` would have acted on:
+                        // `Unknown(_)` covers things like GitLab's `locked`,
+                        // which is still running, and printed nothing before.
+                        _ if parent_is_base
+                            && matches!(
+                                parent_review.state,
+                                ReviewState::Merged | ReviewState::Closed
+                            ) =>
+                        {
+                            hints.push(format!(
+                                "parent review {} is {} - {parent} is this stack's base, so \
+                                 git-stk does not retarget off it; re-root with \
+                                 `git stk adopt {branch} --parent <parent>`",
+                                parent_review.id,
+                                style::state(&parent_review.state)
+                            ));
+                        }
                         ReviewState::Merged => hints.push(format!(
                             "parent review {} is merged - run `git stk sync`",
                             parent_review.id

@@ -542,7 +542,7 @@ fn submit_stack_from_a_parentless_root_submits_the_branches_above_it() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "feature/a is this stack's base (no stack parent recorded); not submitted",
+            "feature/a is this stack's base; not submitted",
         ))
         .stdout(predicates::str::contains(
             "would create feature/b -> feature/a",
@@ -1588,7 +1588,7 @@ fn submit_stack_treats_a_parentless_root_as_the_base_not_a_branch_to_submit() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "rc-20260817 is this stack's base (no stack parent recorded); not submitted",
+            "rc-20260817 is this stack's base; not submitted",
         ))
         .stdout(predicates::str::contains(
             "would create fix/shared -> rc-20260817",
@@ -1872,14 +1872,17 @@ fn submit_named_branch_error_names_that_branch_in_the_adopt_remedy() {
 
 /// `stk.submitStack` is off by default, so a bare `submit` from a base takes
 /// the single-branch path, where the base trim never runs. It must still not
-/// offer to re-root the branch you are standing on.
+/// offer to re-root the branch you are standing on. Unmarked base: the
+/// children signal is all there is to go on.
 #[test]
-fn submit_default_path_from_a_base_points_at_stack_mode() {
+fn submit_default_path_from_an_unmarked_base_points_at_stack_mode() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     repo.git(["switch", "-c", "rc-20260817"]);
     repo.commit_file("rc.txt", "rc\n", "release commit");
     repo.stack().args(["new", "fix/shared"]).assert().success();
+    // A stack rooted before bases were recorded: no marker, only children.
+    repo.git(["config", "--unset", "branch.rc-20260817.stkFloor"]);
     repo.git(["switch", "rc-20260817"]);
     let fake = FakeProvider::new().fallback("[]").install(&repo);
 
@@ -1941,6 +1944,30 @@ fn submit_naming_the_trunk_does_not_claim_you_are_on_it() {
             "main is the trunk, so it is never part of a stack",
         ))
         .stderr(predicates::str::contains("you are on the trunk").not());
+}
+
+/// `submit <base>` from a sibling stack must not point at a bare
+/// `--stack`, which would resolve the stack you are standing in and submit
+/// that one instead - force-pushing it first under `stk.pushOnSubmit`.
+#[test]
+fn submit_base_from_a_sibling_stack_names_the_branch_in_the_pointer() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "fix/shared"]).assert().success();
+    // An unrelated stack off the trunk, and we stand in it.
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "other/work"]).assert().success();
+    let fake = FakeProvider::new().fallback("[]").install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "rc-20260817", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "`git stk submit --stack` from rc-20260817",
+        ));
 }
 
 /// `children_of(trunk)` says nothing about where you stand, and a stack rooted

@@ -87,6 +87,18 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
     crate::notes::update_stack_notes(review_provider.as_ref(), &branch_parents, dry_run, false)?;
 
     for branch in branches {
+        // The base a stack sits on is not ours to finish: a merged release PR
+        // would otherwise detach the layers above it and delete the branch -
+        // the destructive half of the same hazard `sync` guards against.
+        if stack::is_floor(&branch)? {
+            anstream::println!(
+                "{}",
+                style::dim(&format!("skipped {branch}: this stack's base"))
+            );
+            skipped += 1;
+            continue;
+        }
+
         retargeted += recover_deleted_parent(
             review_provider.as_ref(),
             &branch,
@@ -183,6 +195,10 @@ fn recover_deleted_parent(
     let Some(landing) = landing_for(&review.state, clean_closed) else {
         return Ok(0);
     };
+    // A base that landed is still not a parent we recover past.
+    if stack::is_floor(&parent)? {
+        return Ok(0);
+    }
     if review.base == *branch || !local_branches.contains(&review.base) {
         return Ok(0);
     }
