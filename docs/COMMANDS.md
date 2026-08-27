@@ -225,6 +225,24 @@ submits a single branch. `restack`, `sync`, and `list` are scoped the same way -
 containing the current branch, never the sibling stacks that merely share the trunk (which `restack`
 would otherwise rebase and force-push, and `list` would otherwise draw alongside yours).
 
+A stack need not sit on the trunk. Root one on any branch - a release line, say - and that branch is the
+stack's base: the branch above it targets it, and it is never submitted, pushed, merged, or given a review
+of its own, even when it has one (`merge` lands the stack's own layers, never the base's review).
+`submit --stack` names the base once and submits the layers above it; since it does not push the base, and
+the base is what the lowest review targets, `--push` first checks the base is on the remote and stops with
+something actionable if it is not. Submitting the base itself has nothing below it to submit, and says so
+rather than treating the base as unstacked - `--downstack` from it, and equally a bare `submit`,
+`--no-stack`, or `submit <base>`, since `stk.submitStack` is off by default. The message points at
+`git stk submit --stack` run _from_ that branch, because `--stack` cannot be pointed at a named one.
+
+A branch with no stack parent _and_ nothing above it is not a stack at all - there is no base to target or
+merge into - so `submit` and `merge` both say so. `submit` names the branch in its remedy
+(`git stk adopt <branch> --parent <parent>`), because `submit <branch>` can be pointed at a branch other
+than the one checked out and `adopt` defaults to the one you are on; `merge` always means the current
+branch, so it leaves the name out. Either way, `git stk repair` rebuilds the metadata instead. The trunk
+matches that description too but is not a stack branch, so it gets its own message rather than an `adopt`
+remedy - naming it, or standing on it, both say so.
+
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens
 new reviews as drafts; `--no-draft` overrides the config, and `submit --ready` flips the submitted

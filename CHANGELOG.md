@@ -4,6 +4,58 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.12.0
+
+### Fixed
+
+- **submit:** a stack rooted on a branch other than the trunk - a release line,
+  say - no longer fails the whole stack-mode submit with
+  `<base> has no stack parent`. That root is the stack's base: the branch above
+  it targets it, and it is left out of the submit, the `-u --force-with-lease`
+  push, and every step that writes to a review - including `--title` and
+  `--desc`, which act on the current branch and so must skip it when that is
+  the base - exactly as `restack` and `absorb` already treat it. `--no-stack`
+  always handled this shape, and `new`/`adopt` both
+  create it, so stack mode refusing it was an accept-then-reject asymmetry
+  (#307).
+- **merge:** a stack rooted on a branch other than the trunk no longer treats
+  that base as the stack bottom. If the base had a review of its own - a
+  release branch with an open PR into the trunk, say - `merge` would offer to
+  land _that_ review, and `merge --all` would start by landing it; the base
+  check that guards this is skipped for a branch with no recorded parent, so
+  nothing caught it. `merge --all` also counted the base among the reviews it
+  set out to land (#307).
+- **merge:** `merge --all` pins the stack's base for the whole run. The `sync`
+  between merges re-records that base's parent from its own review (#308), so
+  recomputing the bottom each iteration could promote it into the landing and
+  merge a release PR the up-front confirmation never offered - it named the
+  base as the destination, not as something being merged (#307).
+- **submit:** a stack base the remote does not have is now reported before
+  anything is pushed, rather than left to the forge to reject when the review
+  above it is opened against a ref that does not exist there (#307).
+- **submit:** submitting the stack's base now says there is nothing below it to
+  submit and points at `git stk submit --stack` run from that branch, rather
+  than reporting the base as unstacked and offering to re-root it onto the
+  trunk - which is destructive when the base is a release line. Covers
+  `--downstack` and, since `stk.submitStack` is off by default, a bare
+  `submit`, `--no-stack`, and `submit <base>` (#307).
+- **submit:** the trunk keeps its own messages on the default path, rather than
+  being reported as a stack's base. Naming it (`git stk submit <trunk>`) says
+  it is never part of a stack; standing on it says to check out a stacked
+  branch (#307).
+- **submit, merge:** "no stacked branches" now asks whether the repo has a
+  stacked branch at all, rather than whether the trunk has children - a stack
+  rooted off the trunk leaves the trunk childless, so both commands claimed a
+  repo with one had none (#307).
+- **merge:** on a branch with no stack parent, "no stacked branches to merge"
+  now names the branch and points at `git stk adopt --parent <parent>` or
+  `git stk repair`, rather than implying the repo has no stacks (#307).
+- **submit:** the "no stack parent" error now names the branch being submitted
+  in both halves - `git stk adopt <branch> --parent <parent>` - rather than a
+  bare `git stk adopt`, which silently adopts onto the trunk - a destructive
+  suggestion when the branch in question is a release line that a later
+  `restack` would rebase onto the trunk and force-push (#307).
+
 ## 0.11.6
 
 ### Added
