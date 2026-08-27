@@ -444,6 +444,18 @@ pub trait ReviewProvider {
         false
     }
 
+    /// Dissolve `stack` on the platform, leaving its reviews open and
+    /// standalone. Merged reviews stay in it - the platform keeps that
+    /// history. Returns a line describing what happened.
+    ///
+    /// Default `None`: only GitHub keeps stacks. Unlike registering, this is
+    /// not gated on `stk.githubStacks` - undoing something must not require
+    /// the setting that created it to still be on.
+    fn unstack_reviews(&self, stack: &NativeStack) -> Result<Option<String>> {
+        let _ = stack;
+        Ok(None)
+    }
+
     /// Merge the review with the given strategy: squash, rebase, or merge.
     /// With `auto`, schedule the merge for when required checks pass
     /// instead of merging now.

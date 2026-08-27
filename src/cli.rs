@@ -27,6 +27,7 @@ pub enum Command {
     Split(commands::split::Split),
     Rename(commands::rename::Rename),
     Detach(commands::detach::Detach),
+    Unstack(commands::unstack::Unstack),
     Absorb(commands::absorb::Absorb),
 
     Up(commands::up::Up),

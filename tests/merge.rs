@@ -1398,6 +1398,7 @@ fn merge_all_lands_a_registered_stack_through_the_async_endpoint() {
         "`gh pr merge` is rejected for a stacked review and must never be reached"
     );
 }
+
 /// A merge queue taking a stacked review is not a failure and not something to
 /// wait on - it lands on its own schedule, and `merge --all` stops there
 /// rather than pressing on into a stack that has not moved yet.
@@ -1449,6 +1450,7 @@ fn merge_reports_a_stacked_review_taken_by_the_merge_queue() {
         "`gh pr merge` is rejected for a stacked review and must never be reached"
     );
 }
+
 /// A failed async merge is an error, not a message - `merge --all` must stop
 /// rather than carry on to the next layer over a stack that did not move.
 #[test]
@@ -1497,4 +1499,66 @@ fn merge_surfaces_a_failed_async_merge() {
         !repo.path().join("sync-merge.txt").exists(),
         "`gh pr merge` is rejected for a stacked review and must never be reached"
     );
+}
+
+/// Registering a stack was a one-way door: turning `stk.githubStacks` off left
+/// every stack it created still registered, with GitHub still refusing the
+/// ordinary merge and retarget for those reviews.
+#[test]
+fn unstack_dissolves_the_platform_stack() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    // Deliberately off: undoing must not need the setting that created it.
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+
+    let stacks = r##"[{"number":5,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("stacks/5/unstack -X POST", "unstack.txt", "{}")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", stacks)
+        .fallback("[]")
+        .install(&repo);
+
+    // Dry run says what it would do and calls nothing.
+    repo.stack_faked(&fake)
+        .args(["unstack", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would dissolve stack 5 (#12 #13)",
+        ));
+    assert!(!repo.path().join("unstack.txt").exists());
+
+    repo.stack_faked(&fake)
+        .args(["unstack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dissolved stack 5 on GitHub"));
+    assert!(repo.path().join("unstack.txt").exists());
+}
+
+/// Nothing recorded is not an error - it is the ordinary answer for a stack
+/// git-stk never registered, and for every provider but GitHub.
+#[test]
+fn unstack_says_so_when_there_is_no_platform_stack() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["unstack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("no platform stack recorded"));
 }

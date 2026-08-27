@@ -38,6 +38,7 @@ pub mod sync;
 pub mod top;
 pub mod undo;
 pub mod uninstall;
+pub mod unstack;
 pub mod up;
 pub mod upgrade;
 pub mod view;
