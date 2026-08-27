@@ -251,7 +251,10 @@ fn open_stack(slug: &str) -> Result<Option<serde_json::Value>, String> {
 fn stacks_enabled(slug: &str) -> Result<bool, String> {
     match gh_json(&["api", &format!("repos/{slug}/stacks")]) {
         Ok(_) => Ok(true),
-        Err(error) if error.contains("404") || error.contains("Not Found") => Ok(false),
+        // The parenthesized form, not a bare `404`: the error carries the
+        // whole argument list, and the slug holds a nanosecond stamp that
+        // contains those three digits often enough to swallow a real failure.
+        Err(error) if error.contains("(HTTP 404)") => Ok(false),
         Err(error) => Err(error),
     }
 }
