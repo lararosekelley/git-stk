@@ -178,3 +178,40 @@ fn status_shows_a_status_dot_for_the_reviews_pr() {
         .success()
         .stdout(predicates::str::contains("🟢 #9"));
 }
+
+/// The platform's own stack is distinct from the tree git-stk draws, so `list`
+/// marks the layers it holds and `status` names it.
+#[test]
+fn list_and_status_show_a_platform_stack() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let graphql = r##"{"data":{"repository":{"p0":{"nodes":[{"number":12,"headRefName":"feature/a",
+        "mergeQueueEntry":null,"stack":{"number":6,"size":3},"stackEntry":{"position":2},
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}]}}}}"##;
+    let stacks = r##"[{"number":6,"base":{"ref":"main"},"pull_requests":[
+        {"number":11,"head":{"ref":"below"}},
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"above"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on("api graphql", graphql)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("api repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("⛁2/3"));
+
+    repo.stack_faked(&fake)
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("stack: github stack 6 (2 of 3)"));
+}

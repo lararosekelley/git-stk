@@ -90,6 +90,23 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                         style::paint(style::BRANCH, &review.base)
                     );
                     anstream::println!("url: {}", style::paint(style::DIM, &review.url));
+                    // The platform's own stack, when it holds this review -
+                    // which is what makes GitHub, not git-stk, the one that
+                    // merges and retargets it.
+                    if let Ok(Some(found)) = review_provider.native_stack_for(&review.branch) {
+                        let position = found
+                            .layers
+                            .iter()
+                            .position(|layer| layer.branch == review.branch)
+                            .map_or_else(String::new, |index| {
+                                format!(" ({} of {})", index + 1, found.layers.len())
+                            });
+                        anstream::println!(
+                            "stack: {} stack {}{position}",
+                            provider.kind,
+                            found.number
+                        );
+                    }
 
                     // A base and a local parent that disagree while the
                     // platform's stack can still close the gap is a chain
