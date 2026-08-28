@@ -402,9 +402,12 @@ pub trait ReviewProvider {
     /// keeps one. An authoritative ordering that outlives local metadata, so
     /// `repair` can prefer it to guessing from ancestry.
     ///
-    /// Default `None`: no platform but GitHub records stacks, and GitHub only
-    /// when `stk.githubStacks` is on. An error here is the caller's to treat
-    /// as "no stack" - this is a hint, never a precondition.
+    /// Default `None`: no platform but GitHub records stacks. Not gated on
+    /// `stk.githubStacks` - that setting says whether git-stk *registers* one,
+    /// and a stack can exist without it having done so. An error here is the
+    /// caller's to treat as "no stack" - for the callers that use it as a
+    /// hint. A caller for which the answer *is* the command must ask
+    /// differently, or it will report "no stack" for a failed lookup.
     fn native_stack_for(&self, branch: &str) -> Result<Option<NativeStack>> {
         let _ = branch;
         Ok(None)

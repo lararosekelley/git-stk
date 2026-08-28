@@ -131,7 +131,7 @@ pub fn repair(dry_run: bool) -> Result<()> {
         // force-pushes against.
         //
         // Best effort - `native_stack_for` answers `None` for every provider
-        // but GitHub, and for GitHub unless `stk.githubStacks` is on.
+        // but GitHub, and for a repo without stacks.
         if let Some((_, review_provider)) = &provider
             && let Ok(Some(stack)) = review_provider.native_stack_for(branch)
             && stack.parent_is_current(branch)

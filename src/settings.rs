@@ -20,9 +20,15 @@ pub const MERGE_WAIT_KEY: &str = "stk.mergeWait";
 pub const SUBMIT_DRAFT_KEY: &str = "stk.submitDraft";
 pub const NO_UPDATE_CHECK_KEY: &str = "stk.noUpdateCheck";
 pub const ABSORB_INCLUDE_UNSTAGED_KEY: &str = "stk.absorbIncludeUnstaged";
-/// Register a submitted stack with GitHub's native stacked pull requests, and
-/// read that stack back when rebuilding metadata. Off by default: the feature
-/// is in public preview, and off means today's behaviour byte for byte.
+/// Register a submitted stack with GitHub's native stacked pull requests. Off
+/// by default: the feature is in public preview, so creating a stack on
+/// someone's behalf is opt-in.
+///
+/// Only creating one is gated. Reading a stack and following it is
+/// unconditional - `merge`, `submit`, and `repair` all obey a stack GitHub
+/// already holds, because a stack made outside git-stk changes what the
+/// platform accepts either way: GitHub refuses `gh pr merge` and
+/// `gh pr edit --base` for a review in one.
 pub const GITHUB_STACKS_KEY: &str = "stk.githubStacks";
 pub const GITLAB_HOST_KEY: &str = "stk.gitlabHost";
 pub const GITEA_HOST_KEY: &str = "stk.giteaHost";

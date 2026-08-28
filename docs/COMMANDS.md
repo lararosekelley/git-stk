@@ -273,12 +273,17 @@ the stray parent first with `git stk detach <base>`, then run it.
 With `git config stk.githubStacks true`, `submit --stack` also hands the submitted reviews to GitHub as a
 [native stack](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) - bottom first, the
 order it lands in - so its layers get GitHub's own stack map and parallel review. An existing stack is
-extended rather than replaced, and `repair` prefers that stack to the review base and to branch ancestry
-when rebuilding metadata - until the layer below has landed, at which point the platform has already
-retargeted the review and the listing, which keeps the landed layer, is the staler of the
-two. Registering is presentation: if it fails, the reviews still exist and the submit
+extended rather than replaced. `repair` prefers that stack to the review base and to branch ancestry when
+rebuilding metadata, whether or not the setting is on - it governs registering, not reading - until the
+layer below has landed, at which point the platform has already retargeted the review and the listing,
+which keeps the landed layer, is the staler of the two. Registering is presentation: if it fails, the
+reviews still exist and the submit
 still succeeds. Off by default while the GitHub feature is in public preview, and GitHub-only - GitLab and
 Gitea are unaffected.
+
+The setting gates _registering_, not _noticing_. A stack can exist without git-stk creating it - a teammate's
+`gh stack submit`, the GitHub web UI - and GitHub refuses the ordinary merge and retarget for those pull
+requests just the same, so git-stk reads and handles a stack whoever made it.
 
 Registering hands two things to GitHub, and git-stk follows it there. A pull request in a stack cannot be
 merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merge and waits for the

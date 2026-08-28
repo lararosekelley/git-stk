@@ -2560,3 +2560,85 @@ fn submit_sends_you_to_sync_when_the_platform_moved_the_base_already() {
 
     assert!(!repo.path().join("retarget.txt").exists());
 }
+
+/// A stack needs two layers - GitHub answers 422 for one, and a lone review is
+/// not a stack. Registering must not be attempted, rather than attempted and
+/// reported as a failure on every single-branch submit.
+#[test]
+fn submit_does_not_register_a_single_branch_as_a_stack() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+
+    let fake = FakeProvider::new()
+        .record("stacks -X POST", "register.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("registration failed").not());
+
+    assert!(!repo.path().join("register.txt").exists());
+}
+
+/// Same for retargeting: GitHub refuses it for any stacked pull request, not
+/// just ones git-stk registered, so `submit` must stand down either way.
+#[test]
+fn submit_does_not_retarget_in_a_stack_git_stk_did_not_register() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    // Deliberately NOT set.
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr edit 13 --base", "retarget.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("is in a stack"));
+
+    assert!(!repo.path().join("retarget.txt").exists());
+}
+
+/// Registering, though, stays gated: `stk.githubStacks` says whether git-stk
+/// creates a stack, and off must create none.
+#[test]
+fn submit_still_registers_nothing_when_the_setting_is_off() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+
+    let fake = FakeProvider::new()
+        .record("stacks -X POST", "register.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success();
+
+    assert!(!repo.path().join("register.txt").exists());
+}

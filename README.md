@@ -292,9 +292,9 @@ Everything is optional; defaults shown below:
     absorbIncludeUnstaged = true
     ; Skip the once-a-day check for a newer release. Default: false.
     noUpdateCheck = true
-    ; Use GitHub's native stacked pull requests: `submit --stack` registers the
-    ; stack so its layers get GitHub's stack map, and `repair` prefers that
-    ; stack to the review base and to ancestry. GitHub only, and in public
+    ; Register submitted stacks with GitHub's native stacked pull requests, so
+    ; their layers get GitHub's stack map. Reading a stack is not gated on this
+    ; - git-stk handles one whoever created it. GitHub only, and in public
     ; preview there. Default: false.
     githubStacks = true
     ; Where `new --worktree` puts a branch's worktree. Default: a
@@ -318,10 +318,11 @@ at which point nothing about the shape says it is a base any more. `git stk deta
 Branches are the real state; the metadata is just annotation. If it is ever lost or stale, `git stk repair`
 rebuilds it from review bases (when the provider CLI - `gh`/`glab`/`tea` - is available) and branch
 ancestry, and verifies recorded fork points. Anything it cannot resolve safely is reported for a manual
-`git stk adopt`. With `stk.githubStacks` on, it prefers the stack GitHub itself records to both - that
-ordering was stated rather than inferred. It stops preferring the stack once the layer below has landed:
-the platform retargets a review at exactly that moment, while the listing goes on naming the merged branch,
-so the review base is the fresher answer from then on.
+`git stk adopt <branch> --parent <parent>`. Where GitHub records a stack of its own, `repair` prefers that
+to both - the ordering was stated rather than inferred - until the layer below has landed, at which point
+the platform has already retargeted the review while the listing goes on naming the merged branch, so the
+review base becomes the fresher answer. That does not need `stk.githubStacks`: the setting governs whether
+git-stk *registers* a stack, not whether it reads one.
 
 Working across machines? The parent map - and which branch a stack sits on - rides along on a shared ref
 (`refs/stk/metadata`), published automatically whenever git-stk pushes branches
