@@ -420,7 +420,7 @@ fn update_child_review_base(
     // is one git-stk will not touch, and saying "would update" first and
     // "actually, the platform does that" second describes a decision that was
     // already made. On a dry run the old order printed only the first half.
-    if review_provider.platform_manages_base(&review)? {
+    if review_provider.platform_will_base_on(&review, parent)? {
         anstream::println!(
             "{}",
             style::dim(&format!(

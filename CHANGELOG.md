@@ -29,8 +29,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   below it lands, and says so rather than claiming a change git-stk did not
   make. Where GitHub has no move left to make and still refuses one by hand -
   a stack's bottom layer, or one everything below has landed for - `submit`,
-  `cleanup`, and `merge` say so and point at `git stk unstack` rather than
-  promising a retarget that never comes. All of this is inert with `stk.githubStacks` off.
+  `cleanup`, and `merge` say so, and say to dissolve the stack on the platform,
+  rather than promising a retarget that never comes. All of this is inert with `stk.githubStacks` off.
 - **stack:** rooting a stack on a branch other than the trunk records that
   branch as the stack's base (`branch.<name>.stkFloor`). A base is never
   submitted, pushed, merged, or re-parented, and recording it is what makes

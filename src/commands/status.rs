@@ -91,17 +91,20 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                     );
                     anstream::println!("url: {}", style::paint(style::DIM, &review.url));
 
-                    // Same distinction `merge` draws: a layer above a
-                    // platform stack's bottom is owed a retarget GitHub has
-                    // not made yet, so the disagreement is expected and
-                    // `submit` is the one command that refuses to help.
-                    let owed_a_retarget = review_provider
-                        .platform_will_move_base(review)
-                        .unwrap_or(false);
+                    // A base and a local parent that disagree while the
+                    // platform's stack can still close the gap is a chain
+                    // part-way through unwinding, not a fault - and `submit`,
+                    // which the warning names, refuses a review in a stack.
                     if let Some(parent) = parent.as_deref()
                         && parent != review.base
                     {
-                        if owed_a_retarget {
+                        // Asked only on a disagreement, which is rare: the
+                        // lookup costs a call, and the annotation cannot
+                        // answer it.
+                        if review_provider
+                            .platform_will_base_on(review, parent)
+                            .unwrap_or(false)
+                        {
                             anstream::println!(
                                 "{}",
                                 style::paint(

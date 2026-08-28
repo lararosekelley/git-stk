@@ -157,29 +157,21 @@ pub struct NativeStack {
 }
 
 impl NativeStack {
-    /// Whether this layer's base is the platform's to move: it has another
-    /// layer below it, so the platform sets its base as that one lands. The
-    /// stack's bottom is excluded - nothing lands below it.
-    pub fn platform_owns_base_of(&self, branch: &str) -> bool {
-        self.layers
-            .iter()
-            .position(|layer| layer.branch == branch)
-            .is_some_and(|index| index > 0)
-    }
-
-    /// Whether the platform still has a base change *left to make* here: it
-    /// owns this layer's base, and that base is still another layer of the
-    /// stack rather than the stack's own base.
+    /// Whether this stack can still bring `branch`'s base to `parent` on its
+    /// own - `parent` is somewhere the platform puts a base: the stack's own
+    /// base, or a layer still between them.
     ///
-    /// Narrower than [`NativeStack::platform_owns_base_of`], and the
-    /// difference is temporal. A landed layer keeps its place in the listing,
-    /// so ownership stays true forever - but the platform moves each layer
-    /// onto the stack's base as the one below lands, so a base that has
-    /// arrived there is where it will stay. A local parent that disagrees
-    /// after that is a real problem rather than a window to wait out, and
-    /// this is what separates the two.
-    pub fn owed_a_retarget(&self, branch: &str, base: &str) -> bool {
-        self.platform_owns_base_of(branch) && self.layers.iter().any(|layer| layer.branch == base)
+    /// This is the question every caller has, and it needs the local parent
+    /// to answer. A base and a parent that disagree while the stack can still
+    /// close the gap is a chain part-way through unwinding: the platform
+    /// retargets each layer onto the stack's base as the one below it lands,
+    /// and `cleanup` walks the local parents the same way. A parent the stack
+    /// cannot reach - a line re-rooted onto a release branch, say - is a
+    /// disagreement nothing will resolve, and callers say so instead of
+    /// waiting for it.
+    pub fn can_base_on(&self, branch: &str, parent: &str) -> bool {
+        self.layers.iter().any(|layer| layer.branch == branch)
+            && (self.base == parent || self.layers.iter().any(|layer| layer.branch == parent))
     }
 
     /// What `branch` stacks on according to the platform: the branch below it,
@@ -319,31 +311,6 @@ pub trait ReviewProvider {
     ) -> Result<String>;
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String>;
-
-    /// Whether the platform moves this review's base itself, so a caller
-    /// should stand down rather than retarget it.
-    ///
-    /// True for a layer of a GitHub stack that has one below it: GitHub
-    /// retargets each layer as the one beneath it lands. Not true for the
-    /// stack's *bottom* - nothing lands below it, so GitHub never moves it,
-    /// and treating the two alike promises a retarget that never comes. See
-    /// [`ReviewProvider::platform_refuses_base_change`] for what the bottom
-    /// needs instead.
-    ///
-    /// Defaults to `false`, and errs that way too, because the two mistakes
-    /// are not equally bad. Answering `false` wrongly means attempting a
-    /// retarget the platform refuses: a loud, recoverable error, and
-    /// `update_review_base` checks again itself, so a blip that clears in
-    /// between still lands on the friendly message. Answering `true` wrongly
-    /// means skipping a retarget that was needed - in `cleanup` the layer then
-    /// still points at a branch about to be deleted, and a platform that
-    /// auto-closes a review whose base disappears takes the review with it,
-    /// comments and approvals included, silently.
-    fn platform_manages_base(&self, review: &ReviewRequest) -> Result<bool> {
-        let _ = review;
-        Ok(false)
-    }
-
     /// Whether the platform refuses a base change on this review, whoever
     /// asks. GitHub rejects `pr edit --base` for every pull request in a
     /// stack, its bottom layer included - so a bottom whose base has gone
@@ -357,17 +324,18 @@ pub trait ReviewProvider {
         Ok(false)
     }
 
-    /// Whether the platform still has a base change left to make for this
-    /// review, so a base and a local parent that disagree are a window rather
-    /// than a fault.
+    /// Whether the platform can still bring this review's base to `parent`
+    /// itself, so a base and a local parent that disagree are a chain still
+    /// unwinding rather than a fault.
     ///
-    /// Narrower than [`ReviewProvider::platform_manages_base`]: a layer whose
-    /// stack has fully landed below it keeps its owner but is owed nothing
-    /// further, and a disagreement there wants reporting, not waiting out.
+    /// Asked by every caller that meets the disagreement: those that would
+    /// retarget stand down, and those that read it wait rather than report.
+    /// `false` while the review is nonetheless in a stack is the dead end -
+    /// see [`ReviewProvider::platform_refuses_base_change`].
     ///
     /// Default `false`: only GitHub keeps stacks.
-    fn platform_will_move_base(&self, review: &ReviewRequest) -> Result<bool> {
-        let _ = review;
+    fn platform_will_base_on(&self, review: &ReviewRequest, parent: &str) -> Result<bool> {
+        let _ = (review, parent);
         Ok(false)
     }
 
