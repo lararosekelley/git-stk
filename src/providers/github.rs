@@ -587,6 +587,11 @@ fn await_async_merge(review: &ReviewRequest, path: &str, output: &str) -> Result
     // merge is still GitHub's to finish, so this is never an error - but
     // "still merging" for two minutes of failed requests names the wrong
     // thing, and `sync` hits the same failure loudly straight after.
+    //
+    // Only ever set while no poll has succeeded: a single blip after a run of
+    // `pending` answers is a merge we watched running, not an unreachable
+    // host, and reporting it as one would be the same wrong name in reverse.
+    let mut answered = false;
     let mut unanswered: Option<String> = None;
     for _ in 0..ASYNC_MERGE_POLLS {
         std::thread::sleep(async_merge_poll_interval());
@@ -598,11 +603,14 @@ fn await_async_merge(review: &ReviewRequest, path: &str, output: &str) -> Result
         // landing, and `--all` would abort on it.
         let output = match command_output("gh", &["api", &result_path]) {
             Ok(output) => {
+                answered = true;
                 unanswered = None;
                 output
             }
             Err(error) => {
-                unanswered.get_or_insert_with(|| error.to_string());
+                if !answered {
+                    unanswered.get_or_insert_with(|| error.to_string());
+                }
                 continue;
             }
         };

@@ -308,22 +308,36 @@ fn open_review_for(
         );
     }
 
-    // A base git-stk owns must match the local parent, or the merge would land
-    // into the wrong branch - and `submit` is the fix, so it names that.
+    // A base and a local parent that disagree normally mean the review needs
+    // resubmitting, and the merge would otherwise land into the wrong branch.
     //
-    // A base the *platform* owns is different: `cleanup` moved the local
-    // parent as the layer below landed and deliberately left the review to
-    // GitHub, which retargets it on its own clock. Between those two moments
-    // the two disagree, and that is the expected state rather than a
-    // misconfiguration. Bailing here would stop `merge --all` halfway and
-    // send the user to `submit`, which refuses outright for a review in a
-    // stack - the one command that cannot help.
+    // There is one state where the disagreement is expected instead: a layer
+    // that GitHub still owes a retarget. `cleanup` moves the local parent as
+    // the layer below lands and deliberately leaves the review to GitHub,
+    // which retargets it on its own clock - so between those two moments the
+    // two differ, and bailing would stop `merge --all` halfway and name
+    // `submit`, which refuses outright for a review in a stack.
+    //
+    // "Owed a retarget" is narrower than "in a stack", and the difference is
+    // the stack's bottom - the layer `merge` acts on. Nothing lands below it,
+    // so GitHub never moves its base, and a disagreement there is the
+    // ordinary re-rooted-line bug this guard exists to catch. Only a layer
+    // above the bottom is exempt.
+    let owed_a_retarget = review_provider
+        .native_stack_for(branch)
+        .ok()
+        .flatten()
+        .is_some_and(|stack| {
+            stack.layers.iter().any(|layer| layer.branch == branch)
+                && stack
+                    .layers
+                    .first()
+                    .is_none_or(|bottom| bottom.branch != branch)
+        });
     let expected_base = stack::parent_of(branch)?;
     if let Some(expected) = &expected_base
         && *expected != review.base
-        && !review_provider
-            .platform_manages_base(&review)
-            .unwrap_or(false)
+        && !owed_a_retarget
     {
         bail!(
             "review {} targets {}, but {branch}'s stack parent is {expected}; \
