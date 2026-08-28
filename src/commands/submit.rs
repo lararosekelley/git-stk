@@ -638,10 +638,12 @@ fn register_native_stack(
     if branches.is_empty() {
         return Ok(());
     }
-    // Nothing to register when the setting is off, and asking would spend a
-    // lookup - a 404 on every repo without the preview - to reach a
-    // `register_stack` that answers `None` anyway.
-    if !settings::bool_setting(settings::GITHUB_STACKS_KEY)? {
+    // Nothing to register on a provider that would not, and asking would
+    // spend a lookup - a 404 on every repo without the preview - to reach a
+    // `register_stack` that answers `None` anyway. Asked of the provider
+    // rather than read from config here: which setting, if any, gates this is
+    // the provider's to know, and the dry run below asks the same way.
+    if !review_provider.registers_stacks() {
         return Ok(());
     }
     // Membership is per-review, so the line's bottom is not necessarily the

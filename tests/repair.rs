@@ -628,12 +628,11 @@ fn repair_asks_github_for_the_stack_listing_once_per_run() {
     // `repair` skips, and which would leave nothing asking the provider.
     for branch in ["feature/a", "feature/b", "feature/c", "feature/d"] {
         for key in ["stkParent", "stkBase", "stkFloor"] {
-            // Tolerant: `--unset` exits non-zero for a key that is not set,
-            // and not every branch carries every one of these.
-            let _ = std::process::Command::new("git")
-                .args(["config", "--unset", &format!("branch.{branch}.{key}")])
-                .current_dir(repo.path())
-                .status();
+            // `git_status`, not `git`: `--unset` exits non-zero for a key that
+            // is not set, and not every branch carries every one of these. It
+            // is also the helper that isolates the ambient git config, which a
+            // raw `Command` would inherit.
+            let _ = repo.git_status(["config", "--unset", &format!("branch.{branch}.{key}")]);
         }
     }
 
