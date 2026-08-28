@@ -485,3 +485,44 @@ fn cleanup_never_finishes_the_stack_base() {
         "the layers above the base must not be detached"
     );
 }
+
+/// A child that is a stack's *bottom* layer. The platform never retargets it -
+/// nothing lands below it - and refuses a change by hand, so the quiet
+/// "the platform retargets it" is false here. `cleanup` is about to delete the
+/// branch this review targets, so the mismatch has to be said out loud.
+#[test]
+fn cleanup_says_so_when_a_stack_bottom_cannot_be_retargeted() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    // feature/b is the bottom of its own stack, still targeting feature/a.
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"feature/a"},"pull_requests":[
+        {"number":13,"head":{"ref":"feature/b"}},
+        {"number":14,"head":{"ref":"feature/c"}}]}]"##;
+    let fake = FakeProvider::new()
+        // Only a *base* change is refused; the stack-note edit is ordinary.
+        .record("pr edit 13 --base", "retarget.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a --state merged", MERGED_A)
+        .on("feature/a", "[]")
+        .on("feature/b", OPEN_B)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("is a stack's bottom layer"))
+        .stdout(predicates::str::contains("dissolve the stack"))
+        .stdout(predicates::str::contains("the platform retargets it").not());
+
+    assert!(
+        !repo.path().join("retarget.txt").exists(),
+        "the platform refuses this call, so it must not be attempted"
+    );
+}

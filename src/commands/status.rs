@@ -96,19 +96,8 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                     // not made yet, so the disagreement is expected and
                     // `submit` is the one command that refuses to help.
                     let owed_a_retarget = review_provider
-                        .native_stack_for(&review.branch)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|stack| {
-                            stack
-                                .layers
-                                .iter()
-                                .any(|layer| layer.branch == review.branch)
-                                && stack
-                                    .layers
-                                    .first()
-                                    .is_none_or(|bottom| bottom.branch != review.branch)
-                        });
+                        .platform_manages_base(review)
+                        .unwrap_or(false);
                     if let Some(parent) = parent.as_deref()
                         && parent != review.base
                     {

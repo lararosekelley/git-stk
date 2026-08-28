@@ -324,16 +324,8 @@ fn open_review_for(
     // ordinary re-rooted-line bug this guard exists to catch. Only a layer
     // above the bottom is exempt.
     let owed_a_retarget = review_provider
-        .native_stack_for(branch)
-        .ok()
-        .flatten()
-        .is_some_and(|stack| {
-            stack.layers.iter().any(|layer| layer.branch == branch)
-                && stack
-                    .layers
-                    .first()
-                    .is_none_or(|bottom| bottom.branch != branch)
-        });
+        .platform_manages_base(&review)
+        .unwrap_or(false);
     let expected_base = stack::parent_of(branch)?;
     if let Some(expected) = &expected_base
         && *expected != review.base

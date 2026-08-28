@@ -800,6 +800,22 @@ fn submit_branch(
             );
             return Ok(SubmitAction::Skipped);
         }
+        // A stack's bottom layer: nothing lands below it, so the platform will
+        // never move this base - and it refuses a change by hand. Saying the
+        // platform will handle it would be a promise nothing keeps, so name
+        // the one way out instead.
+        if review_provider.platform_refuses_base_change(&review)? {
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "{} targets {} but should target {parent}, and it is a stack's bottom \
+                     layer - the platform will not move it and refuses a change by hand; \
+                     dissolve the stack on the platform and submit again",
+                    review.id, review.base
+                ))
+            );
+            return Ok(SubmitAction::Skipped);
+        }
 
         let output = if dry_run {
             String::new()
