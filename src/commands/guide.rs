@@ -56,9 +56,10 @@ const TOPICS: &[(&str, &str, Walk)] = &[
 #[derive(Debug, clap::Args)]
 pub struct Guide {
     /// Which tour to run; omit for a menu.
-    /// Derived from `TOPICS`, so the menu and the accepted values cannot
-    /// drift apart - a tour added to one but not the other used to parse as
-    /// invalid, which only someone running that exact tour would ever see.
+    // Derived from `TOPICS`, so the menu and the accepted values cannot drift
+    // apart - a tour added to one but not the other used to parse as invalid,
+    // which only someone running that exact tour would ever see. A plain
+    // comment, not a doc one: clap renders `///` here as the argument's help.
     #[arg(value_parser = clap::builder::PossibleValuesParser::new(
         TOPICS.iter().map(|(name, _, _)| *name).collect::<Vec<_>>()
     ))]
