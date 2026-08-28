@@ -89,7 +89,7 @@ impl Run for Unstack {
         let mut failed: Vec<(u64, anyhow::Error)> = Vec::new();
         for stack in &found {
             match review_provider.unstack_reviews(stack) {
-                Ok(Some(line)) => anstream::println!("{line}"),
+                Ok(Some(report)) => anstream::println!("{report}"),
                 Ok(None) => anstream::println!(
                     "{}",
                     style::dim("this provider does not keep stacks; nothing to dissolve")
@@ -98,11 +98,25 @@ impl Run for Unstack {
             }
         }
 
-        if let Some((_, first)) = failed.pop() {
-            for (number, error) in &failed {
-                anstream::eprintln!("{}", style::warn(&format!("stack {number}: {error:#}")));
+        // Every failure reported the same way, and the summary - not an
+        // arbitrary one of them - is the error. Promoting one would make the
+        // headline depend on iteration order: a 404 for a stack a teammate
+        // already dissolved would outrank the expired token that is the real
+        // reason the rest did not go.
+        if !failed.is_empty() {
+            for (_, error) in &failed {
+                anstream::eprintln!("{}", style::warn(&format!("{error:#}")));
             }
-            return Err(first);
+            bail!(
+                "{} stack{} still registered: {}",
+                failed.len(),
+                if failed.len() == 1 { "" } else { "s" },
+                failed
+                    .iter()
+                    .map(|(number, _)| number.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
         Ok(())
     }
