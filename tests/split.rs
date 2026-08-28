@@ -117,6 +117,12 @@ fn split_refuses_a_recorded_stack_base() {
         .stderr(predicates::str::contains(
             "rc-20260817 is a stack's base, so splitting it would give it a stack parent",
         ))
+        // `adopt` first: it clears the base marker and keeps the parent, so a
+        // follow-up split still bases on it. `detach` clears both, which would
+        // silently re-root the split on the trunk.
+        .stderr(predicates::str::contains(
+            "git stk adopt rc-20260817 --parent <parent>",
+        ))
         .stderr(predicates::str::contains("git stk detach rc-20260817"));
 
     // And nothing was written to it.
