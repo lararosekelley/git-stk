@@ -2158,10 +2158,50 @@ fn submit_stack_extends_a_stack_that_does_not_hold_the_bottom() {
         "a second stack was created over reviews GitHub already holds: {}",
         fs::read_to_string(repo.path().join("register.txt")).unwrap_or_default()
     );
+    // And it is not extended either: `/add` carries no position, so appending
+    // #11 - which belongs at the *bottom* - would record `a, b, n`. `repair`
+    // reads that order back as `stkParent`, and `restack` rebases against it.
     assert!(
-        repo.path().join("add.txt").exists(),
-        "the existing stack was not extended"
+        !repo.path().join("add.txt").exists(),
+        "a review that belongs below the stack was appended on top: {}",
+        fs::read_to_string(repo.path().join("add.txt")).unwrap_or_default()
     );
+}
+
+/// Extending is for the case `/add` can actually express: the recorded stack
+/// is a prefix of what was submitted, so the new reviews go on top.
+#[test]
+fn submit_stack_extends_a_stack_the_submitted_line_grew_on_top_of() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.stack().args(["new", "feature/c"]).assert().success();
+
+    let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .record("api repos/owner/repo/stacks -X POST", "register.txt", "{}")
+        .record("stacks/7/add", "add.txt", "{}")
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .on("feature/c", r##"[{"number":14,"state":"OPEN","baseRefName":"feature/b","headRefName":"feature/c","url":"https://example.com/14"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("extended stack 7 with #14"));
+
+    let call = fs::read_to_string(repo.path().join("add.txt")).expect("add call");
+    assert!(call.contains("pull_requests[]=14"), "got: {call}");
+    assert!(!repo.path().join("register.txt").exists());
 }
 
 /// Off by default: no stack call, and no mention of one.
