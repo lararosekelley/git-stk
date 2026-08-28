@@ -174,7 +174,9 @@ fn github_native_stack(provider: Provider, slug: &str, work: &Path) -> Result<()
     expect_open_stack(slug, &["ns/one", "ns/two"])?;
 
     // Dissolving, then registering again - the one-way door this closes.
-    stk(work, &["unstack"])?;
+    // `-y`: `unstack` confirms, and `sh` gives the child no stdin, so the
+    // prompt would read EOF as a no and skip the POST.
+    stk(work, &["unstack", "-y"])?;
     if let Some(stack) = open_stack(slug)? {
         return Err(format!("a stack is still open after unstack: {stack:?}"));
     }
