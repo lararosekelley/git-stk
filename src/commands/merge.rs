@@ -74,8 +74,10 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
 
     if dry_run {
         // Same refusal the real run would raise, rather than advertising a
-        // mode that is about to be declined. Best effort: a provider that
-        // cannot answer just leaves the dry run as it was.
+        // mode that is about to be declined - including in the mode string
+        // itself, which is the last surface that would still say `auto`. Best
+        // effort: a provider that cannot answer leaves the dry run as it was.
+        let mut mode = mode;
         if auto
             && review_provider
                 .native_stack_for(&review.branch)
@@ -89,6 +91,7 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
                     review.id
                 ))
             );
+            mode = mode.replace(", auto", "");
         }
         anstream::println!("would merge {label} into {} ({mode})", review.base);
         anstream::println!("would sync afterwards");

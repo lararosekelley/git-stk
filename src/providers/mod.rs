@@ -750,6 +750,14 @@ fn is_transient_merge_error(error: &anyhow::Error) -> bool {
 /// modified" race does not stop a `merge --all` loop. Between transient
 /// retries it only waits a fixed backoff - the right default when there is no
 /// per-provider signal to poll.
+fn merge_with_retry<T>(attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    retry_transient_merge(
+        MERGE_ATTEMPTS,
+        || std::thread::sleep(MERGE_RETRY_BACKOFF),
+        attempt,
+    )
+}
+
 /// What registering a submitted line as a platform stack would do.
 ///
 /// Shared by the real run and the dry run so the two cannot disagree - the
@@ -780,7 +788,15 @@ pub fn plan_stack_registration(
         return (reviews.len() >= 2).then(|| StackPlan::Register(reviews.to_vec()));
     };
     let recorded: Vec<String> = stack.layers.iter().map(|layer| layer.id.clone()).collect();
-    if recorded.starts_with(reviews) {
+    // Submitting part of a stack that is already right is not a divergence,
+    // and it need not be the bottom part. A `--downstack` from the middle
+    // submits a prefix; resubmitting after the bottom layer lands submits a
+    // suffix, because GitHub keeps a landed layer listed in an open stack
+    // (verified live). Either way there is nothing to add, so say nothing.
+    if recorded
+        .windows(reviews.len().max(1))
+        .any(|run| run == reviews)
+    {
         return None;
     }
     if !reviews.starts_with(&recorded) {
@@ -815,14 +831,6 @@ impl fmt::Display for MergeRefused {
 }
 
 impl std::error::Error for MergeRefused {}
-
-fn merge_with_retry<T>(attempt: impl FnMut() -> Result<T>) -> Result<T> {
-    retry_transient_merge(
-        MERGE_ATTEMPTS,
-        || std::thread::sleep(MERGE_RETRY_BACKOFF),
-        attempt,
-    )
-}
 
 /// Like [`merge_with_retry`], but instead of a blind backoff it runs `resettle`
 /// between transient retries - re-polling the provider until the review is
@@ -899,6 +907,78 @@ pub(crate) fn label(title: &str, id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn stack_of(number: u64, ids: &[&str]) -> NativeStack {
+        NativeStack {
+            number,
+            base: "main".to_owned(),
+            layers: ids
+                .iter()
+                .map(|id| NativeStackLayer {
+                    id: (*id).to_owned(),
+                    branch: id.trim_start_matches('#').to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    /// The whole decision table for registering, in one place - this is what
+    /// the dry run renders and the real run performs, so a disagreement
+    /// between them is impossible by construction.
+    #[test]
+    fn plan_stack_registration_covers_every_shape() {
+        let ids = |s: &[&str]| s.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+
+        // Nothing recorded: register, but only for a real stack. GitHub
+        // answers 422 for one review, and one review is not a stack.
+        assert_eq!(
+            plan_stack_registration(&ids(&["#12", "#13"]), None),
+            Some(StackPlan::Register(ids(&["#12", "#13"])))
+        );
+        assert_eq!(plan_stack_registration(&ids(&["#12"]), None), None);
+
+        let recorded = stack_of(7, &["#12", "#13"]);
+
+        // Already exactly this, and growth on top - the one shape `/add` can
+        // express, since it carries no position.
+        assert_eq!(
+            plan_stack_registration(&ids(&["#12", "#13"]), Some(&recorded)),
+            None
+        );
+        assert_eq!(
+            plan_stack_registration(&ids(&["#12", "#13", "#14"]), Some(&recorded)),
+            Some(StackPlan::Extend {
+                number: 7,
+                fresh: ids(&["#14"])
+            })
+        );
+
+        // Part of a stack that is already right, from either end. A prefix is
+        // `--downstack` from the middle; a suffix is what remains after the
+        // bottom layer lands, which GitHub keeps listed in the open stack.
+        let three = stack_of(7, &["#12", "#13", "#14"]);
+        assert_eq!(
+            plan_stack_registration(&ids(&["#12", "#13"]), Some(&three)),
+            None
+        );
+        assert_eq!(
+            plan_stack_registration(&ids(&["#13", "#14"]), Some(&three)),
+            None
+        );
+        assert_eq!(plan_stack_registration(&ids(&["#13"]), Some(&three)), None);
+
+        // And the shapes `/add` cannot express: a review that belongs below,
+        // and a reorder. Appending either would record an order that is not
+        // this stack's, which `repair` reads back as a parent.
+        assert_eq!(
+            plan_stack_registration(&ids(&["#11", "#12", "#13"]), Some(&recorded)),
+            Some(StackPlan::Mismatch { number: 7 })
+        );
+        assert_eq!(
+            plan_stack_registration(&ids(&["#13", "#12"]), Some(&recorded)),
+            Some(StackPlan::Mismatch { number: 7 })
+        );
+    }
     use super::*;
 
     #[test]
