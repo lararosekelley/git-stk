@@ -1523,7 +1523,7 @@ fn unstack_dissolves_the_platform_stack() {
         .fallback("[]")
         .install(&repo);
 
-    // Dry run says what it would do and calls nothing.
+    // Dry run says what it would do and dissolves nothing.
     repo.stack_faked(&fake)
         .args(["unstack", "--dry-run"])
         .assert()
