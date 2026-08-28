@@ -638,6 +638,12 @@ fn register_native_stack(
     if branches.is_empty() {
         return Ok(());
     }
+    // Nothing to register when the setting is off, and asking would spend a
+    // lookup - a 404 on every repo without the preview - to reach a
+    // `register_stack` that answers `None` anyway.
+    if !settings::bool_setting(settings::GITHUB_STACKS_KEY)? {
+        return Ok(());
+    }
     // Membership is per-review, so the line's bottom is not necessarily the
     // stack's: root the line lower with `adopt` and the bottom is a branch the
     // stack never held. Looking only there would read "no stack" for one that

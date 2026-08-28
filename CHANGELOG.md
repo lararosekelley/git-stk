@@ -8,19 +8,22 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ### Added
 
-- **github:** `stk.githubStacks` (off by default) lets git-stk read GitHub's
-  native stacked pull requests. With it on, `repair` prefers the stack GitHub
-  records to the review base and to ancestry when rebuilding a branch's parent
-  - an ordering someone stated rather than one inferred, which survives a wiped
-  `.git/config`. It stops preferring the stack once the layer below has landed,
-  because the platform retargets a review at exactly that moment and the
-  listing goes on naming the merged branch.
-  With it on, `submit --stack`/`--downstack` also hands the submitted reviews
-  to GitHub as a stack, bottom first, so the layers get GitHub's own stack map
-  and parallel review; an existing stack is extended rather than replaced.
-  Registration is presentation, so a failure is reported and the submit still
-  succeeds. Off means today's behaviour byte for byte, and every other provider
-  is untouched (#306).
+- **github:** `stk.githubStacks` (off by default) lets git-stk _register_ a
+  stack with GitHub's native stacked pull requests. Reading one is not gated on
+  it: a stack can exist without git-stk creating it - a teammate's
+  `gh stack submit`, the web UI - and GitHub refuses the ordinary merge and
+  retarget for those pull requests too, so git-stk handles a stack whoever
+  made it. `repair` prefers the stack GitHub records to the review base and to
+  ancestry when rebuilding a branch's parent - an ordering someone stated
+  rather than one inferred, which survives a wiped `.git/config` - until the
+  layer below has landed, at which point the platform has already retargeted
+  the review while the listing goes on naming the merged branch. With it on,
+  `submit --stack`/`--downstack` also hands the submitted reviews to GitHub as
+  a stack, bottom first, so the layers get GitHub's own stack map and parallel
+  review; an existing stack is extended rather than replaced. Registration is
+  presentation, so a failure is reported and the submit still succeeds. Off
+  means git-stk creates no stack of its own; every other provider is
+  untouched (#306).
 
   Registering a stack hands two operations to GitHub, so `merge` and `submit`
   follow it there. GitHub refuses both the synchronous merge and a manual
@@ -34,8 +37,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   gap rather than promising a retarget that never comes: `git stk sync` when
   the platform has already moved the base and the local stack is behind, and
   dissolving the stack on the platform when nothing will move it - a re-rooted
-  or reordered line, or the stack's own bottom. All of this is inert with
-  `stk.githubStacks` off.
+  or reordered line, or the stack's own bottom. Registering itself needs
+  `stk.githubStacks`; following a stack GitHub already holds does not.
 - **stack:** rooting a stack on a branch other than the trunk records that
   branch as the stack's base (`branch.<name>.stkFloor`). A base is never
   submitted, pushed, merged, or re-parented, and recording it is what makes

@@ -1302,3 +1302,44 @@ fn merge_refuses_a_layer_whose_retarget_already_happened() {
     );
     assert!(!repo.path().join("sync-merge.txt").exists());
 }
+
+/// A stack can exist without git-stk registering it - a teammate's
+/// `gh stack submit`, the web UI. GitHub refuses the ordinary merge for those
+/// pull requests too, so detection must not be gated on `stk.githubStacks`.
+#[test]
+fn merge_uses_the_async_endpoint_for_a_stack_git_stk_did_not_register() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    // Deliberately NOT set: someone else made this stack.
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        .record(
+            "merge-async -X PUT",
+            "async.txt",
+            r##"{"status":"merged","details":{"message":"Pull request was merged.","sha":"abc"}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success();
+
+    assert!(
+        repo.path().join("async.txt").exists(),
+        "a stack we did not register is still a stack"
+    );
+    assert!(
+        !repo.path().join("sync-merge.txt").exists(),
+        "`gh pr merge` is rejected by GitHub here, so it must not be attempted"
+    );
+}

@@ -1,7 +1,6 @@
 mod common;
 
 use common::{FakeProvider, TestRepo};
-use predicates::prelude::PredicateBooleanExt;
 
 /// Run a git plumbing command in `dir`, feeding `stdin`, returning trimmed
 /// stdout. For crafting refs the TestRepo helper can't (it has no stdin).
@@ -567,12 +566,14 @@ fn repair_prefers_githubs_stack_to_the_review_base() {
     );
 }
 
-/// Off by default: the feature is in public preview, so an unset
-/// `stk.githubStacks` must leave `repair` inferring exactly as before.
+/// Detection is not gated on `stk.githubStacks` - that setting says whether
+/// git-stk *registers* a stack, and a stack GitHub records is the most
+/// authoritative ordering there is whoever created it.
 #[test]
-fn repair_ignores_githubs_stack_unless_it_is_enabled() {
+fn repair_uses_githubs_stack_even_when_registration_is_off() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
+    // Deliberately NOT set.
     repo.git(["switch", "-c", "feature/a"]);
     repo.commit_file("a.txt", "a\n", "a work");
     repo.git(["switch", "-c", "feature/b"]);
@@ -592,12 +593,68 @@ fn repair_ignores_githubs_stack_unless_it_is_enabled() {
         .args(["repair"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("from github review #13"))
-        .stdout(predicates::str::contains("from stack").not());
+        .stdout(predicates::str::contains(
+            "feature/b: set parent feature/a (from stack 4 (#13))",
+        ));
 
     assert_eq!(
         repo.git(["config", "--get", "branch.feature/b.stkParent"]),
-        "main"
+        "feature/a"
+    );
+}
+
+/// The stacks listing is asked once per command, not once per branch - and
+/// that holds for the 404 a repo without the preview answers, which is the
+/// only reason failures are cached at all. Detection is unconditional, so
+/// `repair` on a wiped config would otherwise make one `gh` call per
+/// parentless branch, every one of them a 404, on a repo that will never
+/// have a stack.
+#[test]
+fn repair_asks_github_for_the_stack_listing_once_per_run() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+
+    for (branch, file) in [
+        ("feature/a", "a.txt"),
+        ("feature/b", "b.txt"),
+        ("feature/c", "c.txt"),
+        ("feature/d", "d.txt"),
+    ] {
+        repo.stack().args(["new", branch]).assert().success();
+        repo.commit_file(file, "x\n", "work");
+    }
+    // Wipe the metadata only once the chain exists, so unsetting one parent
+    // does not make the branch below it look like a stack base - which
+    // `repair` skips, and which would leave nothing asking the provider.
+    for branch in ["feature/a", "feature/b", "feature/c", "feature/d"] {
+        for key in ["stkParent", "stkBase", "stkFloor"] {
+            // Tolerant: `--unset` exits non-zero for a key that is not set,
+            // and not every branch carries every one of these.
+            let _ = std::process::Command::new("git")
+                .args(["config", "--unset", &format!("branch.{branch}.{key}")])
+                .current_dir(repo.path())
+                .status();
+        }
+    }
+
+    let fake = FakeProvider::new()
+        .log_all("calls.txt")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        // What a repo without the preview answers, for every branch.
+        .fail("repos/owner/repo/stacks", "gh: Not Found (HTTP 404)")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake).args(["repair"]).assert().success();
+
+    let calls = std::fs::read_to_string(repo.path().join("calls.txt")).expect("call log");
+    let listings = calls
+        .lines()
+        .filter(|line| line.contains("repos/owner/repo/stacks"))
+        .count();
+    assert_eq!(
+        listings, 1,
+        "the listing is asked once per command, not once per branch:\n{calls}"
     );
 }
 

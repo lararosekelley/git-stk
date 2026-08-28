@@ -131,9 +131,11 @@ impl ReviewProvider for GitHubProvider {
     }
 
     fn native_stack_for(&self, branch: &str) -> Result<Option<NativeStack>> {
-        if !settings::bool_setting(settings::GITHUB_STACKS_KEY)? {
-            return Ok(None);
-        }
+        // Not gated on `stk.githubStacks`: that setting says whether git-stk
+        // *registers* a stack, and a stack can exist without it having done so
+        // - a teammate's `gh stack submit`, the web UI, the mobile app. GitHub
+        // refuses the ordinary merge and retarget for those pull requests too,
+        // so git-stk has to know about a stack whoever created it.
         let Some((owner, repo)) = repo_owner_name() else {
             return Ok(None);
         };
@@ -580,7 +582,17 @@ fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String
     let method = format!("merge_method={strategy}");
     let output = command_output("gh", &["api", &path, "-X", "PUT", "-f", &method])?;
     // The PUT is the write: from here GitHub is landing the layer, so a cached
-    // listing is a pre-merge snapshot however the wait then returns.
+    // listing is a pre-merge snapshot however the wait then returns - merged,
+    // enqueued, or still going when the polls run out and the caller finds it
+    // landed anyway. Invalidating once here covers every exit.
+    //
+    // Verified live on a three-layer stack: the stack stays `open` with the
+    // landed layer still listed (as `closed`) until every layer has landed, at
+    // which point it flips to `open: false`. GitHub also retargets each layer
+    // onto the trunk as the one below it lands. So the answer here does change
+    // - but no caller re-reads it inside a single merge, precisely because
+    // that retarget means `cleanup` finds nothing to do. This is defensive:
+    // it costs one request and removes the question.
     forget_stacks_listing();
     Ok((path, output))
 }
@@ -688,48 +700,14 @@ fn parse_async_merge(json: &str) -> Option<(String, Option<String>)> {
     Some((status, uuid))
 }
 
-/// The digits of a review id like `#13`, for the REST payload.
-fn review_number(id: &str) -> Option<String> {
-    let digits = id.trim_start_matches('#');
-    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.to_owned())
-}
-
-/// The pull request numbers for `reviews`, or an error naming the id that
-/// could not be read - registering a stack we cannot name in full would record
-/// a different stack than the one submitted.
-fn pull_request_numbers(reviews: &[String]) -> Result<Vec<String>> {
-    reviews
-        .iter()
-        .map(|id| {
-            review_number(id)
-                .ok_or_else(|| anyhow!("could not read a pull request number from {id}"))
-        })
-        .collect()
-}
-
-/// `POST` an ordered `pull_requests` list to a stacks endpoint. `-F` sends the
-/// numbers typed, which the API requires - `-f` would make them strings.
-fn post_pull_requests(path: &str, numbers: &[String]) -> Result<String> {
-    let fields: Vec<String> = numbers
-        .iter()
-        .map(|number| format!("pull_requests[]={number}"))
-        .collect();
-    let mut args = vec!["api", path, "-X", "POST"];
-    for field in &fields {
-        args.push("-F");
-        args.push(field);
-    }
-    command_output("gh", &args)
-}
-
 /// The repo's stack listing, cached for the life of the command.
 ///
-/// This is asked once per branch - `submit` checks every layer before
-/// retargeting it, and `repair` asks for every branch missing a parent - and
-/// on a repo without the preview every one of those is a 404. One call per
-/// command is the right cost for an answer that only changes when the stack
-/// does; [`forget_stacks_listing`] owns that list and drops the cache at each,
-/// so nothing reads a listing from before the write that invalidated it.
+/// Detection is unconditional now (see `native_stack_for`), so this is asked
+/// once per branch on `repair` and per retarget on `submit` - and on a repo
+/// without the preview every one of those is a 404. One call per command is
+/// the right cost for an answer that only changes when the stack does.
+/// [`forget_stacks_listing`] owns that list and drops the cache at each, so
+/// nothing reads a listing from before the write that invalidated it.
 ///
 /// Best effort: the endpoint is in public preview, and a repo without the
 /// feature answers 404. Either way "no stack" is the right read for a caller
@@ -762,10 +740,44 @@ thread_local! {
 }
 
 /// Drop the cached listing, so the next read reflects a change to the stack.
-/// Called wherever one happens - registering and extending a stack here, and
-/// landing a layer, which GitHub reshapes the stack for on its own.
+/// Called wherever one happens - registering, extending, and landing a layer,
+/// which GitHub reshapes the stack for on its own.
 fn forget_stacks_listing() {
     STACKS_LISTING.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// The digits of a review id like `#13`, for the REST payload.
+fn review_number(id: &str) -> Option<String> {
+    let digits = id.trim_start_matches('#');
+    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.to_owned())
+}
+
+/// The pull request numbers for `reviews`, or an error naming the id that
+/// could not be read - registering a stack we cannot name in full would record
+/// a different stack than the one submitted.
+fn pull_request_numbers(reviews: &[String]) -> Result<Vec<String>> {
+    reviews
+        .iter()
+        .map(|id| {
+            review_number(id)
+                .ok_or_else(|| anyhow!("could not read a pull request number from {id}"))
+        })
+        .collect()
+}
+
+/// `POST` an ordered `pull_requests` list to a stacks endpoint. `-F` sends the
+/// numbers typed, which the API requires - `-f` would make them strings.
+fn post_pull_requests(path: &str, numbers: &[String]) -> Result<String> {
+    let fields: Vec<String> = numbers
+        .iter()
+        .map(|number| format!("pull_requests[]={number}"))
+        .collect();
+    let mut args = vec!["api", path, "-X", "POST"];
+    for field in &fields {
+        args.push("-F");
+        args.push(field);
+    }
+    command_output("gh", &args)
 }
 
 /// The stack holding `branch`, from the `GET /repos/{owner}/{repo}/stacks`
