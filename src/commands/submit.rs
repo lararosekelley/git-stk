@@ -787,9 +787,10 @@ fn submit_branch(
             return Ok(SubmitAction::Skipped);
         }
 
-        // A review in a registered GitHub stack has its base moved by GitHub
-        // as the layer below it lands; retargeting by hand is refused there.
-        // Say so instead of claiming a change git-stk did not make.
+        // A layer of a GitHub stack - whoever registered it - has its base
+        // moved by GitHub as the layer below it lands, and retargeting by
+        // hand is refused there. Say so instead of claiming a change git-stk
+        // did not make.
         if review_provider.platform_manages_base(&review)? {
             anstream::println!(
                 "{}",
