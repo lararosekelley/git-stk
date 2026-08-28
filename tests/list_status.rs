@@ -216,11 +216,12 @@ fn list_and_status_show_a_platform_stack() {
         .stdout(predicates::str::contains("stack: github stack 6 (2 of 3)"));
 }
 
-/// A host that rejects the preview fields must say so once. Retrying silently
-/// would make it indistinguishable from a repo with no stacks - the `⛁` marker
-/// would just never appear, with nothing to explain why.
+/// A host that rejects the preview fields is a lasting property of that host,
+/// so the notice lives under `--verbose`: silent by default, like the same
+/// fact reaching `status` as a 404, but findable by anyone chasing a `⛁` that
+/// never appears.
 #[test]
-fn list_says_so_when_the_host_rejects_the_stack_fields() {
+fn list_says_so_under_verbose_when_the_host_rejects_the_stack_fields() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     repo.stack().args(["new", "feature/a"]).assert().success();
@@ -242,14 +243,23 @@ fn list_says_so_when_the_host_rejects_the_stack_fields() {
         .fallback("[]")
         .install(&repo);
 
+    // Silent by default - the fields are missing on every run, so saying so
+    // every time would be permanent noise.
     repo.stack_faked(&fake)
         .args(["list"])
         .assert()
         .success()
+        .stderr(predicates::str::contains("stacked-pull-request fields").not())
+        .stdout(predicates::str::contains("⛁").not());
+
+    // Under `--verbose` it is there, which is what a missing `⛁` means.
+    repo.stack_faked(&fake)
+        .args(["-v", "list"])
+        .assert()
+        .success()
         .stderr(predicates::str::contains(
             "did not accept the stacked-pull-request fields",
-        ))
-        .stdout(predicates::str::contains("⛁").not());
+        ));
 }
 
 /// And a failure that is not the fields must not be blamed on them. Offline,

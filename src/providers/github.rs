@@ -494,16 +494,21 @@ fn batched_annotate(
                 STACK_FIELDS_UNSUPPORTED.with(|flag| flag.set(false));
                 return Err(error);
             }
-            // Say so once. Retrying silently would make a host that rejects
-            // the fields indistinguishable from one with no stacks: the `⛁`
-            // marker would simply never appear, with nothing to explain it.
-            anstream::eprintln!(
-                "{}",
-                crate::style::warn(&format!(
-                    "this host did not accept the stacked-pull-request fields, \
-                     so `list` will not mark stack layers: {error}"
-                ))
-            );
+            // Under `--verbose` only. A host whose schema lacks the fields
+            // lacks them on every run, so warning would be permanent noise on
+            // the command run most - and `native_stack_for` already answers
+            // the same fact silently for a repo without the preview. This is
+            // what a missing `⛁` means, kept where someone looking for it
+            // will find it.
+            if crate::git::verbose() {
+                anstream::eprintln!(
+                    "{}",
+                    crate::style::dim(
+                        "this host did not accept the stacked-pull-request fields, \
+                         so `list` will not mark stack layers"
+                    )
+                );
+            }
             retried
         }
         Err(error) => Err(error),
