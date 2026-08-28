@@ -997,6 +997,16 @@ fn merge_auto_refuses_a_stacked_review_rather_than_merging_now() {
         .record("pr merge", "sync-merge.txt", "")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .on("repos/owner/repo/stacks", stacks)
+        // The blocker lookup must be answered, and answered as *blocked*: the
+        // refusal has to survive `explain_merge_failure`, which would
+        // otherwise re-diagnose it as pending checks and reply by
+        // recommending the very flag that was just refused. Without this the
+        // fallback answers, no blocker is found, and the test passes for the
+        // wrong reason.
+        .on(
+            "pr view 12 --json mergeable,mergeStateStatus",
+            r##"{"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}"##,
+        )
         .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
         .fallback("[]")
         .install(&repo);
@@ -1007,11 +1017,96 @@ fn merge_auto_refuses_a_stacked_review_rather_than_merging_now() {
         .failure()
         .stderr(predicates::str::contains(
             "#12 is in a GitHub stack, which cannot be scheduled with --auto",
-        ));
+        ))
+        // And not answered with the flag it just refused.
+        .stderr(predicates::str::contains("--auto once checks").not());
 
     assert!(
         !repo.path().join("async.txt").exists(),
         "must not merge now"
     );
     assert!(!repo.path().join("sync-merge.txt").exists());
+}
+
+/// The wait, not just the enqueue. GitHub answers the `PUT` with `pending` and
+/// a result id, and the merge is only done once a poll says so - so this is
+/// the path a real stacked merge takes, and the one nothing reached before.
+#[test]
+fn merge_polls_an_async_merge_until_it_lands() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"above"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        // The enqueue answers `pending` with a uuid; the poll answers `merged`.
+        .record(
+            "merge-async -X PUT",
+            "async.txt",
+            r##"{"status":"pending","details":{"message":"Merge request enqueued.","uuid":"u-1"}}"##,
+        )
+        .record(
+            "pulls/12/merge-async/u-1",
+            "poll.txt",
+            r##"{"status":"merged","details":{"message":"Pull request was merged.","sha":"abc"}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("merged #12 (stacked)"));
+
+    assert!(
+        repo.path().join("poll.txt").exists(),
+        "the result was never polled for"
+    );
+    assert!(
+        !repo.path().join("sync-merge.txt").exists(),
+        "`gh pr merge` is rejected for a stacked review and must never be reached"
+    );
+}
+
+/// And when the polls run out it is not an error: `merge_and_check` re-reads
+/// the review and reports the merge as scheduled, which `--all` breaks on
+/// cleanly. Returning `Err` would route a mid-merge state through
+/// `explain_merge_failure` and be diagnosed as pending checks.
+#[test]
+fn merge_reports_an_async_merge_that_outlasts_the_polls() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"above"}}]}]"##;
+    let pending = r##"{"status":"pending","details":{"message":"Still going.","uuid":"u-1"}}"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        .on("merge-async -X PUT", pending)
+        // Never reaches a final status.
+        .on("pulls/12/merge-async/u-1", pending)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("merge scheduled"));
 }

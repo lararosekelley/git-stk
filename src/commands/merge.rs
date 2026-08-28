@@ -73,6 +73,23 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
     let label = review.label();
 
     if dry_run {
+        // Same refusal the real run would raise, rather than advertising a
+        // mode that is about to be declined. Best effort: a provider that
+        // cannot answer just leaves the dry run as it was.
+        if auto
+            && review_provider
+                .native_stack_for(&review.branch)
+                .is_ok_and(|found| found.is_some())
+        {
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "{} is in a stack the platform owns, so --auto would be refused; \
+                     it merges when you run `git stk merge` with checks green",
+                    review.id
+                ))
+            );
+        }
         anstream::println!("would merge {label} into {} ({mode})", review.base);
         anstream::println!("would sync afterwards");
         return Ok(());
@@ -353,6 +370,15 @@ fn explain_merge_failure(
     review: &ReviewRequest,
     error: anyhow::Error,
 ) -> anyhow::Error {
+    // Our own refusal is already exact - re-diagnosing it against the merge
+    // blocker can answer "--auto is not available here" with "rerun with
+    // --auto", which is the reverse of what was said.
+    if error
+        .downcast_ref::<crate::providers::MergeRefused>()
+        .is_some()
+    {
+        return error;
+    }
     match review_provider
         .merge_blocker(review)
         .unwrap_or(MergeBlocker::None)

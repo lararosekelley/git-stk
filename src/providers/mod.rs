@@ -733,7 +733,24 @@ fn is_transient_merge_error(error: &anyhow::Error) -> bool {
 /// modified" race does not stop a `merge --all` loop. Between transient
 /// retries it only waits a fixed backoff - the right default when there is no
 /// per-provider signal to poll.
-fn merge_with_retry(attempt: impl FnMut() -> Result<String>) -> Result<String> {
+/// A merge git-stk itself refused, rather than one the platform rejected.
+///
+/// The distinction matters at the point of reporting: a platform failure is
+/// worth re-diagnosing against the review's merge blocker, and a refusal is
+/// not - its reason is already exact, and re-diagnosing one can answer it with
+/// advice that contradicts it.
+#[derive(Debug)]
+pub struct MergeRefused(pub String);
+
+impl fmt::Display for MergeRefused {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+impl std::error::Error for MergeRefused {}
+
+fn merge_with_retry<T>(attempt: impl FnMut() -> Result<T>) -> Result<T> {
     retry_transient_merge(
         MERGE_ATTEMPTS,
         || std::thread::sleep(MERGE_RETRY_BACKOFF),
@@ -762,11 +779,11 @@ pub(super) fn merge_with_resettle(
     )
 }
 
-fn retry_transient_merge(
+fn retry_transient_merge<T>(
     attempts: u32,
     mut on_transient: impl FnMut(),
-    mut attempt: impl FnMut() -> Result<String>,
-) -> Result<String> {
+    mut attempt: impl FnMut() -> Result<T>,
+) -> Result<T> {
     for remaining in (0..attempts).rev() {
         match attempt() {
             Ok(output) => return Ok(output),
@@ -842,7 +859,7 @@ mod tests {
     #[test]
     fn transient_error_is_retried_then_succeeds() {
         let mut calls = 0;
-        let result = retry_transient_merge(
+        let result: Result<String> = retry_transient_merge(
             3,
             || {},
             || {
@@ -863,7 +880,7 @@ mod tests {
     #[test]
     fn a_gitlab_405_while_the_merge_status_recomputes_is_retried() {
         let mut calls = 0;
-        let result = retry_transient_merge(
+        let result: Result<String> = retry_transient_merge(
             3,
             || {},
             || {
@@ -885,7 +902,7 @@ mod tests {
         // sleep; the hook runs once per transient retry, never after success.
         let mut resettles = 0;
         let mut calls = 0;
-        let result = retry_transient_merge(
+        let result: Result<String> = retry_transient_merge(
             3,
             || resettles += 1,
             || {
@@ -909,7 +926,7 @@ mod tests {
     #[test]
     fn the_between_retry_action_does_not_run_on_a_real_failure() {
         let mut resettles = 0;
-        let result = retry_transient_merge(
+        let result: Result<String> = retry_transient_merge(
             3,
             || resettles += 1,
             || {
@@ -925,7 +942,7 @@ mod tests {
     #[test]
     fn a_transient_5xx_from_the_api_is_retried() {
         let mut calls = 0;
-        let result = retry_transient_merge(
+        let result: Result<String> = retry_transient_merge(
             3,
             || {},
             || {
@@ -946,7 +963,7 @@ mod tests {
     #[test]
     fn a_persistent_transient_error_gives_up_after_the_attempt_budget() {
         let mut calls = 0;
-        let result = retry_transient_merge(
+        let result: Result<String> = retry_transient_merge(
             3,
             || {},
             || {
@@ -961,7 +978,7 @@ mod tests {
     #[test]
     fn a_real_failure_is_not_retried() {
         let mut calls = 0;
-        let result = retry_transient_merge(
+        let result: Result<String> = retry_transient_merge(
             3,
             || {},
             || {
