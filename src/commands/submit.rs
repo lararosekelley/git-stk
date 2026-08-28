@@ -664,8 +664,8 @@ fn register_native_stack(
 
     if dry_run {
         // Only say so when it would actually do something.
-        if let Some(action) = would_register(&reviews, existing.as_ref()) {
-            anstream::println!("would {action}");
+        if let Some(action) = would_register(review_provider, &reviews, existing.as_ref()) {
+            anstream::println!("{action}");
         }
         return Ok(());
     }
@@ -683,27 +683,28 @@ fn register_native_stack(
 
 /// What `register_stack` would report, for `--dry-run`. Mirrors its decision
 /// without making the call.
-fn would_register(reviews: &[String], existing: Option<&NativeStack>) -> Option<String> {
-    match existing {
-        None => Some(format!("register {} as a stack", reviews.join(" "))),
-        Some(stack) => {
-            let recorded: Vec<&str> = stack.layers.iter().map(|l| l.id.as_str()).collect();
-            let fresh: Vec<&String> = reviews
-                .iter()
-                .filter(|id| !recorded.contains(&id.as_str()))
-                .collect();
-            (!fresh.is_empty()).then(|| {
-                format!(
-                    "extend stack {} with {}",
-                    stack.number,
-                    fresh
-                        .iter()
-                        .map(|id| id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )
-            })
+/// Render what registration would do, from the same plan the real run acts on,
+/// so a dry run cannot promise something the run then declines - and says
+/// nothing at all on a provider that keeps no stacks, or with the setting off.
+fn would_register(
+    review_provider: &dyn ReviewProvider,
+    reviews: &[String],
+    existing: Option<&NativeStack>,
+) -> Option<String> {
+    if !review_provider.registers_stacks() {
+        return None;
+    }
+    match crate::providers::plan_stack_registration(reviews, existing)? {
+        crate::providers::StackPlan::Register(reviews) => {
+            Some(format!("would register {} as a stack", reviews.join(" ")))
         }
+        crate::providers::StackPlan::Extend { number, fresh } => Some(format!(
+            "would extend stack {number} with {}",
+            fresh.join(" ")
+        )),
+        crate::providers::StackPlan::Mismatch { number } => Some(format!(
+            "would leave stack {number} as recorded: it no longer matches this stack"
+        )),
     }
 }
 

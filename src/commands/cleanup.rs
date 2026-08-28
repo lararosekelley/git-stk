@@ -416,6 +416,21 @@ fn update_child_review_base(
         return Ok(());
     }
 
+    // Asked before the announcement, not after it: a review the platform owns
+    // is one git-stk will not touch, and saying "would update" first and
+    // "actually, the platform does that" second describes a decision that was
+    // already made. On a dry run the old order printed only the first half.
+    if review_provider.platform_manages_base(&review)? {
+        anstream::println!(
+            "{}",
+            style::dim(&format!(
+                "{} is in a stack; the platform retargets it as the stack lands",
+                review.id
+            ))
+        );
+        return Ok(());
+    }
+
     anstream::println!(
         "{} update review {} -> {} {}",
         if dry_run { "would" } else { "will" },
@@ -424,16 +439,6 @@ fn update_child_review_base(
         style::dim(&format!("({})", review.id))
     );
     if !dry_run {
-        if review_provider.platform_manages_base(&review)? {
-            anstream::println!(
-                "{}",
-                style::dim(&format!(
-                    "{} is in a stack; the platform retargets it as the stack lands",
-                    review.id
-                ))
-            );
-            return Ok(());
-        }
         let output = review_provider.update_review_base(&review, parent)?;
         if !output.is_empty() {
             println!("{output}");
