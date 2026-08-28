@@ -308,9 +308,22 @@ fn open_review_for(
         );
     }
 
+    // A base git-stk owns must match the local parent, or the merge would land
+    // into the wrong branch - and `submit` is the fix, so it names that.
+    //
+    // A base the *platform* owns is different: `cleanup` moved the local
+    // parent as the layer below landed and deliberately left the review to
+    // GitHub, which retargets it on its own clock. Between those two moments
+    // the two disagree, and that is the expected state rather than a
+    // misconfiguration. Bailing here would stop `merge --all` halfway and
+    // send the user to `submit`, which refuses outright for a review in a
+    // stack - the one command that cannot help.
     let expected_base = stack::parent_of(branch)?;
     if let Some(expected) = &expected_base
         && *expected != review.base
+        && !review_provider
+            .platform_manages_base(&review)
+            .unwrap_or(false)
     {
         bail!(
             "review {} targets {}, but {branch}'s stack parent is {expected}; \

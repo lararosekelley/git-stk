@@ -1110,3 +1110,99 @@ fn merge_reports_an_async_merge_that_outlasts_the_polls() {
         .success()
         .stdout(predicates::str::contains("merge scheduled"));
 }
+
+/// Polls that never answer are reported as that, not as a merge still
+/// running. The merge is still GitHub's to finish, so this is not an error -
+/// but two minutes of failed requests summarised as "still merging" names the
+/// wrong thing, and the user is about to hit the same failure in `sync`.
+#[test]
+fn merge_says_so_when_the_async_result_cannot_be_read() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"above"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        .on(
+            "merge-async -X PUT",
+            r##"{"status":"pending","details":{"message":"Merge request enqueued.","uuid":"u-1"}}"##,
+        )
+        // The enqueue lands; every poll after it fails.
+        .fail("pulls/12/merge-async/u-1", "HTTP 401: Bad credentials")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("its result could not be read"))
+        .stdout(predicates::str::contains("Bad credentials"))
+        .stdout(predicates::str::contains("is still merging").not());
+}
+
+/// `merge --all` over a two-layer stack where GitHub has not retargeted the
+/// upper layer yet. `cleanup` moves the local parent to the trunk but stands
+/// down from the retarget, so for a moment the review's base and the local
+/// parent disagree - and the check that notices sends the user to
+/// `git stk submit`, which refuses for a review in a stack. The loop must
+/// carry on instead: the base is GitHub's to move, and it will.
+#[test]
+fn merge_all_carries_on_when_github_has_not_retargeted_yet() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "ma/a"]);
+    let _bare = repo.add_bare_origin(&["main", "ma/a", "ma/b"]);
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let merged =
+        r##"{"status":"merged","details":{"message":"Pull request was merged.","sha":"abc"}}"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", merged)
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", merged)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on_after("ma/a --state merged", "async-12.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("ma/a --state merged", "[]")
+        .on_after("ma/a", "async-12.txt", "[]")
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on_after("ma/b --state merged", "async-13.txt", r##"[{"number":13,"state":"MERGED","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/b --state merged", "[]")
+        .on_after("ma/b", "async-13.txt", "[]")
+        // Still pointing at ma/a after #12 lands: GitHub retargets on its own
+        // clock, and this is the window before it does.
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("pr edit", "edited")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "merge complete: 2 of 2 reviews merged",
+        ))
+        .stderr(predicates::str::contains("run `git stk submit` first").not());
+
+    assert!(
+        repo.path().join("async-13.txt").exists(),
+        "the upper layer never landed"
+    );
+}

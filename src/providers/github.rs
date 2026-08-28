@@ -583,6 +583,11 @@ fn await_async_merge(review: &ReviewRequest, path: &str, output: &str) -> Result
 
     let uuid = uuid.with_context(|| format!("{} was enqueued without a result id", review.id))?;
     let result_path = format!("{path}/{uuid}");
+    // Kept so a run where *nothing* answered is reported as what it was. The
+    // merge is still GitHub's to finish, so this is never an error - but
+    // "still merging" for two minutes of failed requests names the wrong
+    // thing, and `sync` hits the same failure loudly straight after.
+    let mut unanswered: Option<String> = None;
     for _ in 0..ASYNC_MERGE_POLLS {
         std::thread::sleep(async_merge_poll_interval());
         // A failed poll is not a failed merge. The merge is already running on
@@ -591,8 +596,15 @@ fn await_async_merge(review: &ReviewRequest, path: &str, output: &str) -> Result
         // Returning it would reach `explain_merge_failure`, where a mid-merge
         // `BLOCKED` reads as "checks are not green" for a merge that is
         // landing, and `--all` would abort on it.
-        let Ok(output) = command_output("gh", &["api", &result_path]) else {
-            continue;
+        let output = match command_output("gh", &["api", &result_path]) {
+            Ok(output) => {
+                unanswered = None;
+                output
+            }
+            Err(error) => {
+                unanswered.get_or_insert_with(|| error.to_string());
+                continue;
+            }
         };
         let Some((status, _)) = parse_async_merge(&output) else {
             continue;
@@ -607,10 +619,17 @@ fn await_async_merge(review: &ReviewRequest, path: &str, output: &str) -> Result
     // route through `explain_merge_failure`, where a mid-merge state can be
     // classified as pending checks - replacing this with a wrong diagnosis and
     // aborting the run.
-    Ok(format!(
-        "{} is still merging on GitHub; `git stk sync` picks it up once it lands",
-        review.id
-    ))
+    Ok(match unanswered {
+        Some(error) => format!(
+            "{} was handed to GitHub to merge, but its result could not be \
+             read: {error}",
+            review.id
+        ),
+        None => format!(
+            "{} is still merging on GitHub; `git stk sync` picks it up once it lands",
+            review.id
+        ),
+    })
 }
 
 /// What an async-merge status means for the caller: `Some` once it is final,
