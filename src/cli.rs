@@ -8,7 +8,10 @@ use crate::commands;
 #[command(about = "Git-native stacked branch workflow helper, with GitHub and GitLab integration")]
 #[command(after_help = "New to stacking? Run `git stk guide` for short interactive tours.")]
 pub struct Cli {
-    /// Pass raw git output through instead of showing it only on failure.
+    /// Pass raw git output through instead of showing it only on failure, with
+    /// the occasional detail git-stk holds back because it would repeat every
+    /// run - such as a host that cannot answer for GitHub's stacked pull
+    /// requests.
     #[arg(long, short = 'v', global = true)]
     pub verbose: bool,
     #[command(subcommand)]

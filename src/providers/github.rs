@@ -377,6 +377,22 @@ impl ReviewProvider for GitHubProvider {
         parse_github_reviews(&output)
     }
 
+    fn annotate_review(&self, review: &ReviewRequest, detail: bool) -> Result<ReviewAnnotation> {
+        // One GraphQL call for the queue state, the CI rollup, and the stack
+        // position - the same query `list` makes, so the two cannot disagree
+        // about a stack's size. It reads open reviews only, so a merged or
+        // closed one falls through to the per-call default, which is also the
+        // only way to name the stack a landed layer is still listed in.
+        let found = batched_annotate(std::slice::from_ref(&review.branch), detail)
+            .ok()
+            .and_then(|mut found| found.remove(&review.branch));
+        match found {
+            Some(annotation) => Ok(annotation),
+            // No entry, or the query failed outright: ask per call instead.
+            None => super::generic_annotate_review(self, review, detail),
+        }
+    }
+
     fn annotate_branches(
         &self,
         branches: &[String],
