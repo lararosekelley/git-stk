@@ -2312,6 +2312,52 @@ fn submit_stack_dry_run_reports_a_stack_it_would_leave_alone() {
         .stdout(predicates::str::contains("would extend").not());
 }
 
+/// The listing is asked once per command, not once per branch. `submit`
+/// checks every layer before retargeting it, and on a repo without the preview
+/// every one of those is a 404 - so without the cache a five-branch submit
+/// spends five `gh` subprocesses learning the same nothing.
+#[test]
+fn submit_asks_github_for_the_stack_listing_once_per_run() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    for branch in ["feature/a", "feature/b", "feature/c", "feature/d"] {
+        repo.stack().args(["new", branch]).assert().success();
+    }
+
+    let fake = FakeProvider::new()
+        .log_all("calls.txt")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        // What a repo without the preview answers, for every branch.
+        .fail("repos/owner/repo/stacks", "gh: Not Found (HTTP 404)")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--dry-run"])
+        .assert()
+        .success();
+
+    let calls = fs::read_to_string(repo.path().join("calls.txt")).expect("call log");
+    let listings = calls
+        .lines()
+        .filter(|line| line.contains("repos/owner/repo/stacks"))
+        .count();
+    assert_eq!(
+        listings, 1,
+        "the listing is asked once per command, not once per branch:\n{calls}"
+    );
+    // And the same for the repo lookup that precedes it.
+    let repo_views = calls
+        .lines()
+        .filter(|line| line.contains("repo view"))
+        .count();
+    assert_eq!(
+        repo_views, 1,
+        "owner/repo was resolved more than once:\n{calls}"
+    );
+}
+
 /// Off by default: no stack call, and no mention of one.
 #[test]
 fn submit_stack_does_not_register_unless_enabled() {
