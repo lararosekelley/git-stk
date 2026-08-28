@@ -39,15 +39,6 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   dissolving the stack on the platform when nothing will move it - a re-rooted
   or reordered line, or the stack's own bottom. Registering itself needs
   `stk.githubStacks`; following a stack GitHub already holds does not.
-- **status, repair, guide:** the last messages suggesting a bare
-  `git stk adopt` now name both the branch and the parent. `adopt` defaults to
-  the branch you are on _and_ to the trunk, so following the bare form while
-  standing on a release line re-roots it - the footgun removed elsewhere in
-  this release, in the four places that were outside those diffs (#318).
-- **split:** refuses a recorded stack base. `split` rewrites nothing, but it
-  does stamp a `stkParent` on the branch it splits, and a base has none by
-  design - the marker would outrank that metadata everywhere else, leaving the
-  two disagreeing (#318).
 - **unstack:** `git stk unstack` dissolves the platform's own stack for the
   stack you are on, leaving its reviews open and standalone. Registering one
   was a one-way door: turning `stk.githubStacks` off left every stack git-stk
