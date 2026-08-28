@@ -295,10 +295,15 @@ pub trait ReviewProvider {
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String>;
 
-    /// Whether the platform owns this review's base and moves it itself - a
-    /// registered GitHub stack, where retargeting by hand is refused because
-    /// GitHub retargets each layer as the one below it lands. Callers skip
-    /// their own retarget rather than fight it.
+    /// Whether the platform moves this review's base itself, so a caller
+    /// should stand down rather than retarget it.
+    ///
+    /// True for a layer of a GitHub stack that has one below it: GitHub
+    /// retargets each layer as the one beneath it lands. Not true for the
+    /// stack's *bottom* - nothing lands below it, so GitHub never moves it,
+    /// and treating the two alike promises a retarget that never comes. See
+    /// [`ReviewProvider::platform_refuses_base_change`] for what the bottom
+    /// needs instead.
     ///
     /// Defaults to `false`, and errs that way too, because the two mistakes
     /// are not equally bad. Answering `false` wrongly means attempting a
@@ -310,6 +315,19 @@ pub trait ReviewProvider {
     /// auto-closes a review whose base disappears takes the review with it,
     /// comments and approvals included, silently.
     fn platform_manages_base(&self, review: &ReviewRequest) -> Result<bool> {
+        let _ = review;
+        Ok(false)
+    }
+
+    /// Whether the platform refuses a base change on this review, whoever
+    /// asks. GitHub rejects `pr edit --base` for every pull request in a
+    /// stack, its bottom layer included - so a bottom whose base has gone
+    /// stale is a state neither side will fix, and the honest answer is to
+    /// say so rather than attempt a call that is refused or promise a
+    /// retarget that never arrives.
+    ///
+    /// Default `false`: only GitHub keeps stacks.
+    fn platform_refuses_base_change(&self, review: &ReviewRequest) -> Result<bool> {
         let _ = review;
         Ok(false)
     }

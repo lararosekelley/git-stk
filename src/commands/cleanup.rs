@@ -430,6 +430,22 @@ fn update_child_review_base(
         );
         return Ok(());
     }
+    // A stack's bottom layer, whose base the platform will never move and
+    // will not let us move either. Loud rather than dim: the branch this
+    // review targets is the one being cleaned up, so leaving it unsaid ends
+    // with the review pointing at a deleted branch.
+    if review_provider.platform_refuses_base_change(&review)? {
+        anstream::println!(
+            "{}",
+            style::warn(&format!(
+                "{} still targets {} and is a stack's bottom layer - the platform will not \
+                 move it and refuses a change by hand; dissolve the stack on the platform, \
+                 then run `git stk submit`",
+                review.id, review.base
+            ))
+        );
+        return Ok(());
+    }
 
     anstream::println!(
         "{} update review {} -> {} {}",

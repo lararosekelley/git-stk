@@ -2425,3 +2425,46 @@ fn submit_does_not_retarget_a_review_github_owns() {
         "no `pr edit --base` may be attempted: GitHub rejects it"
     );
 }
+
+/// A stack's bottom layer whose base went stale. The platform never moves it -
+/// nothing lands below it - and refuses a change by hand, so the old message
+/// promising the platform would handle it was false. Say what actually
+/// unblocks it instead.
+#[test]
+fn submit_names_the_way_out_for_a_stack_bottom_with_a_stale_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    let _bare = repo.add_bare_origin(&["main", "rc-20260817", "ma/a"]);
+
+    // ma/a is the stack's bottom, and its review still targets main.
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr edit", "retarget.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("is a stack's bottom"))
+        .stdout(predicates::str::contains("dissolve the stack"))
+        // Not the promise that something else will fix it.
+        .stdout(predicates::str::contains("the platform moves it").not());
+
+    assert!(
+        !repo.path().join("retarget.txt").exists(),
+        "the platform refuses this call, so it must not be attempted"
+    );
+}
