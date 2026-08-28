@@ -124,15 +124,7 @@ impl ReviewProvider for GitHubProvider {
         let Some((owner, repo)) = repo_owner_name() else {
             return Ok(None);
         };
-        // Best effort: the endpoint is in public preview, and a repo without
-        // the feature answers 404. Either way "no stack" is the right read -
-        // never an error that fails the command that asked.
-        // `--paginate`: the listing keeps every dissolved and landed stack, so
-        // on a long-lived repo the live one is not necessarily on page one.
-        let Ok(output) = command_output(
-            "gh",
-            &["api", "--paginate", &format!("repos/{owner}/{repo}/stacks")],
-        ) else {
+        let Ok(output) = stacks_listing(&owner, &repo) else {
             return Ok(None);
         };
         Ok(parse_native_stack(&output, branch))
@@ -161,6 +153,7 @@ impl ReviewProvider for GitHubProvider {
                 let numbers = pull_request_numbers(&fresh)?;
                 let path = format!("repos/{owner}/{repo}/stacks/{number}/add");
                 post_pull_requests(&path, &numbers)?;
+                forget_stacks_listing();
                 Ok(Some(format!(
                     "extended stack {number} with {}",
                     fresh.join(" ")
@@ -170,6 +163,7 @@ impl ReviewProvider for GitHubProvider {
                 let numbers = pull_request_numbers(&reviews)?;
                 let path = format!("repos/{owner}/{repo}/stacks");
                 post_pull_requests(&path, &numbers)?;
+                forget_stacks_listing();
                 Ok(Some(format!("registered {} as a stack", reviews.join(" "))))
             }
         }
@@ -572,6 +566,9 @@ fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String
     let path = format!("repos/{owner}/{repo}/pulls/{number}/merge-async");
     let method = format!("merge_method={strategy}");
     let output = command_output("gh", &["api", &path, "-X", "PUT", "-f", &method])?;
+    // The PUT is the write: from here GitHub is landing the layer, so a cached
+    // listing is a pre-merge snapshot however the wait then returns.
+    forget_stacks_listing();
     Ok((path, output))
 }
 
@@ -685,6 +682,52 @@ fn post_pull_requests(path: &str, numbers: &[String]) -> Result<String> {
     command_output("gh", &args)
 }
 
+/// The repo's stack listing, cached for the life of the command.
+///
+/// This is asked once per branch - `submit` checks every layer before
+/// retargeting it, and `repair` asks for every branch missing a parent - and
+/// on a repo without the preview every one of those is a 404. One call per
+/// command is the right cost for an answer that only changes when the stack
+/// does; [`forget_stacks_listing`] owns that list and drops the cache at each,
+/// so nothing reads a listing from before the write that invalidated it.
+///
+/// Best effort: the endpoint is in public preview, and a repo without the
+/// feature answers 404. Either way "no stack" is the right read for a caller
+/// using this as a hint - never an error that fails the command that asked.
+fn stacks_listing(owner: &str, repo: &str) -> Result<String> {
+    if let Some(cached) = STACKS_LISTING.with(|cell| cell.borrow().clone()) {
+        return cached.map_err(|message| anyhow!("{message}"));
+    }
+    // `--paginate`: the listing keeps every dissolved and landed stack, so on
+    // a long-lived repo the live one is not necessarily on the first page.
+    let result = command_output(
+        "gh",
+        &["api", "--paginate", &format!("repos/{owner}/{repo}/stacks")],
+    );
+    // Failures are cached too. The common one is the 404 from a repo without
+    // the preview, and not memoising it left a `gh` subprocess per branch on
+    // exactly the repos that gain nothing from asking.
+    STACKS_LISTING.with(|cell| {
+        *cell.borrow_mut() = Some(match &result {
+            Ok(output) => Ok(output.clone()),
+            Err(error) => Err(error.to_string()),
+        });
+    });
+    result
+}
+
+thread_local! {
+    static STACKS_LISTING: std::cell::RefCell<Option<Result<String, String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Drop the cached listing, so the next read reflects a change to the stack.
+/// Called wherever one happens - registering and extending a stack here, and
+/// landing a layer, which GitHub reshapes the stack for on its own.
+fn forget_stacks_listing() {
+    STACKS_LISTING.with(|cell| *cell.borrow_mut() = None);
+}
+
 /// The stack holding `branch`, from the `GET /repos/{owner}/{repo}/stacks`
 /// payload. Bottom-first, since that is the order the API lists and the order
 /// a stack lands in. Anything unparseable reads as "no stack" - this informs a
@@ -755,6 +798,18 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
 /// The current repository's `owner` and `name`, or None when gh cannot resolve
 /// them (not a GitHub repo, or gh unavailable).
 fn repo_owner_name() -> Option<(String, String)> {
+    // Cached: it cannot change while a command runs, and it costs a `gh`
+    // subprocess on paths that ask per branch. The stack listing is cached
+    // too, but with invalidation - see [`stacks_listing`] - because git-stk
+    // and GitHub both reshape a stack midway through a command.
+    thread_local! {
+        static REPO: std::cell::OnceCell<Option<(String, String)>> =
+            const { std::cell::OnceCell::new() };
+    }
+    REPO.with(|repo| repo.get_or_init(resolve_repo_owner_name).clone())
+}
+
+fn resolve_repo_owner_name() -> Option<(String, String)> {
     let output = command_output("gh", &["repo", "view", "--json", "nameWithOwner"]).ok()?;
     let value: serde_json::Value = serde_json::from_str(&output).ok()?;
     let full = value
