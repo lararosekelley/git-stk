@@ -11,7 +11,9 @@ pub fn set_verbose(verbose: bool) {
     VERBOSE.store(verbose, Ordering::Relaxed);
 }
 
-fn verbose() -> bool {
+/// Public so a command can hold back detail that would otherwise repeat on
+/// every run - see the stacked-field notice in `providers::github`.
+pub fn verbose() -> bool {
     VERBOSE.load(Ordering::Relaxed)
 }
 
