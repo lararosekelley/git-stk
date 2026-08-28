@@ -23,7 +23,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   Registering a stack hands two operations to GitHub, so `merge` and `submit`
   follow it there. GitHub refuses both the synchronous merge and a manual
   retarget for a pull request in a stack, so `merge` uses the asynchronous
-  merge endpoint and waits for its result, and `submit`/`cleanup` stop
+  merge endpoint and waits for its result - and refuses `--auto` there, since
+  that endpoint has no scheduled mode - and `submit`/`cleanup` stop
   retargeting a review GitHub owns - it moves each layer itself as the one
   below it lands, and says so rather than claiming a change git-stk did not
   make. All of this is inert with `stk.githubStacks` off.

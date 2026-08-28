@@ -543,26 +543,25 @@ fn github_enqueued_branches(branches: &[String]) -> BTreeSet<String> {
     queued
 }
 
-/// How long to keep polling an enqueued async merge before giving up. The
-/// merge itself is quick; what this waits out is GitHub retargeting the layers
-/// above the one that landed.
+/// How long to keep polling an enqueued async merge before giving up: two
+/// minutes at the interval below. The loop returns the moment a poll reads a
+/// final status, so this budget is only what a merge is allowed to take -
+/// GitHub does the retargeting after answering, not before.
 const ASYNC_MERGE_POLLS: u32 = 60;
 
 fn async_merge_poll_interval() -> std::time::Duration {
     // Under the fake-provider harness the whole merge is answered by a local
     // process, so the wait is pure test latency - and without this the poll
-    // loop is untestable at two seconds a turn. `STK_FAKE_SPEC` is set only by
-    // that harness, never in a real run.
+    // loop is untestable at two seconds a turn. Behind the same feature gate
+    // as the harness itself, so the check is compiled out of a shipped binary
+    // rather than read from its environment.
+    #[cfg(feature = "test-fakes")]
     if std::env::var_os("STK_FAKE_SPEC").is_some() {
         return std::time::Duration::from_millis(1);
     }
     std::time::Duration::from_secs(2)
 }
 
-/// Merge a stacked pull request through the asynchronous endpoint, then wait
-/// for the result. `PUT .../merge-async` enqueues and answers with a uuid;
-/// `GET .../merge-async/{uuid}` reports `pending`, `merged`, `enqueued` (a
-/// merge queue took it) or `failed`.
 /// Ask GitHub to start the merge. Split from the wait because the `PUT` is not
 /// idempotent: retrying it after a transient failure *later* in the sequence
 /// would ask for a second merge of a review already merging.
@@ -589,7 +588,15 @@ fn await_async_merge(review: &ReviewRequest, path: &str, output: &str) -> Result
     let result_path = format!("{path}/{uuid}");
     for _ in 0..ASYNC_MERGE_POLLS {
         std::thread::sleep(async_merge_poll_interval());
-        let output = command_output("gh", &["api", &result_path])?;
+        // A failed poll is not a failed merge. The merge is already running on
+        // GitHub, and this loop only asks how it went - so a 502 or a dropped
+        // connection is retried like an unreadable body below, not returned.
+        // Returning it would reach `explain_merge_failure`, where a mid-merge
+        // `BLOCKED` reads as "checks are not green" for a merge that is
+        // landing, and `--all` would abort on it.
+        let Ok(output) = command_output("gh", &["api", &result_path]) else {
+            continue;
+        };
         let Some((status, _)) = parse_async_merge(&output) else {
             continue;
         };
@@ -650,8 +657,6 @@ fn review_number(id: &str) -> Option<String> {
     (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.to_owned())
 }
 
-/// `POST` an ordered `pull_requests` list to a stacks endpoint. `-F` sends the
-/// numbers typed, which the API requires - `-f` would make them strings.
 /// The pull request numbers for `reviews`, or an error naming the id that
 /// could not be read - registering a stack we cannot name in full would record
 /// a different stack than the one submitted.
@@ -665,6 +670,8 @@ fn pull_request_numbers(reviews: &[String]) -> Result<Vec<String>> {
         .collect()
 }
 
+/// `POST` an ordered `pull_requests` list to a stacks endpoint. `-F` sends the
+/// numbers typed, which the API requires - `-f` would make them strings.
 fn post_pull_requests(path: &str, numbers: &[String]) -> Result<String> {
     let fields: Vec<String> = numbers
         .iter()

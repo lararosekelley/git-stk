@@ -212,7 +212,9 @@ flow. `merge --all` repeats that bottom-up until the stack is complete, with one
 - `--auto` schedules the merge when required checks are still running (GitHub `--auto`, GitLab
   auto-merge). A merge that only got scheduled - the default on GitLab - skips the sync and stops `--all`,
   telling you to rerun `git stk sync` once checks pass. Gitea has no scheduled merge, so `--auto` there
-  attempts an immediate merge and a failing check surfaces as a merge error.
+  attempts an immediate merge and a failing check surfaces as a merge error. A review in a GitHub stack
+  refuses `--auto` outright: the asynchronous endpoint it must use has no scheduled mode, and merging now
+  would be the opposite of what was asked. Rerun without it once checks are green.
 - `--wait` (or `stk.mergeWait`) polls each review's checks until they settle before merging it, making the
   landing genuinely one command. A failing check stops the loop; `--no-wait` overrides the config. Checks
   that are queued but not yet registered are waited out, not read as "no checks."
@@ -277,9 +279,10 @@ still succeeds. Off by default while the GitHub feature is in public preview, an
 Gitea are unaffected.
 
 Registering hands two things to GitHub, and git-stk follows it there. A pull request in a stack cannot be
-merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merge and waits for the result;
-and its base cannot be changed by hand, because GitHub retargets each layer itself as the one below it
-lands - so `submit` and `cleanup` report that instead of retargeting. The local side is unchanged: git-stk
+merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merge and waits for the
+result, and refuses `--auto` there because that endpoint has no scheduled mode. Its base cannot be changed
+by hand either, because GitHub retargets each layer itself as the one below it lands - so `submit` and
+`cleanup` report that instead of retargeting. The local side is unchanged: git-stk
 still owns `restack`, `absorb`, worktrees, and the stack metadata.
 
 `submit --downstack` submits the stack from its bottom through the current branch only, so

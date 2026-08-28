@@ -681,8 +681,6 @@ fn register_native_stack(
     Ok(())
 }
 
-/// What `register_stack` would report, for `--dry-run`. Mirrors its decision
-/// without making the call.
 /// Render what registration would do, from the same plan the real run acts on,
 /// so a dry run cannot promise something the run then declines - and says
 /// nothing at all on a provider that keeps no stacks, or with the setting off.
