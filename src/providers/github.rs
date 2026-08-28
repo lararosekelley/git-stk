@@ -503,10 +503,10 @@ fn batched_annotate(
             if crate::git::verbose() {
                 anstream::eprintln!(
                     "{}",
-                    crate::style::dim(
+                    crate::style::dim(&format!(
                         "this host did not accept the stacked-pull-request fields, \
-                         so `list` will not mark stack layers"
-                    )
+                         so `list` will not mark stack layers: {error}"
+                    ))
                 );
             }
             retried

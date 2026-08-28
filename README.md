@@ -186,7 +186,9 @@ git stk list
 ## Commands
 
 Git's own narration (rebase progress, switch advice, push chatter) is captured and shown only when a
-git command fails; pass `-v`/`--verbose` to any command to stream it through instead. Output is colored
+git command fails; pass `-v`/`--verbose` to any command to stream it through instead, along with the
+occasional detail git-stk holds back because it would repeat on every run - such as a host that cannot
+answer for GitHub's stacked pull requests. Output is colored
 when the terminal supports it; pipes and [`NO_COLOR`](https://no-color.org/) turn it off. Every command
 that takes `--dry-run` also accepts `-n` as a short alias.
 
