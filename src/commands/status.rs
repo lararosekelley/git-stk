@@ -116,6 +116,21 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                                     )
                                 )
                             );
+                        } else if review_provider
+                            .platform_refuses_base_change(review)
+                            .unwrap_or(false)
+                        {
+                            // In a stack, but not one that can reach this
+                            // parent. `submit` is the wrong advice here - it
+                            // refuses a review in a stack - so name what
+                            // actually unblocks it, as `submit` itself does.
+                            anstream::println!(
+                                "{} review base is {}, local parent is {parent} - the platform \
+                                 will not move it there and refuses a change by hand; dissolve \
+                                 the stack on the platform, then run `git stk submit`",
+                                style::paint(style::WARN, "warning:"),
+                                review.base
+                            );
                         } else {
                             anstream::println!(
                                 "{} review base is {}, local parent is {parent} - run `git stk submit`",

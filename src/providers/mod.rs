@@ -170,8 +170,13 @@ impl NativeStack {
     /// disagreement nothing will resolve, and callers say so instead of
     /// waiting for it.
     pub fn can_base_on(&self, branch: &str, parent: &str) -> bool {
+        // Two destinations, not "any layer": the platform sets a layer's base
+        // to the one recorded below it, and moves it to the stack's own base
+        // once that lands. A layer *above* this one is neither - accepting it
+        // would put a reordered stack's bottom back inside the exemption, and
+        // the bottom is the one layer the platform never retargets.
         self.layers.iter().any(|layer| layer.branch == branch)
-            && (self.base == parent || self.layers.iter().any(|layer| layer.branch == parent))
+            && (self.base == parent || self.parent_of(branch) == Some(parent))
     }
 
     /// What `branch` stacks on according to the platform: the branch below it,
@@ -333,7 +338,15 @@ pub trait ReviewProvider {
     /// `false` while the review is nonetheless in a stack is the dead end -
     /// see [`ReviewProvider::platform_refuses_base_change`].
     ///
-    /// Default `false`: only GitHub keeps stacks.
+    /// Defaults to `false`, and errs that way too, because the two mistakes
+    /// are not equally bad. Answering `false` wrongly means attempting a
+    /// retarget the platform refuses: a loud, recoverable error, and
+    /// `update_review_base` checks again itself, so a blip that clears in
+    /// between still lands on the friendly message. Answering `true` wrongly
+    /// means skipping a retarget that was needed - in `cleanup` the layer
+    /// then still points at a branch about to be deleted, and a platform that
+    /// auto-closes a review whose base disappears takes the review with it,
+    /// comments and approvals included, silently.
     fn platform_will_base_on(&self, review: &ReviewRequest, parent: &str) -> Result<bool> {
         let _ = (review, parent);
         Ok(false)
@@ -966,6 +979,29 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// The two destinations the platform can bring a layer's base to, and
+    /// nothing else. A layer above this one is the case that matters: after a
+    /// local reorder it is what the stack's *bottom* would name as its
+    /// parent, and the bottom is the one layer never retargeted.
+    #[test]
+    fn can_base_on_accepts_only_the_predecessor_and_the_stack_base() {
+        let stack = stack_of(7, &["#12", "#13", "#14"]);
+
+        // The recorded predecessor, and the stack's own base.
+        assert!(stack.can_base_on("13", "12"));
+        assert!(stack.can_base_on("13", "main"));
+        assert!(stack.can_base_on("12", "main"));
+
+        // A layer above, which a reorder makes the bottom's local parent.
+        assert!(!stack.can_base_on("12", "13"));
+        // A layer below, but not the one recorded directly beneath.
+        assert!(!stack.can_base_on("14", "12"));
+        // Somewhere the stack has never heard of.
+        assert!(!stack.can_base_on("13", "rc-20260817"));
+        // And a branch the stack does not hold at all.
+        assert!(!stack.can_base_on("other", "main"));
     }
 
     /// The whole decision table for registering, in one place - this is what

@@ -2468,3 +2468,54 @@ fn submit_names_the_way_out_for_a_stack_bottom_with_a_stale_base() {
         "the platform refuses this call, so it must not be attempted"
     );
 }
+
+/// A registered stack reordered locally. The branch that is now the bottom
+/// names a layer *above* it as its parent - a destination the platform never
+/// sets - so promising "the platform moves it as the stack lands" would be
+/// false, and would also contradict the mismatch warning the same run prints.
+#[test]
+fn submit_warns_about_a_reordered_stacks_bottom_rather_than_promising_a_move() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // Reorder locally: ma/a now sits on ma/b, which the stack records above it.
+    repo.git(["switch", "ma/b"]);
+    repo.stack()
+        .args(["adopt", "ma/b", "--parent", "main"])
+        .assert()
+        .success();
+    repo.stack()
+        .args(["adopt", "ma/a", "--parent", "ma/b"])
+        .assert()
+        .success();
+    let _bare = repo.add_bare_origin(&["main", "ma/a", "ma/b"]);
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr edit 12 --base", "retarget.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "ma/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dissolve the stack"))
+        .stdout(predicates::str::contains("the platform moves it").not());
+
+    assert!(
+        !repo.path().join("retarget.txt").exists(),
+        "the platform refuses this call, so it must not be attempted"
+    );
+}
