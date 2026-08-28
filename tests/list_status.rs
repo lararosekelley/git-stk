@@ -196,6 +196,7 @@ fn list_and_status_show_a_platform_stack() {
         {"number":12,"head":{"ref":"feature/a"}},
         {"number":13,"head":{"ref":"above"}}]}]"##;
     let fake = FakeProvider::new()
+        .log_all("calls.txt")
         .on("api graphql", graphql)
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .on("repos/owner/repo/stacks", stacks)
@@ -209,11 +210,22 @@ fn list_and_status_show_a_platform_stack() {
         .success()
         .stdout(predicates::str::contains("⛁2/3"));
 
+    std::fs::remove_file(repo.path().join("calls.txt")).ok();
     repo.stack_faked(&fake)
         .args(["status"])
         .assert()
         .success()
+        // Position and size from the same source `list` reads, so the two
+        // cannot disagree about one stack's size.
         .stdout(predicates::str::contains("stack: github stack 6 (2 of 3)"));
+
+    // And from the query `status` was already making: no paginated walk of a
+    // listing that keeps every stack the repo has ever had.
+    let calls = std::fs::read_to_string(repo.path().join("calls.txt")).expect("call log");
+    assert!(
+        !calls.contains("repos/owner/repo/stacks"),
+        "status paid a REST listing call for what the annotate query answers:\n{calls}"
+    );
 }
 
 /// A host that rejects the preview fields is a lasting property of that host,

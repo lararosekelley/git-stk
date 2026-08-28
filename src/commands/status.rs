@@ -66,21 +66,37 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
             let review = review_provider.review_for_branch_including_closed(&branch)?;
             match &review {
                 Some(review) => {
+                    // One call for the queue state, the CI rollup, and the
+                    // platform stack together - the same query `list` makes,
+                    // so the two cannot disagree about a stack's size. It
+                    // reads open reviews only, so a merged or closed one falls
+                    // back to the per-call path below.
+                    let annotation = review_provider
+                        .annotate_branches(std::slice::from_ref(&review.branch), false)
+                        .ok()
+                        .and_then(|mut found| found.remove(&review.branch));
+
                     // A queued review shows just the clock (it is waiting to
                     // land); otherwise the CI dot. Both best-effort - a failed
                     // lookup just omits the marker. When queued, the CI dot is
                     // suppressed, so skip fetching it.
-                    let queued = review_provider
-                        .enqueued_branches(std::slice::from_ref(&review.branch))
-                        .map(|set| set.contains(&review.branch))
-                        .unwrap_or(false);
+                    let queued = match &annotation {
+                        Some(annotation) => annotation.queued,
+                        None => review_provider
+                            .enqueued_branches(std::slice::from_ref(&review.branch))
+                            .map(|set| set.contains(&review.branch))
+                            .unwrap_or(false),
+                    };
                     let marker = if queued {
                         crate::providers::QUEUED_MARK
                     } else {
-                        review_provider
-                            .check_status(review)
-                            .unwrap_or(CheckStatus::None)
-                            .dot()
+                        match &annotation {
+                            Some(annotation) => annotation.checks.dot(),
+                            None => review_provider
+                                .check_status(review)
+                                .unwrap_or(CheckStatus::None)
+                                .dot(),
+                        }
                     };
                     anstream::println!(
                         "review: {marker}{} {} {} -> {}",
@@ -92,18 +108,30 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                     anstream::println!("url: {}", style::paint(style::DIM, &review.url));
                     // The platform's own stack, when it holds this review -
                     // which is what makes GitHub, not git-stk, the one that
-                    // merges and retargets it.
-                    if let Ok(Some(found)) = review_provider.native_stack_for(&review.branch) {
-                        let position = found
-                            .position_of(&review.branch)
-                            .map_or_else(String::new, |at| {
-                                format!(" ({at} of {})", found.layers.len())
-                            });
-                        anstream::println!(
-                            "stack: {} stack {}{position}",
-                            provider.kind,
-                            found.number
-                        );
+                    // merges and retargets it. Both halves of the ratio come
+                    // from whichever source answered, never one from each.
+                    let stack = match &annotation {
+                        Some(annotation) => annotation
+                            .stack
+                            .map(|at| (at.number, Some((at.position as usize, at.size as usize)))),
+                        // The annotate query cannot see a merged or closed
+                        // review, and a landed layer stays listed in its
+                        // stack, so this is the only way to name it there.
+                        None => review_provider
+                            .native_stack_for(&review.branch)
+                            .ok()
+                            .flatten()
+                            .map(|found| {
+                                let at = found
+                                    .position_of(&review.branch)
+                                    .map(|at| (at as usize, found.layers.len()));
+                                (found.number, at)
+                            }),
+                    };
+                    if let Some((number, at)) = stack {
+                        let position =
+                            at.map_or_else(String::new, |(at, size)| format!(" ({at} of {size})"));
+                        anstream::println!("stack: {} stack {number}{position}", provider.kind);
                     }
 
                     // A base and a local parent that disagree while the

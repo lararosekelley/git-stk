@@ -69,6 +69,11 @@ A review the platform holds in a stack of its own is marked with its position in
 the `list` tree, and a `stack:` line in `status`. That is worth seeing: for those reviews GitHub, not
 git-stk, is what merges and retargets them.
 
+The `list` marker needs fields that are in public preview, and a host whose schema lacks them - GitHub
+Enterprise Server, today - rejects them. `list` retries without them and carries on, so the marker simply
+never appears; `git stk -v list` says why. Everything else about a stack still works there, since git-stk
+reads it over REST.
+
 `status` and `list` append `hint:` lines pointing at the next command when there is one: `restack` when a
 branch is behind its parent, `submit` when a review base went stale, `sync` when a review in the stack
 merged. A stack's base gets none of those - nothing rebases, submits, or lands it - so `status` names it as
