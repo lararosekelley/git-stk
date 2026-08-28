@@ -141,7 +141,6 @@ fn lock_name(command: &Command) -> Option<&'static str> {
         Command::New(_) => Some("new"),
         Command::Adopt(_) => Some("adopt"),
         Command::Detach(_) => Some("detach"),
-        Command::Unstack(_) => Some("unstack"),
         Command::Rename(_) => Some("rename"),
         Command::Split(_) => Some("split"),
         Command::Restack(_) => Some("restack"),
@@ -154,6 +153,11 @@ fn lock_name(command: &Command) -> Option<&'static str> {
         Command::Submit(_) => Some("submit"),
         Command::Cleanup(_) => Some("cleanup"),
         Command::Absorb(_) => Some("absorb"),
+        // `unstack` rewrites nothing locally - it is a `POST` - but it takes
+        // the lock to serialise against `submit`, which registers a stack in
+        // the same checkout: a register and a dissolve interleaving would
+        // leave git-stk and GitHub disagreeing about whether a stack exists.
+        Command::Unstack(_) => Some("unstack"),
         // `run` rewrites nothing, but it checks out every branch in turn and
         // runs a user command on each - a long window where a concurrent
         // sync/restack moving those branches would derail it. The lock is held

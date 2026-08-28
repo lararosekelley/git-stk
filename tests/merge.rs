@@ -1725,6 +1725,46 @@ fn unstack_dissolves_every_stack_covering_the_line() {
     assert!(repo.path().join("unstack-6.txt").exists());
 }
 
+/// One dissolve failing must not strand the rest: the others are still
+/// attempted, the ones that went through are still reported, and the error
+/// names what is still registered - which is the answer this command exists
+/// to give. A `?` on the first failure would leave the user with a success
+/// line and no idea the line is still blocked.
+#[test]
+fn unstack_keeps_going_when_one_dissolve_fails() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[
+        {"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+            {"number":12,"head":{"ref":"ma/a"}}]},
+        {"number":6,"open":true,"base":{"ref":"ma/a"},"pull_requests":[
+            {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("stacks/5/unstack -X POST", "unstack-5.txt", "{}")
+        .fail("stacks/6/unstack", "HTTP 404: Not Found")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["unstack", "-y"])
+        .assert()
+        .failure()
+        // The one that went through is still reported - it was not rolled
+        // back, and the user needs to know it happened.
+        .stdout(predicates::str::contains("dissolved stack 5 on GitHub"))
+        .stderr(predicates::str::contains("could not dissolve stack 6"))
+        .stderr(predicates::str::contains("1 stack still registered: 6"));
+
+    assert!(repo.path().join("unstack-5.txt").exists());
+}
+
 /// `gh repo view` is the first call to fail under an expired token, and its
 /// error carries the "run `gh auth login`" hint. Discarding it let a failed
 /// lookup read as "nothing to dissolve".
