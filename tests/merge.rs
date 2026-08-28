@@ -1534,11 +1534,50 @@ fn unstack_dissolves_the_platform_stack() {
     assert!(!repo.path().join("unstack.txt").exists());
 
     repo.stack_faked(&fake)
-        .args(["unstack"])
+        .args(["unstack", "-y"])
         .assert()
         .success()
         .stdout(predicates::str::contains("dissolved stack 5 on GitHub"));
     assert!(repo.path().join("unstack.txt").exists());
+}
+
+/// The dissolve is destructive on the platform and has no undo - `undo`
+/// restores local metadata, and this is a `POST` - so it asks first, naming
+/// every stack it would take apart. A stack reaches past the line that asked,
+/// so what is at stake is not visible from where the user is standing.
+#[test]
+fn unstack_asks_before_dissolving_anything() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}},
+        {"number":14,"head":{"ref":"elsewhere"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("stacks/5/unstack -X POST", "unstack.txt", "{}")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .fallback("[]")
+        .install(&repo);
+
+    // No `-y`, and nothing on stdin: the prompt reads that as a no.
+    repo.stack_faked(&fake)
+        .args(["unstack"])
+        .assert()
+        .success()
+        // Named before the question, including the review outside the line.
+        .stdout(predicates::str::contains(
+            "will dissolve stack 5 (#12 #13 #14)",
+        ))
+        .stdout(predicates::str::contains("unstack cancelled"));
+    assert!(
+        !repo.path().join("unstack.txt").exists(),
+        "a declined prompt must dissolve nothing"
+    );
 }
 
 /// Nothing recorded is not an error - it is the ordinary answer for a stack
@@ -1557,7 +1596,7 @@ fn unstack_says_so_when_there_is_no_platform_stack() {
         .install(&repo);
 
     repo.stack_faked(&fake)
-        .args(["unstack"])
+        .args(["unstack", "-y"])
         .assert()
         .success()
         .stdout(predicates::str::contains("no platform stack recorded"));
@@ -1580,7 +1619,7 @@ fn unstack_surfaces_a_failed_lookup_rather_than_calling_it_gone() {
         .install(&repo);
 
     repo.stack_faked(&fake)
-        .args(["unstack"])
+        .args(["unstack", "-y"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(
@@ -1611,7 +1650,7 @@ fn unstack_finds_a_stack_that_does_not_start_at_the_local_bottom() {
         .install(&repo);
 
     repo.stack_faked(&fake)
-        .args(["unstack"])
+        .args(["unstack", "-y"])
         .assert()
         .success()
         .stdout(predicates::str::contains("dissolved stack 5"));
@@ -1641,7 +1680,7 @@ fn unstack_dissolves_a_stack_over_branches_git_stk_never_adopted() {
         .install(&repo);
 
     repo.stack_faked(&fake)
-        .args(["unstack"])
+        .args(["unstack", "-y"])
         .assert()
         .success()
         // And the reviews are named: the stack reaches past this line.
@@ -1676,7 +1715,7 @@ fn unstack_dissolves_every_stack_covering_the_line() {
         .install(&repo);
 
     repo.stack_faked(&fake)
-        .args(["unstack"])
+        .args(["unstack", "-y"])
         .assert()
         .success()
         .stdout(predicates::str::contains("dissolved stack 5"))
@@ -1705,7 +1744,7 @@ fn unstack_surfaces_a_failed_repo_lookup() {
         .install(&repo);
 
     repo.stack_faked(&fake)
-        .args(["unstack"])
+        .args(["unstack", "-y"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(
