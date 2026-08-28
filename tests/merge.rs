@@ -1343,3 +1343,158 @@ fn merge_uses_the_async_endpoint_for_a_stack_git_stk_did_not_register() {
         "`gh pr merge` is rejected by GitHub here, so it must not be attempted"
     );
 }
+
+/// `merge --all` over a registered stack: every layer goes through the async
+/// endpoint, the loop survives GitHub retargeting the layers server-side
+/// between iterations, and `gh pr merge` is never reached.
+#[test]
+fn merge_all_lands_a_registered_stack_through_the_async_endpoint() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    let _bare = repo.add_bare_origin(&["main", "ma/a", "ma/b"]);
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let merged =
+        r##"{"status":"merged","details":{"message":"Pull request was merged.","sha":"abc"}}"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", merged)
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", merged)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        // After #12 lands, GitHub has retargeted #13 to main itself.
+        .on_after("ma/a --state merged", "async-12.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("ma/a --state merged", "[]")
+        .on_after("ma/a", "async-12.txt", "[]")
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on_after("ma/b --state merged", "async-13.txt", r##"[{"number":13,"state":"MERGED","baseRefName":"main","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/b --state merged", "[]")
+        .on_after("ma/b", "async-13.txt", "[]")
+        .on_after("ma/b", "async-12.txt", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("pr edit", "edited")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "merge complete: 2 of 2 reviews merged",
+        ));
+
+    assert!(repo.path().join("async-12.txt").exists(), "#12 via async");
+    assert!(repo.path().join("async-13.txt").exists(), "#13 via async");
+    assert!(
+        !repo.path().join("sync-merge.txt").exists(),
+        "`gh pr merge` is rejected for a stacked review and must never be reached"
+    );
+}
+/// A merge queue taking a stacked review is not a failure and not something to
+/// wait on - it lands on its own schedule, and `merge --all` stops there
+/// rather than pressing on into a stack that has not moved yet.
+#[test]
+fn merge_reports_a_stacked_review_taken_by_the_merge_queue() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record(
+            "pulls/12/merge-async -X PUT",
+            "async.txt",
+            r##"{"status":"enqueued","details":{"message":"Added to the merge queue."}}"##,
+        )
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", "{}")
+        // GitHub rejects `gh pr merge` for a review in a stack, so reaching it
+        // is a bug. Without this, an unmatched rule falls through to the
+        // `[]` fallback and the synchronous path looks like a plausible run.
+        .record("pr merge", "sync-merge.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    // `merge --all` over a two-layer stack: the queue takes the bottom, so
+    // the loop must stop there rather than press on over a stack that has not
+    // moved. That `break` is the behaviour the CHANGELOG claims.
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("#12 added to the merge queue"))
+        .stdout(predicates::str::contains(
+            "merge complete: 0 of 2 reviews merged",
+        ))
+        .stdout(predicates::str::contains("#13").not());
+    assert!(
+        !repo.path().join("sync-merge.txt").exists(),
+        "`gh pr merge` is rejected for a stacked review and must never be reached"
+    );
+}
+/// A failed async merge is an error, not a message - `merge --all` must stop
+/// rather than carry on to the next layer over a stack that did not move.
+#[test]
+fn merge_surfaces_a_failed_async_merge() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", "{}")
+        // See above: `gh pr merge` is refused for a stacked review.
+        .record("pr merge", "sync-merge.txt", "")
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .record(
+            "pulls/12/merge-async -X PUT",
+            "async.txt",
+            // Not a message on the transient-retry list: otherwise this
+            // passes by exhausting three retries rather than by "failed is an
+            // error", and would keep passing if the arm were deleted.
+            r##"{"status":"failed","details":{"message":"Required checks have not passed."}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    // And a failure aborts `--all` rather than carrying on to the layer above.
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("#12 could not be merged"));
+    assert!(
+        !repo.path().join("async-13.txt").exists(),
+        "the layer above must not be merged over a stack that did not move"
+    );
+    assert!(
+        !repo.path().join("sync-merge.txt").exists(),
+        "`gh pr merge` is rejected for a stacked review and must never be reached"
+    );
+}
