@@ -97,8 +97,9 @@ New to stacking? `git stk guide` runs the whole loop offline in a disposable san
 touched and no account is needed. The tours: `intro` (create a stack, submit, restack, land it),
 `conflicts` (resolve and continue an interrupted restack), `repair` (rebuild lost stack metadata),
 `absorb` (fold review fixes into the commits that introduced them), `adopt` (adopt a hand-made branch, or
-move one to a new parent), and `undo` (reverse the last stack-rewriting command). `git config stk.provider
-demo` turns any scratch repo into the same offline playground.
+move one to a new parent), `undo` (reverse the last stack-rewriting command), and `github` (GitHub's own
+stacked pull requests: the workflow and the gotchas). `git config stk.provider demo` turns any scratch repo
+into the same offline playground.
 
 ## Shell Completions
 

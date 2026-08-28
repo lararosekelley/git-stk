@@ -45,13 +45,18 @@ const TOPICS: &[(&str, &str, Walk)] = &[
         "a branch per worktree: the flows and the gotchas",
         worktrees,
     ),
+    (
+        "github",
+        "GitHub's own stacked pull requests: the workflow and the gotchas",
+        github,
+    ),
 ];
 
 /// Walk the stacked workflow in a disposable sandbox repository.
 #[derive(Debug, clap::Args)]
 pub struct Guide {
     /// Which tour to run; omit for a menu.
-    #[arg(value_parser = clap::builder::PossibleValuesParser::new(["intro", "conflicts", "repair", "absorb", "adopt", "split", "undo", "worktrees"]))]
+    #[arg(value_parser = clap::builder::PossibleValuesParser::new(["intro", "conflicts", "repair", "absorb", "adopt", "split", "undo", "worktrees", "github"]))]
     topic: Option<String>,
 }
 
@@ -434,6 +439,125 @@ fn worktrees(tour: &mut Tour) -> Result<()> {
     tour.say("main checkout afterwards and `git stk cleanup <branch>` removes the");
     tour.say("branch and its worktree together.");
     tour.finish()
+}
+
+/// GitHub's own stacked pull requests: what git-stk hands over, what changes
+/// when it does, and the shapes GitHub's API cannot express.
+///
+/// Narrated rather than driven: the sandbox runs `stk.provider demo`, which
+/// keeps no stacks, so the commands here are shown instead of executed. That
+/// is the honest version - a demo of a registration that did not happen would
+/// teach the wrong thing about the one feature whose behaviour is GitHub's.
+fn github(tour: &mut Tour) -> Result<()> {
+    tour.banner("1/5 - two stacks, one of them GitHub's");
+    tour.say("git-stk has always kept its own stack: parent links in `.git/config`,");
+    tour.say("and a chain of pull requests that each target the one below.");
+    tour.say("");
+    tour.say("GitHub now keeps a stack of its own - a first-class object holding an");
+    tour.say("ordered list of pull requests. It gives you a stack map on the review");
+    tour.say("page and lets people review the layers in parallel. git-stk can hand");
+    tour.say("your stack over so both agree:");
+    tour.note("git config stk.githubStacks true");
+    tour.say("");
+    tour.say("Off by default, because registering creates something on GitHub on");
+    tour.say("your behalf. With it on, `submit --stack` and `--downstack` register");
+    tour.say("the reviews they submitted, bottom first:");
+    tour.note("git stk submit --stack");
+    tour.say("");
+    tour.say("Registration is presentation, so it is best effort: if it fails, the");
+    tour.say("submit still succeeds and says so. A single branch is never");
+    tour.say("registered - GitHub needs at least two pull requests for a stack.");
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("2/5 - what changes once a stack is registered");
+    tour.say("A pull request in a GitHub stack is merged and retargeted by GitHub,");
+    tour.say("not by you. Three things follow, and they are the whole behavioural");
+    tour.say("difference:");
+    tour.say("");
+    tour.say("1. `merge` uses GitHub's asynchronous merge endpoint and waits for the");
+    tour.say("   result - up to two minutes. If it is still going, you get");
+    tour.say("   \"still merging; `git stk sync` picks it up once it lands\" rather");
+    tour.say("   than a failure.");
+    tour.say("2. `merge --auto` is refused. Scheduling a merge for when checks pass");
+    tour.say("   has no equivalent on that endpoint, and merging now would be the");
+    tour.say("   opposite of what you asked. Rerun without it once checks are green.");
+    tour.say("3. `submit` and `cleanup` stop retargeting layers. GitHub moves each");
+    tour.say("   one onto the trunk as the layer below it lands, and git-stk says so");
+    tour.say("   rather than claiming a change it did not make.");
+    tour.say("");
+    tour.say("`list` marks each layer with its place in GitHub's stack - `⛁2/3` -");
+    tour.say("and `status` names the stack, so it is visible which of the two is in");
+    tour.say("charge of a given review.");
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("3/5 - gotcha: your muscle memory, and other people's stacks");
+    tour.say("GitHub refuses both of these for a pull request in a stack:");
+    tour.note("gh pr merge <n>");
+    tour.note("gh pr edit <n> --base <branch>");
+    tour.say("That is GitHub's refusal, not git-stk's. Reach for either out of habit");
+    tour.say("and it fails - which is why `merge` and `submit` route around them.");
+    tour.say("");
+    tour.say("The second gotcha is the one worth remembering: *reading* a stack is");
+    tour.say("not gated on the setting. A teammate's `gh stack submit`, or the web");
+    tour.say("UI, can put your reviews in a stack - and everything on the previous");
+    tour.say("page then applies whether or not you turned anything on. Turning");
+    tour.say("`stk.githubStacks` off stops git-stk *creating* stacks; it does not");
+    tour.say("restore the old behaviour in a repo where one exists.");
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("4/5 - gotcha: the shapes GitHub cannot express");
+    tour.say("Adding to a GitHub stack carries no position - it can only append. So");
+    tour.say("a stack can grow on top, and nothing else:");
+    tour.say("");
+    tour.say("  registered:  #12 #13        submitted:  #12 #13 #14   -> extended");
+    tour.say("  registered:  #12 #13        submitted:  #11 #12 #13   -> declined");
+    tour.say("");
+    tour.say("The second is an ordinary thing to do - `git stk new --prepend`, or");
+    tour.say("adopting the line onto a release branch - and the new review belongs");
+    tour.say("at the bottom. Appending it would record an order that is not your");
+    tour.say("stack's, and `repair` reads that order back as a parent that `restack`");
+    tour.say("then rebases and force-pushes against. So git-stk declines and says");
+    tour.say("the stack no longer matches. Reordering or removing a layer is the");
+    tour.say("same shape.");
+    tour.say("");
+    tour.say("The way through is to dissolve and re-register:");
+    tour.note("git stk unstack");
+    tour.note("git stk submit --stack");
+    tour.say("`unstack` leaves every review open and standalone - it takes apart the");
+    tour.say("stack, not the work. It asks first, because a stack is dissolved whole");
+    tour.say("and can reach reviews outside your line; `-y` skips the prompt.");
+    if tour.pause()?.stop() {
+        return Ok(());
+    }
+
+    tour.banner("5/5 - the loop, end to end");
+    tour.say("Nothing about the day-to-day changes. Build the stack as always:");
+    tour.note("git stk new feature/api    # and again for each layer");
+    tour.note("git stk submit --stack     # submits, then registers the stack");
+    tour.say("");
+    tour.say("Land it bottom-up. GitHub merges each layer and retargets the one");
+    tour.say("above onto the trunk; `sync` then cleans up locally:");
+    tour.note("git stk merge --all");
+    tour.say("");
+    tour.say("The stack stays open on GitHub with landed layers still listed, until");
+    tour.say("every layer has landed - so seeing a merged review in the stack map is");
+    tour.say("expected, not a leftover.");
+    tour.say("");
+    tour.say("Two smaller things. On GitHub Enterprise Server the fields `list`");
+    tour.say("reads for the `⛁` marker are not there yet, so the marker simply does");
+    tour.say("not appear - `git stk -v list` says why. And `git stk repair` prefers");
+    tour.say("GitHub's stack over guesswork when rebuilding parents: an order");
+    tour.say("someone stated beats one inferred from ancestry.");
+    tour.say("");
+    tour.say("`git stk guide intro` covers the stack itself, if you have not run it.");
+    tour.pause()?;
+    Ok(())
 }
 
 fn undo(tour: &mut Tour) -> Result<()> {
