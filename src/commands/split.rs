@@ -178,8 +178,10 @@ fn base_of(branch: &str) -> Result<String> {
     if stack::is_floor(branch)? {
         bail!(
             "{branch} is a stack's base, so splitting it would give it a stack \
-             parent it should not have; `git stk detach {branch}` first if it \
-             is not a base"
+             parent it should not have; if it is not a base, \
+             `git stk adopt {branch} --parent <parent>` says so and keeps the \
+             parent that split bases on, where `git stk detach {branch}` \
+             clears that too"
         );
     }
     if let Some(parent) = stack::stacked_parent_of(branch)? {
