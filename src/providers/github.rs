@@ -702,9 +702,9 @@ fn parse_async_merge(json: &str) -> Option<(String, Option<String>)> {
 
 /// The repo's stack listing, cached for the life of the command.
 ///
-/// Detection is unconditional now (see `native_stack_for`), so this is asked
-/// once per branch on `repair` and per retarget on `submit` - and on a repo
-/// without the preview every one of those is a 404. One call per command is
+/// Detection is unconditional (see `native_stack_for`), so this is asked once
+/// per branch on `repair` and per retarget on `submit` - and on a repo without
+/// the preview every one of those is a 404. One call per command is
 /// the right cost for an answer that only changes when the stack does.
 /// [`forget_stacks_listing`] owns that list and drops the cache at each, so
 /// nothing reads a listing from before the write that invalidated it.
