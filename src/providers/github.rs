@@ -216,7 +216,8 @@ impl ReviewProvider for GitHubProvider {
         let (owner, repo) =
             repo_owner_name_result().context("could not resolve the GitHub repository")?;
         let path = format!("repos/{owner}/{repo}/stacks/{}/unstack", stack.number);
-        command_output("gh", &["api", &path, "-X", "POST"])?;
+        command_output("gh", &["api", &path, "-X", "POST"])
+            .with_context(|| format!("could not dissolve stack {} on GitHub", stack.number))?;
         // The listing still holds this stack as open until it is re-read.
         forget_stacks_listing();
         // Name the reviews: a stack is dissolved whole, so it can reach past

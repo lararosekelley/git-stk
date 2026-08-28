@@ -13,7 +13,7 @@ git stk children [branch]
 git stk list [--all] [--commits] [--format <markdown|plain>]
 git stk adopt [branch] [--parent <parent>] [--dry-run]   # defaults: current branch, trunk
 git stk detach [branch]
-git stk unstack [--dry-run]                              # dissolve the platform's own stack
+git stk unstack [--dry-run] [-y]                         # dissolve the platform's own stack
 git stk rename [branch] <new-name> [--dry-run]
 git stk split [--per-commit] [--dry-run]
 ```
@@ -286,6 +286,12 @@ Gitea are unaffected.
 standalone; merged reviews stay in it, since that is history GitHub keeps. It is deliberately not gated on
 `stk.githubStacks` - a stack outlives the setting that created it, and may have been made outside git-stk
 entirely, so undoing one must not require the setting to still be on.
+
+It names every stack it would take apart and asks first (`-y` skips the prompt, `--dry-run` stops after the
+listing). A stack is dissolved whole and several can cover one line, so this reaches reviews that are not on
+your line at all - and there is no undo, since `undo` restores local metadata and this is a request to
+GitHub. A dissolve that fails does not stop the rest: the remaining stacks are still attempted, and the
+failures are reported at the end.
 
 The setting gates _registering_, not _noticing_. A stack can exist without git-stk creating it - a teammate's
 `gh stack submit`, the GitHub web UI - and GitHub refuses the ordinary merge and retarget for those pull

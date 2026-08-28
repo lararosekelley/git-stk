@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use clap::ArgAction;
 
 use crate::commands::Run;
+use crate::prompt::confirm;
 use crate::providers::detect_review_provider;
 use crate::stack;
 use crate::style;
@@ -18,6 +19,9 @@ pub struct Unstack {
     /// dissolving it.
     #[arg(long, short = 'n', action = ArgAction::SetTrue)]
     dry_run: bool,
+    /// Skip the confirmation prompt.
+    #[arg(long, short = 'y', action = ArgAction::SetTrue)]
+    yes: bool,
 }
 
 impl Run for Unstack {
@@ -44,27 +48,61 @@ impl Run for Unstack {
             return Ok(());
         }
 
+        // What is about to happen, before any of it does. A stack is dissolved
+        // whole, several can cover one line, and the line reaches the whole
+        // subtree above you - so this can take apart reviews that are nowhere
+        // on screen. There is no undo: `undo` restores local metadata, and
+        // this is a `POST`.
         for stack in &found {
-            if self.dry_run {
-                anstream::println!(
-                    "would dissolve stack {} ({})",
-                    stack.number,
-                    stack
-                        .layers
-                        .iter()
-                        .map(|layer| layer.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-                continue;
-            }
-            match review_provider.unstack_reviews(stack)? {
-                Some(line) => anstream::println!("{line}"),
-                None => anstream::println!(
+            anstream::println!(
+                "{} dissolve stack {} ({})",
+                if self.dry_run { "would" } else { "will" },
+                stack.number,
+                stack
+                    .layers
+                    .iter()
+                    .map(|layer| layer.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        if self.dry_run {
+            return Ok(());
+        }
+
+        let reviews: usize = found.iter().map(|stack| stack.layers.len()).sum();
+        if !self.yes
+            && !confirm(&format!(
+                "dissolve {} stack{}, leaving {reviews} review{} standalone? [y/N] ",
+                found.len(),
+                if found.len() == 1 { "" } else { "s" },
+                if reviews == 1 { "" } else { "s" }
+            ))?
+        {
+            anstream::println!("unstack cancelled");
+            return Ok(());
+        }
+
+        // Keep going after a failure rather than leaving the rest of the line
+        // silently still stacked: which ones survived is the whole answer for
+        // a command someone reaches for to get unstuck.
+        let mut failed: Vec<(u64, anyhow::Error)> = Vec::new();
+        for stack in &found {
+            match review_provider.unstack_reviews(stack) {
+                Ok(Some(line)) => anstream::println!("{line}"),
+                Ok(None) => anstream::println!(
                     "{}",
                     style::dim("this provider does not keep stacks; nothing to dissolve")
                 ),
+                Err(error) => failed.push((stack.number, error)),
             }
+        }
+
+        if let Some((_, first)) = failed.pop() {
+            for (number, error) in &failed {
+                anstream::eprintln!("{}", style::warn(&format!("stack {number}: {error:#}")));
+            }
+            return Err(first);
         }
         Ok(())
     }
