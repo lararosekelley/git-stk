@@ -323,13 +323,12 @@ fn open_review_for(
     // so GitHub never moves its base, and a disagreement there is the
     // ordinary re-rooted-line bug this guard exists to catch. Only a layer
     // above the bottom is exempt.
-    let owed_a_retarget = review_provider
-        .platform_will_move_base(&review)
-        .unwrap_or(false);
     let expected_base = stack::parent_of(branch)?;
     if let Some(expected) = &expected_base
         && *expected != review.base
-        && !owed_a_retarget
+        && !review_provider
+            .platform_will_base_on(&review, expected)
+            .unwrap_or(false)
     {
         if review_provider
             .platform_refuses_base_change(&review)

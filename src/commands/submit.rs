@@ -791,7 +791,7 @@ fn submit_branch(
         // moved by GitHub as the layer below it lands, and retargeting by
         // hand is refused there. Say so instead of claiming a change git-stk
         // did not make.
-        if review_provider.platform_manages_base(&review)? {
+        if review_provider.platform_will_base_on(&review, parent)? {
             anstream::println!(
                 "{}",
                 style::dim(&format!(

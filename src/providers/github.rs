@@ -77,23 +77,14 @@ impl ReviewProvider for GitHubProvider {
         command_output("gh", &args)
     }
 
-    fn platform_manages_base(&self, review: &ReviewRequest) -> Result<bool> {
-        // A layer with one below it: GitHub sets its base as that one lands,
-        // and refuses a change by hand meanwhile. The stack's own bottom it
-        // never moves at all.
-        Ok(self
-            .native_stack_for(&review.branch)?
-            .is_some_and(|stack| stack.platform_owns_base_of(&review.branch)))
-    }
-
     fn platform_refuses_base_change(&self, review: &ReviewRequest) -> Result<bool> {
         Ok(self.native_stack_for(&review.branch)?.is_some())
     }
 
-    fn platform_will_move_base(&self, review: &ReviewRequest) -> Result<bool> {
+    fn platform_will_base_on(&self, review: &ReviewRequest, parent: &str) -> Result<bool> {
         Ok(self
             .native_stack_for(&review.branch)?
-            .is_some_and(|stack| stack.owed_a_retarget(&review.branch, &review.base)))
+            .is_some_and(|stack| stack.can_base_on(&review.branch, parent)))
     }
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String> {
@@ -787,7 +778,7 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
         // dead one as live makes `cleanup` skip a retarget it needed, and
         // GitHub then closes the child review when its base branch goes -
         // silently, with its comments and approvals. Same asymmetry the
-        // `platform_manages_base` default is built on.
+        // `platform_will_move_base` default is built on.
         if stack.get("open").and_then(serde_json::Value::as_bool) != Some(true) {
             continue;
         }

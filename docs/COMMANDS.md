@@ -284,8 +284,9 @@ result, and refuses `--auto` there because that endpoint has no scheduled mode. 
 by hand either. GitHub retargets each layer onto the stack's base as the one below it lands, so `submit`
 and `cleanup` report that instead of retargeting - but the two are separate refusals, and where they come
 apart there is a dead end: a layer the stack has nothing left to move, the bottom one included, keeps a
-base neither side will change. `submit`, `cleanup`, and `merge` all name it and point at `git stk unstack`,
-which dissolves the stack so an ordinary retarget works again. The local side is unchanged: git-stk still
+base neither side will change - a line re-rooted onto a release branch after it was registered, say.
+`submit`, `cleanup`, and `merge` all name that state and say to dissolve the stack on the platform, after
+which an ordinary retarget works again. The local side is unchanged: git-stk still
 owns `restack`, `absorb`, worktrees, and the stack metadata.
 
 `submit --downstack` submits the stack from its bottom through the current branch only, so
