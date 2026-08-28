@@ -1255,3 +1255,50 @@ fn merge_still_refuses_a_stack_bottom_whose_base_went_stale() {
     );
     assert!(!repo.path().join("sync-merge.txt").exists());
 }
+
+/// Exemption is temporal, not positional. A landed layer keeps its place in
+/// the listing, so "not the first entry" stays true forever - and once the
+/// platform has moved this base onto the stack's own base, it will not move it
+/// again. A local parent that disagrees after that is a real fault, and
+/// merging anyway would land the branch somewhere the prompt did not name.
+#[test]
+fn merge_refuses_a_layer_whose_retarget_already_happened() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // ma/a landed and stays listed; ma/b was retargeted onto the stack's base
+    // by the platform, so nothing further is coming - but the local parent is
+    // the release line.
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        .record("merge-async", "async.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        // And the honest remedy, not `submit`, which refuses here.
+        .stderr(predicates::str::contains(
+            "dissolve the stack on the platform",
+        ));
+
+    assert!(
+        !repo.path().join("async.txt").exists(),
+        "the layer was merged into a branch the prompt did not name"
+    );
+    assert!(!repo.path().join("sync-merge.txt").exists());
+}

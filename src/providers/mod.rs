@@ -157,6 +157,31 @@ pub struct NativeStack {
 }
 
 impl NativeStack {
+    /// Whether this layer's base is the platform's to move: it has another
+    /// layer below it, so the platform sets its base as that one lands. The
+    /// stack's bottom is excluded - nothing lands below it.
+    pub fn platform_owns_base_of(&self, branch: &str) -> bool {
+        self.layers
+            .iter()
+            .position(|layer| layer.branch == branch)
+            .is_some_and(|index| index > 0)
+    }
+
+    /// Whether the platform still has a base change *left to make* here: it
+    /// owns this layer's base, and that base is still another layer of the
+    /// stack rather than the stack's own base.
+    ///
+    /// Narrower than [`NativeStack::platform_owns_base_of`], and the
+    /// difference is temporal. A landed layer keeps its place in the listing,
+    /// so ownership stays true forever - but the platform moves each layer
+    /// onto the stack's base as the one below lands, so a base that has
+    /// arrived there is where it will stay. A local parent that disagrees
+    /// after that is a real problem rather than a window to wait out, and
+    /// this is what separates the two.
+    pub fn owed_a_retarget(&self, branch: &str, base: &str) -> bool {
+        self.platform_owns_base_of(branch) && self.layers.iter().any(|layer| layer.branch == base)
+    }
+
     /// What `branch` stacks on according to the platform: the branch below it,
     /// or the stack's base when it is the bottom. `None` when the stack does
     /// not hold `branch` at all.
@@ -328,6 +353,20 @@ pub trait ReviewProvider {
     ///
     /// Default `false`: only GitHub keeps stacks.
     fn platform_refuses_base_change(&self, review: &ReviewRequest) -> Result<bool> {
+        let _ = review;
+        Ok(false)
+    }
+
+    /// Whether the platform still has a base change left to make for this
+    /// review, so a base and a local parent that disagree are a window rather
+    /// than a fault.
+    ///
+    /// Narrower than [`ReviewProvider::platform_manages_base`]: a layer whose
+    /// stack has fully landed below it keeps its owner but is owed nothing
+    /// further, and a disagreement there wants reporting, not waiting out.
+    ///
+    /// Default `false`: only GitHub keeps stacks.
+    fn platform_will_move_base(&self, review: &ReviewRequest) -> Result<bool> {
         let _ = review;
         Ok(false)
     }

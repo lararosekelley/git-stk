@@ -324,13 +324,26 @@ fn open_review_for(
     // ordinary re-rooted-line bug this guard exists to catch. Only a layer
     // above the bottom is exempt.
     let owed_a_retarget = review_provider
-        .platform_manages_base(&review)
+        .platform_will_move_base(&review)
         .unwrap_or(false);
     let expected_base = stack::parent_of(branch)?;
     if let Some(expected) = &expected_base
         && *expected != review.base
         && !owed_a_retarget
     {
+        if review_provider
+            .platform_refuses_base_change(&review)
+            .unwrap_or(false)
+        {
+            bail!(
+                "review {} targets {}, but {branch}'s stack parent is {expected} - \
+                 it is in a platform stack, which has no base change left to make \
+                 here and refuses one by hand; dissolve the stack on the platform, \
+                 then run `git stk submit`",
+                review.id,
+                review.base
+            );
+        }
         bail!(
             "review {} targets {}, but {branch}'s stack parent is {expected}; \
              run `git stk submit` first",

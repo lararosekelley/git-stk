@@ -281,9 +281,12 @@ Gitea are unaffected.
 Registering hands two things to GitHub, and git-stk follows it there. A pull request in a stack cannot be
 merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merge and waits for the
 result, and refuses `--auto` there because that endpoint has no scheduled mode. Its base cannot be changed
-by hand either, because GitHub retargets each layer itself as the one below it lands - so `submit` and
-`cleanup` report that instead of retargeting. The local side is unchanged: git-stk
-still owns `restack`, `absorb`, worktrees, and the stack metadata.
+by hand either. GitHub retargets each layer onto the stack's base as the one below it lands, so `submit`
+and `cleanup` report that instead of retargeting - but the two are separate refusals, and where they come
+apart there is a dead end: a layer the stack has nothing left to move, the bottom one included, keeps a
+base neither side will change. `submit`, `cleanup`, and `merge` all name it and point at `git stk unstack`,
+which dissolves the stack so an ordinary retarget works again. The local side is unchanged: git-stk still
+owns `restack`, `absorb`, worktrees, and the stack metadata.
 
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens
