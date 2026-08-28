@@ -56,7 +56,12 @@ const TOPICS: &[(&str, &str, Walk)] = &[
 #[derive(Debug, clap::Args)]
 pub struct Guide {
     /// Which tour to run; omit for a menu.
-    #[arg(value_parser = clap::builder::PossibleValuesParser::new(["intro", "conflicts", "repair", "absorb", "adopt", "split", "undo", "worktrees", "github"]))]
+    /// Derived from `TOPICS`, so the menu and the accepted values cannot
+    /// drift apart - a tour added to one but not the other used to parse as
+    /// invalid, which only someone running that exact tour would ever see.
+    #[arg(value_parser = clap::builder::PossibleValuesParser::new(
+        TOPICS.iter().map(|(name, _, _)| *name).collect::<Vec<_>>()
+    ))]
     topic: Option<String>,
 }
 
@@ -556,8 +561,7 @@ fn github(tour: &mut Tour) -> Result<()> {
     tour.say("someone stated beats one inferred from ancestry.");
     tour.say("");
     tour.say("`git stk guide intro` covers the stack itself, if you have not run it.");
-    tour.pause()?;
-    Ok(())
+    tour.finish()
 }
 
 fn undo(tour: &mut Tour) -> Result<()> {

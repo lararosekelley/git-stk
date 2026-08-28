@@ -337,46 +337,20 @@ fn guide_repair_recipe_recovers_from_the_demo_review() {
     );
 }
 
-/// Every tour in the menu is reachable by name. A topic added to `TOPICS` but
-/// not to the argument's value list parses as invalid, which is a failure only
-/// someone running that exact tour would ever see.
-#[test]
-fn guide_accepts_every_listed_topic() {
-    let repo = TestRepo::new();
-
-    for topic in [
-        "intro",
-        "conflicts",
-        "repair",
-        "absorb",
-        "adopt",
-        "split",
-        "undo",
-        "worktrees",
-        "github",
-    ] {
-        // Not a terminal here, so each stops at the same guard - but an
-        // unknown topic fails at parsing instead, with a different message.
-        repo.stack()
-            .args(["guide", topic])
-            .assert()
-            .failure()
-            .stderr(predicates::str::contains(
-                "the guide is interactive; run it from a terminal",
-            ));
-    }
-}
-
 #[test]
 fn guide_rejects_unknown_topics() {
     let repo = TestRepo::new();
 
+    // The accepted values are derived from the menu, so this list is the menu:
+    // a tour added to `TOPICS` appears here without anyone maintaining a
+    // second copy. Naming the newest one keeps that derivation honest.
     repo.stack()
         .args(["guide", "bogus"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("invalid value"))
-        .stderr(predicates::str::contains("intro"));
+        .stderr(predicates::str::contains("intro"))
+        .stderr(predicates::str::contains("github"));
 }
 
 #[test]
