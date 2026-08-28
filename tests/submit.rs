@@ -2118,6 +2118,52 @@ fn submit_stack_registers_the_stack_with_github() {
     );
 }
 
+/// A stack's membership is per-review, so the line's bottom need not be the
+/// stack's. Root the line lower - `git stk new n`, then `git stk adopt a
+/// --parent n`, which is what `repair` and `merge` both suggest - and a lookup
+/// keyed on the bottom reads "no stack" for one that exists, then POSTs a
+/// duplicate holding reviews GitHub already has.
+#[test]
+fn submit_stack_extends_a_stack_that_does_not_hold_the_bottom() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/n"]).assert().success();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    // Stack 7 holds the two upper layers only - feature/n was rooted under it
+    // afterwards.
+    let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .record("api repos/owner/repo/stacks -X POST", "register.txt", "{}")
+        .record("stacks/7/add", "add.txt", "{}")
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/n", r##"[{"number":11,"state":"OPEN","baseRefName":"main","headRefName":"feature/n","url":"https://example.com/11"}]"##)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"feature/n","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success();
+
+    assert!(
+        !repo.path().join("register.txt").exists(),
+        "a second stack was created over reviews GitHub already holds: {}",
+        fs::read_to_string(repo.path().join("register.txt")).unwrap_or_default()
+    );
+    assert!(
+        repo.path().join("add.txt").exists(),
+        "the existing stack was not extended"
+    );
+}
+
 /// Off by default: no stack call, and no mention of one.
 #[test]
 fn submit_stack_does_not_register_unless_enabled() {

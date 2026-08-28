@@ -635,10 +635,16 @@ fn register_native_stack(
     branches: &[String],
     dry_run: bool,
 ) -> Result<()> {
-    let Some(bottom) = branches.first() else {
+    if branches.is_empty() {
         return Ok(());
-    };
-    let existing = review_provider.native_stack_for(bottom).unwrap_or(None);
+    }
+    // Membership is per-review, so the line's bottom is not necessarily the
+    // stack's: root the line lower with `adopt` and the bottom is a branch the
+    // stack never held. Looking only there would read "no stack" for one that
+    // exists and POST a duplicate holding reviews GitHub already has.
+    let existing = branches
+        .iter()
+        .find_map(|branch| review_provider.native_stack_for(branch).ok().flatten());
 
     let mut reviews = Vec::with_capacity(branches.len());
     for branch in branches {
