@@ -162,6 +162,24 @@ impl ReviewProvider for GitHubProvider {
             // On top of what is already there: append the new ones only.
             Some(stack) => {
                 let recorded: Vec<&str> = stack.layers.iter().map(|l| l.id.as_str()).collect();
+                // `/add` carries no position, so it can only mean "on top".
+                // Unless the recorded stack is a prefix of what was submitted,
+                // appending would record an order that is not this stack's -
+                // a branch rooted below it, a reorder, a layer removed - and
+                // `repair` reads that order back as `stkParent`, which
+                // `restack` then rebases and force-pushes against.
+                if !reviews.starts_with(
+                    &recorded
+                        .iter()
+                        .map(|id| (*id).to_owned())
+                        .collect::<Vec<_>>(),
+                ) {
+                    return Ok(Some(format!(
+                        "stack {} no longer matches this stack, so it was left as recorded; \
+                         `git stk unstack` dissolves it if it is stale",
+                        stack.number
+                    )));
+                }
                 let fresh: Vec<String> = reviews
                     .iter()
                     .filter(|id| !recorded.contains(&id.as_str()))
