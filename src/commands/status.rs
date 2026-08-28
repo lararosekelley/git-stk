@@ -91,14 +91,46 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                     );
                     anstream::println!("url: {}", style::paint(style::DIM, &review.url));
 
+                    // Same distinction `merge` draws: a layer above a
+                    // platform stack's bottom is owed a retarget GitHub has
+                    // not made yet, so the disagreement is expected and
+                    // `submit` is the one command that refuses to help.
+                    let owed_a_retarget = review_provider
+                        .native_stack_for(&review.branch)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|stack| {
+                            stack
+                                .layers
+                                .iter()
+                                .any(|layer| layer.branch == review.branch)
+                                && stack
+                                    .layers
+                                    .first()
+                                    .is_none_or(|bottom| bottom.branch != review.branch)
+                        });
                     if let Some(parent) = parent.as_deref()
                         && parent != review.base
                     {
-                        anstream::println!(
-                            "{} review base is {}, local parent is {parent} - run `git stk submit`",
-                            style::paint(style::WARN, "warning:"),
-                            review.base
-                        );
+                        if owed_a_retarget {
+                            anstream::println!(
+                                "{}",
+                                style::paint(
+                                    style::DIM,
+                                    &format!(
+                                        "review base is {}, local parent is {parent} - \
+                                         GitHub retargets it as the layer below lands",
+                                        review.base
+                                    )
+                                )
+                            );
+                        } else {
+                            anstream::println!(
+                                "{} review base is {}, local parent is {parent} - run `git stk submit`",
+                                style::paint(style::WARN, "warning:"),
+                                review.base
+                            );
+                        }
                     }
                 }
                 None => anstream::println!("review: none"),

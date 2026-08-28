@@ -766,12 +766,15 @@ fn merge_with_retry<T>(attempt: impl FnMut() -> Result<T>) -> Result<T> {
 pub enum StackPlan {
     /// No stack recorded yet: create one holding all of these reviews.
     Register(Vec<String>),
-    /// The recorded stack is a prefix of what was submitted, so these go on
-    /// top - the one shape `/add`, which carries no position, can express.
+    /// The submitted line continues the recorded stack: some tail of the
+    /// stack is where the submitted reviews begin, and `fresh` is everything
+    /// past that overlap. Growth on top is the one shape `/add`, which
+    /// carries no position, can express.
     Extend { number: u64, fresh: Vec<String> },
-    /// The recorded stack is neither a prefix of nor prefixed by what was
-    /// submitted: a branch rooted below it, a reorder, a layer removed.
-    /// Appending would record an order that is not this stack's.
+    /// The submitted line does not continue the recorded stack - nothing in
+    /// common at the join, or something past it the stack already holds: a
+    /// branch rooted below, a reorder, a layer removed. Appending would
+    /// record an order that is not this stack's.
     Mismatch { number: u64 },
 }
 

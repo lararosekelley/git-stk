@@ -1206,3 +1206,52 @@ fn merge_all_carries_on_when_github_has_not_retargeted_yet() {
         "the upper layer never landed"
     );
 }
+
+/// The exemption above must not reach the stack's bottom. Nothing lands below
+/// it, so GitHub never retargets it - a base that disagrees with the local
+/// parent there is the ordinary re-rooted-line bug, and merging anyway would
+/// land the branch into the wrong place. Re-root a registered line with
+/// `adopt` and the guard has to hold.
+#[test]
+fn merge_still_refuses_a_stack_bottom_whose_base_went_stale() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+
+    // A release line, with the stack re-rooted onto it after submitting.
+    repo.git(["switch", "-c", "rc-20260817"]);
+    repo.commit_file("rc.txt", "rc\n", "release commit");
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "ma/a"]);
+
+    // ma/a is the stack's bottom, and its review still targets main.
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"ma/a"}},
+        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr merge", "sync-merge.txt", "")
+        .record("merge-async", "async.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "review #12 targets main, but ma/a's stack parent is rc-20260817",
+        ));
+
+    assert!(
+        !repo.path().join("async.txt").exists(),
+        "the bottom was merged into the wrong branch"
+    );
+    assert!(!repo.path().join("sync-merge.txt").exists());
+}
