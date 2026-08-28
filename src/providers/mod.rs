@@ -799,19 +799,37 @@ pub fn plan_stack_registration(
     {
         return None;
     }
-    if !reviews.starts_with(&recorded) {
+
+    // Otherwise this can only be growth on top, because `/add` carries no
+    // position. The submitted line has to *continue* the recorded one: some
+    // non-empty tail of the stack must be where the submitted reviews begin,
+    // and everything past that overlap must be new. That covers the plain
+    // case (the whole stack, then more) and the one after a layer lands and
+    // another is stacked on - where the submitted line starts mid-stack and
+    // still grows from the top.
+    let overlap = (1..=recorded.len().min(reviews.len()))
+        .rev()
+        .find(|size| recorded[recorded.len() - size..] == reviews[..*size]);
+    let Some(overlap) = overlap else {
+        // Nothing in common at the join: a review rooted below the stack, a
+        // reorder, a different stack entirely. Appending would record an
+        // order that is not this stack's, and `repair` reads that order back
+        // as a parent `restack` rebases against.
+        return Some(StackPlan::Mismatch {
+            number: stack.number,
+        });
+    };
+    let fresh = &reviews[overlap..];
+    // A "new" review the stack already holds means the submitted order
+    // disagrees with the recorded one somewhere behind the join.
+    if fresh.iter().any(|id| recorded.contains(id)) {
         return Some(StackPlan::Mismatch {
             number: stack.number,
         });
     }
-    let fresh: Vec<String> = reviews
-        .iter()
-        .filter(|id| !recorded.contains(id))
-        .cloned()
-        .collect();
     (!fresh.is_empty()).then_some(StackPlan::Extend {
         number: stack.number,
-        fresh,
+        fresh: fresh.to_vec(),
     })
 }
 
@@ -967,6 +985,17 @@ mod tests {
         );
         assert_eq!(plan_stack_registration(&ids(&["#13"]), Some(&three)), None);
 
+        // A suffix that then grew on top: merge the bottom, stack another
+        // branch, resubmit. The overlap is a tail of the stack rather than
+        // the whole of it, and #15 is still the only thing to append.
+        assert_eq!(
+            plan_stack_registration(&ids(&["#13", "#14", "#15"]), Some(&three)),
+            Some(StackPlan::Extend {
+                number: 7,
+                fresh: ids(&["#15"])
+            })
+        );
+
         // And the shapes `/add` cannot express: a review that belongs below,
         // and a reorder. Appending either would record an order that is not
         // this stack's, which `repair` reads back as a parent.
@@ -976,6 +1005,17 @@ mod tests {
         );
         assert_eq!(
             plan_stack_registration(&ids(&["#13", "#12"]), Some(&recorded)),
+            Some(StackPlan::Mismatch { number: 7 })
+        );
+        // A tail that lines up but re-adds a layer behind the join: the
+        // overlap is #14, and #12 is already in the stack.
+        assert_eq!(
+            plan_stack_registration(&ids(&["#14", "#12"]), Some(&three)),
+            Some(StackPlan::Mismatch { number: 7 })
+        );
+        // And an unrelated stack entirely.
+        assert_eq!(
+            plan_stack_registration(&ids(&["#20", "#21"]), Some(&recorded)),
             Some(StackPlan::Mismatch { number: 7 })
         );
     }
