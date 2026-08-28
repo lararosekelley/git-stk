@@ -146,6 +146,13 @@ pub struct NativeStack {
     /// The branch the bottom review targets.
     pub base: String,
     /// Layers bottom first.
+    ///
+    /// Verified live rather than assumed: registering three chained pull
+    /// requests (`main <- p <- q <- r`) lists them in exactly that order, and
+    /// `POST /stacks/{n}/add` appends - a fourth review arrives last. That
+    /// append-only behaviour is why [`plan_stack_registration`] will only
+    /// extend a stack the submitted line grew on top of; `/add` carries no
+    /// position, so it cannot express anything else.
     pub layers: Vec<NativeStackLayer>,
 }
 
@@ -355,6 +362,16 @@ pub trait ReviewProvider {
     ) -> Result<Option<String>> {
         let _ = (reviews, existing);
         Ok(None)
+    }
+
+    /// Whether this provider would register a stack at all - the provider
+    /// keeps stacks, and the user has asked for it.
+    ///
+    /// Exists so a dry run can decline for the same reason the real run would,
+    /// rather than promising a stack on a provider that has none or with the
+    /// setting off. Default `false`: only GitHub keeps stacks.
+    fn registers_stacks(&self) -> bool {
+        false
     }
 
     /// Merge the review with the given strategy: squash, rebase, or merge.
@@ -733,6 +750,55 @@ fn is_transient_merge_error(error: &anyhow::Error) -> bool {
 /// modified" race does not stop a `merge --all` loop. Between transient
 /// retries it only waits a fixed backoff - the right default when there is no
 /// per-provider signal to poll.
+/// What registering a submitted line as a platform stack would do.
+///
+/// Shared by the real run and the dry run so the two cannot disagree - the
+/// decision lives here, and each caller only performs or renders it.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum StackPlan {
+    /// No stack recorded yet: create one holding all of these reviews.
+    Register(Vec<String>),
+    /// The recorded stack is a prefix of what was submitted, so these go on
+    /// top - the one shape `/add`, which carries no position, can express.
+    Extend { number: u64, fresh: Vec<String> },
+    /// The recorded stack is neither a prefix of nor prefixed by what was
+    /// submitted: a branch rooted below it, a reorder, a layer removed.
+    /// Appending would record an order that is not this stack's.
+    Mismatch { number: u64 },
+}
+
+/// Plan the registration, or `None` when there is nothing to do - the stack is
+/// already exactly this, or already reaches further (a `--downstack` from the
+/// middle submits less than is recorded, which is not a divergence).
+pub fn plan_stack_registration(
+    reviews: &[String],
+    existing: Option<&NativeStack>,
+) -> Option<StackPlan> {
+    let Some(stack) = existing else {
+        // GitHub answers 422 for a one-layer stack, and a single review is not
+        // a stack in any case.
+        return (reviews.len() >= 2).then(|| StackPlan::Register(reviews.to_vec()));
+    };
+    let recorded: Vec<String> = stack.layers.iter().map(|layer| layer.id.clone()).collect();
+    if recorded.starts_with(reviews) {
+        return None;
+    }
+    if !reviews.starts_with(&recorded) {
+        return Some(StackPlan::Mismatch {
+            number: stack.number,
+        });
+    }
+    let fresh: Vec<String> = reviews
+        .iter()
+        .filter(|id| !recorded.contains(id))
+        .cloned()
+        .collect();
+    (!fresh.is_empty()).then_some(StackPlan::Extend {
+        number: stack.number,
+        fresh,
+    })
+}
+
 /// A merge git-stk itself refused, rather than one the platform rejected.
 ///
 /// The distinction matters at the point of reporting: a platform failure is

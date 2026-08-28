@@ -143,73 +143,40 @@ impl ReviewProvider for GitHubProvider {
         reviews: &[String],
         existing: Option<&NativeStack>,
     ) -> Result<Option<String>> {
-        if !settings::bool_setting(settings::GITHUB_STACKS_KEY)? {
+        if !self.registers_stacks() {
             return Ok(None);
         }
         let Some((owner, repo)) = repo_owner_name() else {
             return Ok(None);
         };
-        let numbers: Vec<String> = reviews.iter().filter_map(|id| review_number(id)).collect();
-        if numbers.len() != reviews.len() {
-            // An id we cannot read means we would register a different stack
-            // than the one submitted. Say nothing rather than guess.
+        let Some(plan) = super::plan_stack_registration(reviews, existing) else {
             return Ok(None);
-        }
-
-        match existing {
-            // Already exactly this stack, in this order: nothing to do.
-            Some(stack) if stack_matches(stack, reviews) => Ok(None),
-            // On top of what is already there: append the new ones only.
-            Some(stack) => {
-                let recorded: Vec<String> = stack.layers.iter().map(|l| l.id.clone()).collect();
-                // Submitting part of a stack that is already right - a
-                // `--downstack` from the middle, or the bottom half after the
-                // top landed - is not a divergence. There is nothing to add,
-                // so say nothing.
-                if recorded.starts_with(reviews) {
-                    return Ok(None);
-                }
-                // Otherwise `/add` carries no position, so it can only mean
-                // "on top": unless what is recorded is a prefix of what was
-                // submitted, appending would record an order that is not this
-                // stack's - a branch rooted below it, a reorder, a layer
-                // removed - and `repair` reads that order back as
-                // `stkParent`, which `restack` rebases and force-pushes
-                // against.
-                if !reviews.starts_with(&recorded) {
-                    return Ok(Some(format!(
-                        "stack {} no longer matches this stack, so it was left as recorded; \
-                         dissolve it on GitHub to re-register from scratch",
-                        stack.number
-                    )));
-                }
-                let recorded: Vec<&str> = recorded.iter().map(String::as_str).collect();
-                let fresh: Vec<String> = reviews
-                    .iter()
-                    .filter(|id| !recorded.contains(&id.as_str()))
-                    .filter_map(|id| review_number(id))
-                    .collect();
-                if fresh.is_empty() {
-                    return Ok(None);
-                }
-                let path = format!("repos/{owner}/{repo}/stacks/{}/add", stack.number);
-                post_pull_requests(&path, &fresh)?;
+        };
+        match plan {
+            super::StackPlan::Mismatch { number } => Ok(Some(format!(
+                "stack {number} no longer matches this stack, so it was left as recorded; \
+                 dissolve it on GitHub to re-register from scratch"
+            ))),
+            super::StackPlan::Extend { number, fresh } => {
+                let numbers = pull_request_numbers(&fresh)?;
+                let path = format!("repos/{owner}/{repo}/stacks/{number}/add");
+                post_pull_requests(&path, &numbers)?;
                 Ok(Some(format!(
-                    "extended stack {} with {}",
-                    stack.number,
-                    fresh
-                        .iter()
-                        .map(|n| format!("#{n}"))
-                        .collect::<Vec<_>>()
-                        .join(" ")
+                    "extended stack {number} with {}",
+                    fresh.join(" ")
                 )))
             }
-            None => {
+            super::StackPlan::Register(reviews) => {
+                let numbers = pull_request_numbers(&reviews)?;
                 let path = format!("repos/{owner}/{repo}/stacks");
                 post_pull_requests(&path, &numbers)?;
                 Ok(Some(format!("registered {} as a stack", reviews.join(" "))))
             }
         }
+    }
+
+    fn registers_stacks(&self) -> bool {
+        settings::bool_setting(settings::GITHUB_STACKS_KEY).unwrap_or(false)
     }
 
     fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {
@@ -683,18 +650,21 @@ fn review_number(id: &str) -> Option<String> {
     (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.to_owned())
 }
 
-/// Whether the recorded stack is already exactly `reviews`, in order.
-fn stack_matches(stack: &NativeStack, reviews: &[String]) -> bool {
-    stack.layers.len() == reviews.len()
-        && stack
-            .layers
-            .iter()
-            .zip(reviews)
-            .all(|(layer, id)| layer.id == *id)
-}
-
 /// `POST` an ordered `pull_requests` list to a stacks endpoint. `-F` sends the
 /// numbers typed, which the API requires - `-f` would make them strings.
+/// The pull request numbers for `reviews`, or an error naming the id that
+/// could not be read - registering a stack we cannot name in full would record
+/// a different stack than the one submitted.
+fn pull_request_numbers(reviews: &[String]) -> Result<Vec<String>> {
+    reviews
+        .iter()
+        .map(|id| {
+            review_number(id)
+                .ok_or_else(|| anyhow!("could not read a pull request number from {id}"))
+        })
+        .collect()
+}
+
 fn post_pull_requests(path: &str, numbers: &[String]) -> Result<String> {
     let fields: Vec<String> = numbers
         .iter()

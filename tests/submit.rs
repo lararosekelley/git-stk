@@ -2244,6 +2244,74 @@ fn submit_stack_extends_a_stack_the_submitted_line_grew_on_top_of() {
     assert!(!repo.path().join("register.txt").exists());
 }
 
+/// The dry run answers from the same plan the real run acts on. With the
+/// setting off there is nothing to promise - and the old duplicate decision
+/// said "would register" regardless, including on providers that keep no
+/// stacks at all.
+#[test]
+fn submit_stack_dry_run_promises_nothing_when_registration_is_off() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("would register").not())
+        .stdout(predicates::str::contains("would extend stack").not());
+
+    // And with it on, the dry run says exactly what the run would do.
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would register #12 #13 as a stack",
+        ));
+}
+
+/// A dry run over a stack that no longer matches says so, rather than
+/// promising an extension the real run refuses.
+#[test]
+fn submit_stack_dry_run_reports_a_stack_it_would_leave_alone() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/n"]).assert().success();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+
+    let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/n", r##"[{"number":11,"state":"OPEN","baseRefName":"main","headRefName":"feature/n","url":"https://example.com/11"}]"##)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"feature/n","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("would leave stack 7 as recorded"))
+        .stdout(predicates::str::contains("would extend").not());
+}
+
 /// Off by default: no stack call, and no mention of one.
 #[test]
 fn submit_stack_does_not_register_unless_enabled() {
