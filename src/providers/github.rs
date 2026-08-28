@@ -778,7 +778,7 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
         // dead one as live makes `cleanup` skip a retarget it needed, and
         // GitHub then closes the child review when its base branch goes -
         // silently, with its comments and approvals. Same asymmetry the
-        // `platform_will_move_base` default is built on.
+        // `platform_will_base_on` default is built on.
         if stack.get("open").and_then(serde_json::Value::as_bool) != Some(true) {
             continue;
         }

@@ -318,11 +318,11 @@ fn open_review_for(
     // two differ, and bailing would stop `merge --all` halfway and name
     // `submit`, which refuses outright for a review in a stack.
     //
-    // "Owed a retarget" is narrower than "in a stack", and the difference is
-    // the stack's bottom - the layer `merge` acts on. Nothing lands below it,
-    // so GitHub never moves its base, and a disagreement there is the
-    // ordinary re-rooted-line bug this guard exists to catch. Only a layer
-    // above the bottom is exempt.
+    // The question is narrower than "is it in a stack": can the stack still
+    // bring this base to the parent we have? It can reach the layer recorded
+    // below and the stack's own base, and nowhere else - so a re-rooted or
+    // reordered line, and the stack's bottom, get the ordinary refusal this
+    // guard exists for.
     let expected_base = stack::parent_of(branch)?;
     if let Some(expected) = &expected_base
         && *expected != review.base
