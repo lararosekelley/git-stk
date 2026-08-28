@@ -96,7 +96,7 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                     // not made yet, so the disagreement is expected and
                     // `submit` is the one command that refuses to help.
                     let owed_a_retarget = review_provider
-                        .platform_manages_base(review)
+                        .platform_will_move_base(review)
                         .unwrap_or(false);
                     if let Some(parent) = parent.as_deref()
                         && parent != review.base

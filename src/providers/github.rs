@@ -78,15 +78,22 @@ impl ReviewProvider for GitHubProvider {
     }
 
     fn platform_manages_base(&self, review: &ReviewRequest) -> Result<bool> {
-        // A layer above the bottom only: GitHub retargets a layer when the
-        // one below it lands, and nothing lands below the bottom.
+        // A layer with one below it: GitHub sets its base as that one lands,
+        // and refuses a change by hand meanwhile. The stack's own bottom it
+        // never moves at all.
         Ok(self
             .native_stack_for(&review.branch)?
-            .is_some_and(|stack| stacked_above_bottom(&stack, &review.branch)))
+            .is_some_and(|stack| stack.platform_owns_base_of(&review.branch)))
     }
 
     fn platform_refuses_base_change(&self, review: &ReviewRequest) -> Result<bool> {
         Ok(self.native_stack_for(&review.branch)?.is_some())
+    }
+
+    fn platform_will_move_base(&self, review: &ReviewRequest) -> Result<bool> {
+        Ok(self
+            .native_stack_for(&review.branch)?
+            .is_some_and(|stack| stack.owed_a_retarget(&review.branch, &review.base)))
     }
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String> {
@@ -761,18 +768,6 @@ thread_local! {
 /// landing a layer, which GitHub reshapes the stack for on its own.
 fn forget_stacks_listing() {
     STACKS_LISTING.with(|cell| *cell.borrow_mut() = None);
-}
-
-/// Whether `branch` is a layer of `stack` with another layer below it - the
-/// only position GitHub retargets, since it does so as the layer beneath
-/// lands. The bottom is deliberately excluded: it is the one layer the
-/// platform owes nothing to.
-fn stacked_above_bottom(stack: &NativeStack, branch: &str) -> bool {
-    stack.layers.iter().any(|layer| layer.branch == branch)
-        && stack
-            .layers
-            .first()
-            .is_none_or(|bottom| bottom.branch != branch)
 }
 
 /// The stack holding `branch`, from the `GET /repos/{owner}/{repo}/stacks`
