@@ -46,6 +46,13 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   have been made outside git-stk. It names every stack it would take apart and
   asks first - a stack is dissolved whole, so it can reach reviews outside your
   line - and `-y` skips the prompt (#315).
+- **guide:** a `github` tour covering GitHub's own stacked pull requests - what
+  `stk.githubStacks` hands over, what changes once a stack is registered
+  (`merge` goes through GitHub's async endpoint, `--auto` is refused, git-stk
+  stops retargeting), and the gotchas: `gh pr merge`/`gh pr edit --base` are
+  refused by GitHub for a stacked review, detection is not gated on the
+  setting, and a stack can only grow on top - so rooting a line lower means
+  `unstack` and re-register (#306).
 - **list, status:** show when a review sits in the platform's own stack. `list`
   marks the layer with its position (`⛁2/3`) and `status` names the stack, so it
   is visible that GitHub - not git-stk - is what merges and retargets those
