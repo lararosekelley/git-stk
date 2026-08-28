@@ -529,6 +529,19 @@ pub trait ReviewProvider {
         generic_annotate(self, branches, detail)
     }
 
+    /// The same annotation for a single review the caller already holds -
+    /// `status`, which asks about one branch rather than a stack.
+    ///
+    /// Separate from [`ReviewProvider::annotate_branches`] because the two
+    /// want opposite things. Listing every open review amortizes across a
+    /// whole stack but is pure overhead for one branch, and the generic
+    /// listing is what most providers do. The default therefore asks per
+    /// review; GitHub overrides it with the one batched query it already
+    /// makes for `list`, which is also the only source of a stack position.
+    fn annotate_review(&self, review: &ReviewRequest, detail: bool) -> Result<ReviewAnnotation> {
+        generic_annotate_review(self, review, detail)
+    }
+
     /// The CI check rollup for the review's head, for the `list`/`status` dot.
     /// Best-effort display data: the default is [`CheckStatus::None`] (no dot),
     /// which is also the right answer for a provider that cannot report it.
@@ -587,6 +600,46 @@ pub fn detect_review_provider() -> Result<(DetectedProvider, Box<dyn ReviewProvi
 /// Every lookup is best-effort - a failure drops that branch's dot/tallies,
 /// not the whole map. A provider with a cheaper bulk API overrides the trait
 /// method instead of using this.
+/// One review's annotation, asked per call - the default for every provider
+/// but GitHub, and GitHub's own fallback for a review its batched query cannot
+/// see (it reads open reviews only).
+pub fn generic_annotate_review<P: ReviewProvider + ?Sized>(
+    provider: &P,
+    review: &ReviewRequest,
+    detail: bool,
+) -> Result<ReviewAnnotation> {
+    let queued = provider
+        .enqueued_branches(std::slice::from_ref(&review.branch))
+        .map(|set| set.contains(&review.branch))
+        .unwrap_or(false);
+    Ok(ReviewAnnotation {
+        id: review.id.clone(),
+        // A queued review shows the clock rather than a CI dot, so the rollup
+        // is not worth a call.
+        checks: if queued {
+            CheckStatus::None
+        } else {
+            provider.check_status(review).unwrap_or(CheckStatus::None)
+        },
+        queued,
+        summary: if detail {
+            provider.review_summary(review).ok()
+        } else {
+            None
+        },
+        stack: provider
+            .native_stack_for(&review.branch)?
+            .and_then(|found| {
+                let size = u32::try_from(found.layers.len()).ok()?;
+                Some(StackPosition {
+                    number: found.number,
+                    position: found.position_of(&review.branch)?,
+                    size,
+                })
+            }),
+    })
+}
+
 fn generic_annotate<P: ReviewProvider + ?Sized>(
     provider: &P,
     branches: &[String],

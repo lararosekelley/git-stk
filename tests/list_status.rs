@@ -299,3 +299,36 @@ fn list_stays_quiet_when_the_provider_fails_for_another_reason() {
         .stdout(predicates::str::contains("feature/a"))
         .stderr(predicates::str::contains("stacked-pull-request fields").not());
 }
+
+/// `status` asks about one branch, so it must not pay for a listing of every
+/// open review. Only GitHub can fold the answer into a batched query; every
+/// other provider keeps the per-call path, and `mr list` here would be a walk
+/// of the whole project for two facts about one branch.
+#[test]
+fn status_does_not_list_every_review_on_gitlab() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .log_all("calls.txt")
+        .fallback(
+            r##"[{"iid":34,"state":"opened","target_branch":"main","source_branch":"feature/a","web_url":"https://gitlab.com/o/r/-/merge_requests/34"}]"##,
+        )
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["status", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("review: !34 open"));
+
+    let calls = std::fs::read_to_string(repo.path().join("calls.txt")).expect("call log");
+    assert!(
+        !calls.lines().any(|line| line.contains("mr list")
+            && !line.contains("--source-branch")
+            && !line.contains("--branch")),
+        "status listed every open review to annotate one branch:\n{calls}"
+    );
+}
