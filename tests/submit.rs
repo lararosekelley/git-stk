@@ -2124,7 +2124,7 @@ fn submit_stack_registers_the_stack_with_github() {
 /// keyed on the bottom reads "no stack" for one that exists, then POSTs a
 /// duplicate holding reviews GitHub already has.
 #[test]
-fn submit_stack_extends_a_stack_that_does_not_hold_the_bottom() {
+fn submit_stack_refuses_to_extend_a_stack_that_does_not_hold_the_bottom() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     repo.git(["config", "stk.githubStacks", "true"]);
@@ -2166,6 +2166,46 @@ fn submit_stack_extends_a_stack_that_does_not_hold_the_bottom() {
         "a review that belongs below the stack was appended on top: {}",
         fs::read_to_string(repo.path().join("add.txt")).unwrap_or_default()
     );
+}
+
+/// Submitting part of a stack that is already right - `--downstack` from the
+/// middle, say - is not a divergence. There is nothing to add, and nothing to
+/// warn about: the recorded stack simply reaches further than this submit did.
+#[test]
+fn submit_downstack_says_nothing_about_a_stack_that_already_holds_more() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.stack().args(["new", "feature/c"]).assert().success();
+    repo.git(["switch", "feature/b"]);
+
+    // The stack holds all three; `--downstack` from feature/b submits two.
+    let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}},
+        {"number":13,"head":{"ref":"feature/b"}},
+        {"number":14,"head":{"ref":"feature/c"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .record("api repos/owner/repo/stacks -X POST", "register.txt", "{}")
+        .record("stacks/7/add", "add.txt", "{}")
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .on("feature/c", r##"[{"number":14,"state":"OPEN","baseRefName":"feature/b","headRefName":"feature/c","url":"https://example.com/14"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--downstack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("no longer matches").not())
+        .stdout(predicates::str::contains("stack 7").not());
+
+    assert!(!repo.path().join("register.txt").exists());
+    assert!(!repo.path().join("add.txt").exists());
 }
 
 /// Extending is for the case `/add` can actually express: the recorded stack

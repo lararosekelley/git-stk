@@ -161,25 +161,29 @@ impl ReviewProvider for GitHubProvider {
             Some(stack) if stack_matches(stack, reviews) => Ok(None),
             // On top of what is already there: append the new ones only.
             Some(stack) => {
-                let recorded: Vec<&str> = stack.layers.iter().map(|l| l.id.as_str()).collect();
-                // `/add` carries no position, so it can only mean "on top".
-                // Unless the recorded stack is a prefix of what was submitted,
-                // appending would record an order that is not this stack's -
-                // a branch rooted below it, a reorder, a layer removed - and
-                // `repair` reads that order back as `stkParent`, which
-                // `restack` then rebases and force-pushes against.
-                if !reviews.starts_with(
-                    &recorded
-                        .iter()
-                        .map(|id| (*id).to_owned())
-                        .collect::<Vec<_>>(),
-                ) {
+                let recorded: Vec<String> = stack.layers.iter().map(|l| l.id.clone()).collect();
+                // Submitting part of a stack that is already right - a
+                // `--downstack` from the middle, or the bottom half after the
+                // top landed - is not a divergence. There is nothing to add,
+                // so say nothing.
+                if recorded.starts_with(reviews) {
+                    return Ok(None);
+                }
+                // Otherwise `/add` carries no position, so it can only mean
+                // "on top": unless what is recorded is a prefix of what was
+                // submitted, appending would record an order that is not this
+                // stack's - a branch rooted below it, a reorder, a layer
+                // removed - and `repair` reads that order back as
+                // `stkParent`, which `restack` rebases and force-pushes
+                // against.
+                if !reviews.starts_with(&recorded) {
                     return Ok(Some(format!(
                         "stack {} no longer matches this stack, so it was left as recorded; \
-                         `git stk unstack` dissolves it if it is stale",
+                         dissolve it on GitHub to re-register from scratch",
                         stack.number
                     )));
                 }
+                let recorded: Vec<&str> = recorded.iter().map(String::as_str).collect();
                 let fresh: Vec<String> = reviews
                     .iter()
                     .filter(|id| !recorded.contains(&id.as_str()))
@@ -223,13 +227,18 @@ impl ReviewProvider for GitHubProvider {
             // separate mutation and refuses a stacked pull request too. Say so
             // rather than merge now, which is the opposite of what was asked.
             if auto {
-                bail!(
+                return Err(super::MergeRefused(format!(
                     "{} is in a GitHub stack, which cannot be scheduled with --auto; \
                      rerun without it once checks pass",
                     review.id
-                );
+                ))
+                .into());
             }
-            return merge_with_retry(|| merge_async(review, strategy));
+            // Only the enqueue is retried: the `PUT` is not idempotent, so
+            // wrapping the wait in the retry too would re-ask GitHub to merge
+            // a review that is already merging whenever a poll blipped.
+            let (path, output) = merge_with_retry(|| enqueue_async_merge(review, strategy))?;
+            return await_async_merge(review, &path, &output);
         }
 
         let mut args = vec!["pr", "merge", review.id_value(), flag];
@@ -573,6 +582,13 @@ fn github_enqueued_branches(branches: &[String]) -> BTreeSet<String> {
 const ASYNC_MERGE_POLLS: u32 = 60;
 
 fn async_merge_poll_interval() -> std::time::Duration {
+    // Under the fake-provider harness the whole merge is answered by a local
+    // process, so the wait is pure test latency - and without this the poll
+    // loop is untestable at two seconds a turn. `STK_FAKE_SPEC` is set only by
+    // that harness, never in a real run.
+    if std::env::var_os("STK_FAKE_SPEC").is_some() {
+        return std::time::Duration::from_millis(1);
+    }
     std::time::Duration::from_secs(2)
 }
 
@@ -580,17 +596,25 @@ fn async_merge_poll_interval() -> std::time::Duration {
 /// for the result. `PUT .../merge-async` enqueues and answers with a uuid;
 /// `GET .../merge-async/{uuid}` reports `pending`, `merged`, `enqueued` (a
 /// merge queue took it) or `failed`.
-fn merge_async(review: &ReviewRequest, strategy: &str) -> Result<String> {
+/// Ask GitHub to start the merge. Split from the wait because the `PUT` is not
+/// idempotent: retrying it after a transient failure *later* in the sequence
+/// would ask for a second merge of a review already merging.
+fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String, String)> {
     let (owner, repo) = repo_owner_name().context("could not resolve the GitHub repository")?;
     let number = review_number(&review.id)
         .with_context(|| format!("could not read a pull request number from {}", review.id))?;
     let path = format!("repos/{owner}/{repo}/pulls/{number}/merge-async");
     let method = format!("merge_method={strategy}");
     let output = command_output("gh", &["api", &path, "-X", "PUT", "-f", &method])?;
+    Ok((path, output))
+}
 
-    let (status, uuid) = parse_async_merge(&output)
+/// Wait for an enqueued merge to reach a final status. Never retried as a
+/// whole - only the enqueue above is, and it has already happened here.
+fn await_async_merge(review: &ReviewRequest, path: &str, output: &str) -> Result<String> {
+    let (status, uuid) = parse_async_merge(output)
         .with_context(|| format!("unexpected response merging {}: {output}", review.id))?;
-    if let Some(outcome) = async_merge_outcome(&status, &review.id, &output) {
+    if let Some(outcome) = async_merge_outcome(&status, &review.id, output) {
         return outcome;
     }
 
@@ -705,7 +729,15 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
         if stack.get("open").and_then(serde_json::Value::as_bool) != Some(true) {
             continue;
         }
-        let reviews = stack.get("pull_requests")?.as_array()?;
+        // `continue`, not `?`: one stack with a payload this version cannot
+        // read must not end the scan for every stack after it - the live one
+        // is often not the first entry, since the listing keeps history.
+        let Some(reviews) = stack
+            .get("pull_requests")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
         let holds_branch = reviews.iter().any(|review| {
             review
                 .get("head")
@@ -719,9 +751,15 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
         return Some(NativeStack {
             number: stack.get("number")?.as_u64()?,
             base: stack.get("base")?.get("ref")?.as_str().map(str::to_owned)?,
+            // All layers or none. `parent_of` and `position_of` are
+            // positional, so dropping one unreadable layer silently shifts
+            // every layer above it - and `repair` writes that shifted order as
+            // `stkParent`, which `restack` then rebases and force-pushes
+            // against. A stack we cannot read whole is not a stack we can
+            // answer questions about.
             layers: reviews
                 .iter()
-                .filter_map(|review| {
+                .map(|review| {
                     Some(NativeStackLayer {
                         id: format!("#{}", review.get("number")?.as_u64()?),
                         branch: review
@@ -731,7 +769,7 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
                             .map(str::to_owned)?,
                     })
                 })
-                .collect(),
+                .collect::<Option<Vec<_>>>()?,
         });
     }
     None
@@ -1375,6 +1413,36 @@ mod tests {
             None
         );
         assert_eq!(parse_native_stack("not json", "fix/shared"), None);
+    }
+
+    /// A stack this version cannot read must cost only itself. Both routes end
+    /// in a wrong `stkParent` otherwise: an unreadable entry aborting the scan
+    /// hides the live stack behind it, and an unreadable *layer* silently
+    /// shifts every layer above it, since `parent_of` is positional.
+    #[test]
+    fn parse_native_stack_skips_an_unreadable_stack_rather_than_the_rest() {
+        // The live stack sits behind one with no `pull_requests` - the listing
+        // keeps history, so it is routinely not first.
+        let odd_entry = r#"[
+          {"number": 2, "open": true, "base": {"ref": "main"}},
+          {"number": 9, "open": true, "base": {"ref": "main"},
+           "pull_requests": [{"number": 20, "head": {"ref": "live/one"}},
+                             {"number": 21, "head": {"ref": "live/two"}}]}
+        ]"#;
+        let stack = parse_native_stack(odd_entry, "live/two").expect("the stack behind it");
+        assert_eq!(stack.number, 9);
+        assert_eq!(stack.parent_of("live/two"), Some("live/one"));
+
+        // A layer that cannot be read makes the whole stack unanswerable
+        // rather than shifting the ones above it: dropping #21 here would say
+        // `live/three` stacks on `live/one`, which is a layer too low.
+        let odd_layer = r#"[
+          {"number": 9, "open": true, "base": {"ref": "main"},
+           "pull_requests": [{"number": 20, "head": {"ref": "live/one"}},
+                             {"head": {"ref": "live/two"}},
+                             {"number": 22, "head": {"ref": "live/three"}}]}
+        ]"#;
+        assert_eq!(parse_native_stack(odd_layer, "live/three"), None);
     }
 
     #[test]
