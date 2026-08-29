@@ -188,13 +188,33 @@ fn github_native_stack(provider: Provider, slug: &str, work: &Path) -> Result<()
     }
     expect_open_stack(slug, &["ns/one", "ns/two"])?;
 
+    // A third layer on top, which is the one shape `POST /stacks/{n}/add`
+    // can express - and the only live write route the rest of this scenario
+    // never reaches, since both submits above create rather than extend. It
+    // fails quietly if it fails at all: registration warns rather than
+    // returns, so a rejected append would leave the submit green and the
+    // stack one layer short.
+    stk(work, &["new", "ns/three"])?;
+    std::fs::write(work.join("ns-three.txt"), "three\n")
+        .map_err(|error| format!("write ns-three.txt: {error}"))?;
+    git(work, &["add", "."])?;
+    git(work, &["commit", "-m", "feat: ns three"])?;
+    let extended = stk(work, &["submit", "--stack", "--push"])?;
+    if !extended.contains("extended stack") {
+        return Err(format!(
+            "submit did not extend the existing stack:\n{extended}"
+        ));
+    }
+    wait_for_review_count(provider, slug, baseline + 3)?;
+    expect_open_stack(slug, &["ns/one", "ns/two", "ns/three"])?;
+
     // Merging: `gh pr merge` is refused for a stacked review, so this only
     // passes if the asynchronous endpoint is being used.
     stk(work, &["merge", "--all", "--no-wait", "--yes"])?;
     wait_for_review_count(provider, slug, baseline)?;
     git(work, &["switch", "main"])?;
     git(work, &["pull", "--ff-only"])?;
-    for file in ["ns-one.txt", "ns-two.txt"] {
+    for file in ["ns-one.txt", "ns-two.txt", "ns-three.txt"] {
         if !work.join(file).exists() {
             return Err(format!("{file} missing on main after the stack landed"));
         }
