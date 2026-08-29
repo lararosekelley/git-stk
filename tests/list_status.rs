@@ -332,3 +332,40 @@ fn status_does_not_list_every_review_on_gitlab() {
         "status listed every open review to annotate one branch:\n{calls}"
     );
 }
+
+/// A merged review still names the stack it landed in - the platform keeps a
+/// landed layer listed - and that answer comes from REST, since the annotate
+/// query asks `states: OPEN` and cannot match. It must not spend the GraphQL
+/// call discovering that.
+#[test]
+fn status_names_the_stack_of_a_merged_review_without_the_open_query() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":6,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":11,"state":"open","head":{"ref":"below"}},
+        {"number":12,"state":"closed","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"above"}}]}]"##;
+    let fake = FakeProvider::new()
+        .log_all("calls.txt")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a --state merged", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("feature/a", "[]")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("stack: github stack 6 (2 of 3)"));
+
+    let calls = std::fs::read_to_string(repo.path().join("calls.txt")).expect("call log");
+    assert!(
+        !calls.contains("api graphql"),
+        "the annotate query asks states:OPEN and cannot match a merged review:\n{calls}"
+    );
+}

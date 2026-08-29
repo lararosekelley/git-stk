@@ -520,7 +520,7 @@ fn cleanup_says_so_when_a_stack_cannot_retarget_a_child() {
         .stdout(predicates::str::contains(
             "its stack will not move it to main",
         ))
-        .stdout(predicates::str::contains("dissolve the stack"))
+        .stdout(predicates::str::contains("git stk unstack"))
         .stdout(predicates::str::contains("the platform retargets it").not());
 
     assert!(

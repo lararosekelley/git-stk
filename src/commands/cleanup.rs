@@ -450,8 +450,8 @@ fn update_child_review_base(
                 "{}",
                 style::warn(&format!(
                     "{} still targets {} and its stack will not move it to {parent} - the \
-                     platform refuses a change by hand too; dissolve the stack on the \
-                     platform, then run `git stk submit`",
+                     platform refuses a change by hand too; run `git stk unstack`, \
+                     then `git stk submit`",
                     review.id, review.base
                 ))
             );

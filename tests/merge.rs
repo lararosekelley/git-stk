@@ -1292,9 +1292,7 @@ fn merge_refuses_a_layer_whose_retarget_already_happened() {
         .assert()
         .failure()
         // And the honest remedy, not `submit`, which refuses here.
-        .stderr(predicates::str::contains(
-            "dissolve the stack on the platform",
-        ));
+        .stderr(predicates::str::contains("git stk unstack"));
 
     assert!(
         !repo.path().join("async.txt").exists(),
@@ -1791,4 +1789,44 @@ fn unstack_surfaces_a_failed_repo_lookup() {
             "could not resolve the GitHub repository",
         ))
         .stderr(predicates::str::contains("nothing to dissolve").not());
+}
+
+/// Checks pending on a review in a platform stack. The refusal git-stk raises
+/// is passed through, but the *platform's* refusal is re-diagnosed - and the
+/// advice that came with it used to recommend `--auto`, which this same
+/// command answers with "cannot be scheduled with --auto".
+#[test]
+fn merge_does_not_recommend_auto_for_a_stacked_review() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"above"}}]}]"##;
+    let fake = FakeProvider::new()
+        // The async merge is rejected while checks are pending.
+        .fail("merge-async", "HTTP 405: required status checks have not passed")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on(
+            "pr view 12 --json mergeable,mergeStateStatus",
+            r##"{"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}"##,
+        )
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("checks are not green yet"))
+        .stderr(predicates::str::contains(
+            "`--auto` is not available for a review in a stack",
+        ))
+        // Never the flag this command would refuse.
+        .stderr(predicates::str::contains("schedule with").not());
 }
