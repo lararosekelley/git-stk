@@ -195,10 +195,7 @@ fn github_native_stack(provider: Provider, slug: &str, work: &Path) -> Result<()
     // returns, so a rejected append would leave the submit green and the
     // stack one layer short.
     stk(work, &["new", "ns/three"])?;
-    std::fs::write(work.join("ns-three.txt"), "three\n")
-        .map_err(|error| format!("write ns-three.txt: {error}"))?;
-    git(work, &["add", "."])?;
-    git(work, &["commit", "-m", "feat: ns three"])?;
+    commit(work, "ns-three.txt", "three\n", "ns three")?;
     let extended = stk(work, &["submit", "--stack", "--push"])?;
     if !extended.contains("extended stack") {
         return Err(format!(
