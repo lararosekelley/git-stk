@@ -2458,7 +2458,9 @@ fn submit_names_the_way_out_for_a_stack_bottom_with_a_stale_base() {
         .args(["submit"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("is a stack's bottom"))
+        .stdout(predicates::str::contains(
+            "its stack will not move it there",
+        ))
         .stdout(predicates::str::contains("dissolve the stack"))
         // Not the promise that something else will fix it.
         .stdout(predicates::str::contains("the platform moves it").not());

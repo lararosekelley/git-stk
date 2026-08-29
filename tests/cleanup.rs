@@ -486,12 +486,12 @@ fn cleanup_never_finishes_the_stack_base() {
     );
 }
 
-/// A child that is a stack's *bottom* layer. The platform never retargets it -
-/// nothing lands below it - and refuses a change by hand, so the quiet
-/// "the platform retargets it" is false here. `cleanup` is about to delete the
-/// branch this review targets, so the mismatch has to be said out loud.
+/// A child in a stack that cannot reach its new parent - here the stack's
+/// bottom, which the platform never retargets. The quiet "the platform
+/// retargets it" is false, and `cleanup` is about to delete the branch this
+/// review targets, so the mismatch has to be said out loud.
 #[test]
-fn cleanup_says_so_when_a_stack_bottom_cannot_be_retargeted() {
+fn cleanup_says_so_when_a_stack_cannot_retarget_a_child() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     repo.git(["config", "stk.githubStacks", "true"]);
@@ -517,7 +517,9 @@ fn cleanup_says_so_when_a_stack_bottom_cannot_be_retargeted() {
         .args(["cleanup", "feature/a"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("is a stack's bottom layer"))
+        .stdout(predicates::str::contains(
+            "its stack will not move it to main",
+        ))
         .stdout(predicates::str::contains("dissolve the stack"))
         .stdout(predicates::str::contains("the platform retargets it").not());
 
