@@ -825,7 +825,7 @@ fn submit_branch(
                     style::warn(&format!(
                         "{} targets {} but should target {parent}, and its stack will not \
                          move it there - the platform refuses a change by hand too; \
-                         dissolve the stack on the platform and submit again",
+                         run `git stk unstack` and submit again",
                         review.id, review.base
                     ))
                 );

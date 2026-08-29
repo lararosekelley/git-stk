@@ -2461,7 +2461,7 @@ fn submit_names_the_way_out_for_a_stack_bottom_with_a_stale_base() {
         .stdout(predicates::str::contains(
             "its stack will not move it there",
         ))
-        .stdout(predicates::str::contains("dissolve the stack"))
+        .stdout(predicates::str::contains("git stk unstack"))
         // Not the promise that something else will fix it.
         .stdout(predicates::str::contains("the platform moves it").not());
 
@@ -2513,7 +2513,7 @@ fn submit_warns_about_a_reordered_stacks_bottom_rather_than_promising_a_move() {
         .args(["submit", "ma/a"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("dissolve the stack"))
+        .stdout(predicates::str::contains("git stk unstack"))
         .stdout(predicates::str::contains("the platform moves it").not());
 
     assert!(
@@ -2555,7 +2555,7 @@ fn submit_sends_you_to_sync_when_the_platform_moved_the_base_already() {
         .success()
         .stdout(predicates::str::contains("run `git stk sync`"))
         // Neither of the other two remedies.
-        .stdout(predicates::str::contains("dissolve the stack").not())
+        .stdout(predicates::str::contains("git stk unstack").not())
         .stdout(predicates::str::contains("the platform moves it as the stack lands").not());
 
     assert!(!repo.path().join("retarget.txt").exists());

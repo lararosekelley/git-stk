@@ -94,10 +94,6 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                     anstream::println!("url: {}", style::paint(style::DIM, &review.url));
                     // The platform's own stack, when it holds this review -
                     // which is what makes GitHub, not git-stk, the one that
-                    // merges and retargets it. Both halves of the ratio come
-                    // from whichever source answered, never one from each.
-                    // The platform's own stack, when it holds this review -
-                    // which is what makes GitHub, not git-stk, the one that
                     // merges and retargets it. Position and size come from
                     // whichever source answered, never one from each.
                     if let Some(at) = annotation.as_ref().and_then(|found| found.stack) {
@@ -141,7 +137,7 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                             Some(BaseGap::Neither) => anstream::println!(
                                 "{} review base is {}, local parent is {parent} - the \
                                  platform will not move it there and refuses a change by \
-                                 hand; dissolve the stack on the platform, then run \
+                                 hand; run `git stk unstack`, then \
                                  `git stk submit`",
                                 style::paint(style::WARN, "warning:"),
                                 review.base

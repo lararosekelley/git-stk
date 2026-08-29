@@ -162,7 +162,7 @@ impl ReviewProvider for GitHubProvider {
         match plan {
             super::StackPlan::Mismatch { number } => Ok(Some(format!(
                 "stack {number} no longer matches this stack, so it was left as recorded; \
-                 dissolve it on GitHub to re-register from scratch"
+                 run `git stk unstack` to re-register it from scratch"
             ))),
             super::StackPlan::Extend { number, fresh } => {
                 let numbers = pull_request_numbers(&fresh)?;
@@ -380,11 +380,16 @@ impl ReviewProvider for GitHubProvider {
     fn annotate_review(&self, review: &ReviewRequest, detail: bool) -> Result<ReviewAnnotation> {
         // One GraphQL call for the queue state, the CI rollup, and the stack
         // position - the same query `list` makes, so the two cannot disagree
-        // about a stack's size. It reads open reviews only, so a merged or
-        // closed one falls through to the per-call default, which is also the
-        // only way to name the stack a landed layer is still listed in.
-        let found = batched_annotate(std::slice::from_ref(&review.branch), detail)
-            .ok()
+        // about a stack's size.
+        //
+        // Only for an open review: the query asks `states: OPEN`, so for a
+        // merged or closed one it cannot match and the call is spent
+        // discovering that. Those fall straight to the per-call default,
+        // which is also the only way to name the stack a landed layer is
+        // still listed in.
+        let found = matches!(review.state, ReviewState::Open)
+            .then(|| batched_annotate(std::slice::from_ref(&review.branch), detail))
+            .and_then(Result::ok)
             .and_then(|mut found| found.remove(&review.branch));
         match found {
             Some(annotation) => Ok(annotation),
@@ -719,12 +724,10 @@ fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String
     //
     // Verified live on a three-layer stack: the stack stays `open` with the
     // landed layer still listed (as `closed`) until every layer has landed, at
-    // which point it flips to `open: false`. GitHub also retargets each layer
-    // onto the trunk as the one below it lands. So the answer here changes in
-    // two ways at once - which layers are still open, and where their bases
-    // point - and `merge --all` reads it again for every layer after this
-    // one, through `base_gap`. One request, and the next read is of the stack
-    // as it is rather than as it was.
+    // which point it flips to `open: false`. Those two fields are what this
+    // cache holds, both change as a layer lands, and `merge --all` reads them
+    // again for every layer after this one through `base_gap`. One request,
+    // and the next read is of the stack as it is rather than as it was.
     forget_stacks_listing();
     Ok((path, output))
 }

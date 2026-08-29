@@ -594,12 +594,6 @@ pub fn detect_review_provider() -> Result<(DetectedProvider, Box<dyn ReviewProvi
     Ok((provider, client))
 }
 
-/// The generic per-branch annotation path behind [`ReviewProvider::
-/// annotate_branches`]: list the open reviews, keep the wanted branches, then
-/// look up CI status, queue membership, and (with `detail`) review tallies.
-/// Every lookup is best-effort - a failure drops that branch's dot/tallies,
-/// not the whole map. A provider with a cheaper bulk API overrides the trait
-/// method instead of using this.
 /// One review's annotation, asked per call - the default for every provider
 /// but GitHub, and GitHub's own fallback for a review its batched query cannot
 /// see (it reads open reviews only).
@@ -608,10 +602,13 @@ pub fn generic_annotate_review<P: ReviewProvider + ?Sized>(
     review: &ReviewRequest,
     detail: bool,
 ) -> Result<ReviewAnnotation> {
-    let queued = provider
-        .enqueued_branches(std::slice::from_ref(&review.branch))
-        .map(|set| set.contains(&review.branch))
-        .unwrap_or(false);
+    // Only an open review can be waiting in a merge queue, so asking for a
+    // merged or closed one spends a call to learn `false`.
+    let queued = matches!(review.state, ReviewState::Open)
+        && provider
+            .enqueued_branches(std::slice::from_ref(&review.branch))
+            .map(|set| set.contains(&review.branch))
+            .unwrap_or(false);
     Ok(ReviewAnnotation {
         id: review.id.clone(),
         // A queued review shows the clock rather than a CI dot, so the rollup
@@ -640,6 +637,12 @@ pub fn generic_annotate_review<P: ReviewProvider + ?Sized>(
     })
 }
 
+/// The generic per-branch annotation path behind
+/// [`ReviewProvider::annotate_branches`]: list the open reviews, keep the
+/// wanted branches, then look up CI status, queue membership, and (with
+/// `detail`) review tallies. Every lookup is best-effort - a failure drops
+/// that branch's dot/tallies, not the whole map. A provider with a cheaper
+/// bulk API overrides the trait method instead of using this.
 fn generic_annotate<P: ReviewProvider + ?Sized>(
     provider: &P,
     branches: &[String],

@@ -342,7 +342,7 @@ fn open_review_for(
             Some(BaseGap::Neither) => bail!(
                 "review {} targets {}, but {branch}'s stack parent is {expected} - \
                  its stack will not move it there, and the platform refuses a \
-                 change by hand; dissolve the stack on the platform, then run \
+                 change by hand; run `git stk unstack`, then \
                  `git stk submit`",
                 review.id,
                 review.base
@@ -418,11 +418,16 @@ fn explain_merge_failure(
     {
         return error;
     }
+    // Whether scheduling is even on the table here - the same question the dry
+    // run asks before printing the mode.
+    let can_schedule = !review_provider
+        .native_stack_for(&review.branch)
+        .is_ok_and(|found| found.is_some());
     match review_provider
         .merge_blocker(review)
         .unwrap_or(MergeBlocker::None)
     {
-        MergeBlocker::ChecksPending => checks_not_green_error(review),
+        MergeBlocker::ChecksPending => checks_not_green_error(review, can_schedule),
         MergeBlocker::Conflicts => anyhow::anyhow!(
             "{} conflicts with {} - resolve the conflicts, push, and rerun `git stk merge`",
             review.id,
@@ -433,7 +438,7 @@ fn explain_merge_failure(
         MergeBlocker::None => {
             let text = error.to_string().to_lowercase();
             if text.contains("status check") || text.contains("not mergeable") {
-                checks_not_green_error(review)
+                checks_not_green_error(review, can_schedule)
             } else {
                 error
             }
@@ -441,10 +446,20 @@ fn explain_merge_failure(
     }
 }
 
-fn checks_not_green_error(review: &ReviewRequest) -> anyhow::Error {
-    anyhow::anyhow!(
-        "{}'s required checks are not green yet - wait and rerun `git stk merge`, \
-         or schedule with `git stk merge --auto`",
-        review.id
-    )
+fn checks_not_green_error(review: &ReviewRequest, can_schedule: bool) -> anyhow::Error {
+    // `--auto` is refused for a review in a platform stack, so recommending it
+    // there answers one refusal with another.
+    if can_schedule {
+        anyhow::anyhow!(
+            "{}'s required checks are not green yet - wait and rerun `git stk merge`, \
+             or schedule with `git stk merge --auto`",
+            review.id
+        )
+    } else {
+        anyhow::anyhow!(
+            "{}'s required checks are not green yet - wait and rerun `git stk merge`; \
+             `--auto` is not available for a review in a stack",
+            review.id
+        )
+    }
 }

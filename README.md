@@ -297,9 +297,11 @@ Everything is optional; defaults shown below:
     ; Skip the once-a-day check for a newer release. Default: false.
     noUpdateCheck = true
     ; Register submitted stacks with GitHub's native stacked pull requests, so
-    ; their layers get GitHub's stack map. Reading a stack is not gated on this
-    ; - git-stk handles one whoever created it. GitHub only, and in public
-    ; preview there. Default: false.
+    ; their layers get GitHub's stack map. Only registering is gated: git-stk
+    ; reads and follows a stack whoever created it, and `git stk unstack`
+    ; dissolves one without the setting - undoing a registration must not need
+    ; the setting that made it. GitHub only, and in public preview there.
+    ; Default: false.
     githubStacks = true
     ; Where `new --worktree` puts a branch's worktree. Default: a
     ; <repo>-worktrees directory beside the repo.
