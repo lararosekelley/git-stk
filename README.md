@@ -319,7 +319,9 @@ Branches are the real state; the metadata is just annotation. If it is ever lost
 rebuilds it from review bases (when the provider CLI - `gh`/`glab`/`tea` - is available) and branch
 ancestry, and verifies recorded fork points. Anything it cannot resolve safely is reported for a manual
 `git stk adopt`. With `stk.githubStacks` on, it prefers the stack GitHub itself records to both - that
-ordering was stated rather than inferred, and it is still right where a review has since been retargeted.
+ordering was stated rather than inferred. It stops preferring the stack once the layer below has landed:
+the platform retargets a review at exactly that moment, while the listing goes on naming the merged branch,
+so the review base is the fresher answer from then on.
 
 Working across machines? The parent map - and which branch a stack sits on - rides along on a shared ref
 (`refs/stk/metadata`), published automatically whenever git-stk pushes branches

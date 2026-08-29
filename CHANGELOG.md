@@ -12,7 +12,9 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   native stacked pull requests. With it on, `repair` prefers the stack GitHub
   records to the review base and to ancestry when rebuilding a branch's parent
   - an ordering someone stated rather than one inferred, which survives a wiped
-  `.git/config` and is still right where a review has since been retargeted.
+  `.git/config`. It stops preferring the stack once the layer below has landed,
+  because the platform retargets a review at exactly that moment and the
+  listing goes on naming the merged branch.
   With it on, `submit --stack`/`--downstack` also hands the submitted reviews
   to GitHub as a stack, bottom first, so the layers get GitHub's own stack map
   and parallel review; an existing stack is extended rather than replaced.

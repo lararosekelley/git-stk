@@ -6,7 +6,7 @@ use crate::commands::Run;
 use crate::commands::sync::sync;
 use crate::prompt::confirm;
 use crate::providers::{
-    MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
+    BaseGap, MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
     detect_review_provider,
 };
 use crate::settings;
@@ -326,29 +326,34 @@ fn open_review_for(
     let expected_base = stack::parent_of(branch)?;
     if let Some(expected) = &expected_base
         && *expected != review.base
-        && !review_provider
-            .platform_will_base_on(&review, expected)
-            .unwrap_or(false)
     {
-        if review_provider
-            .platform_refuses_base_change(&review)
-            .unwrap_or(false)
-        {
-            bail!(
+        match review_provider.base_gap(&review, expected).unwrap_or(None) {
+            // The platform is going to close this itself, as the layer below
+            // lands. Carrying on is right: `merge --all` would otherwise stop
+            // halfway and name `submit`, which refuses a review in a stack.
+            Some(BaseGap::Platform) => {}
+            Some(BaseGap::Sync) => bail!(
+                "review {} already targets {} - the platform moved it when {expected} \
+                 landed, and {branch}'s stack parent has not caught up; run \
+                 `git stk sync` first",
+                review.id,
+                review.base
+            ),
+            Some(BaseGap::Neither) => bail!(
                 "review {} targets {}, but {branch}'s stack parent is {expected} - \
                  its stack will not move it there, and the platform refuses a \
                  change by hand; dissolve the stack on the platform, then run \
                  `git stk submit`",
                 review.id,
                 review.base
-            );
+            ),
+            None => bail!(
+                "review {} targets {}, but {branch}'s stack parent is {expected}; \
+                 run `git stk submit` first",
+                review.id,
+                review.base
+            ),
         }
-        bail!(
-            "review {} targets {}, but {branch}'s stack parent is {expected}; \
-             run `git stk submit` first",
-            review.id,
-            review.base
-        );
     }
 
     Ok(review)

@@ -77,14 +77,19 @@ impl ReviewProvider for GitHubProvider {
         command_output("gh", &args)
     }
 
-    fn platform_refuses_base_change(&self, review: &ReviewRequest) -> Result<bool> {
-        Ok(self.native_stack_for(&review.branch)?.is_some())
-    }
-
-    fn platform_will_base_on(&self, review: &ReviewRequest, parent: &str) -> Result<bool> {
-        Ok(self
-            .native_stack_for(&review.branch)?
-            .is_some_and(|stack| stack.can_base_on(&review.branch, parent)))
+    fn base_gap(&self, review: &ReviewRequest, parent: &str) -> Result<Option<super::BaseGap>> {
+        let Some(stack) = self.native_stack_for(&review.branch)? else {
+            return Ok(None);
+        };
+        Ok(Some(if stack.can_base_on(&review.branch, parent) {
+            super::BaseGap::Platform
+        } else if stack.has_landed_layer(parent) {
+            // The platform moved this base when that layer landed; the local
+            // parent is what has not caught up.
+            super::BaseGap::Sync
+        } else {
+            super::BaseGap::Neither
+        }))
     }
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String> {

@@ -274,7 +274,9 @@ With `git config stk.githubStacks true`, `submit --stack` also hands the submitt
 [native stack](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) - bottom first, the
 order it lands in - so its layers get GitHub's own stack map and parallel review. An existing stack is
 extended rather than replaced, and `repair` prefers that stack to the review base and to branch ancestry
-when rebuilding metadata. Registering is presentation: if it fails, the reviews still exist and the submit
+when rebuilding metadata - until the layer below has landed, at which point the platform has already
+retargeted the review and the listing, which keeps the landed layer, is the staler of the
+two. Registering is presentation: if it fails, the reviews still exist and the submit
 still succeeds. Off by default while the GitHub feature is in public preview, and GitHub-only - GitLab and
 Gitea are unaffected.
 

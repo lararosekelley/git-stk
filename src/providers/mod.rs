@@ -179,6 +179,13 @@ impl NativeStack {
             .is_none_or(|layer| layer.open)
     }
 
+    /// Whether `branch` is a layer of this stack whose review has landed.
+    pub fn has_landed_layer(&self, branch: &str) -> bool {
+        self.layers
+            .iter()
+            .any(|layer| layer.branch == branch && !layer.open)
+    }
+
     /// Whether this stack can still bring `branch`'s base to `parent` on its
     /// own - `parent` is one of the two places the platform puts a base: the
     /// layer recorded directly below `branch`, or the stack's own base, which
@@ -198,8 +205,13 @@ impl NativeStack {
         // once that lands. A layer *above* this one is neither - accepting it
         // would put a reordered stack's bottom back inside the exemption, and
         // the bottom is the one layer the platform never retargets.
+        //
+        // The predecessor only counts while it is still current: once it has
+        // landed the platform has already moved this base away from it, and
+        // will never put it back.
         self.layers.iter().any(|layer| layer.branch == branch)
-            && (self.base == parent || self.parent_of(branch) == Some(parent))
+            && (self.base == parent
+                || (self.parent_of(branch) == Some(parent) && self.parent_is_current(branch)))
     }
 
     /// What `branch` stacks on according to the platform: the branch below it,
@@ -339,40 +351,27 @@ pub trait ReviewProvider {
     ) -> Result<String>;
 
     fn update_review_base(&self, review: &ReviewRequest, base: &str) -> Result<String>;
-    /// Whether the platform refuses a base change on this review, whoever
-    /// asks. GitHub rejects `pr edit --base` for every pull request in a
-    /// stack, its bottom layer included - so a bottom whose base has gone
-    /// stale is a state neither side will fix, and the honest answer is to
-    /// say so rather than attempt a call that is refused or promise a
-    /// retarget that never arrives.
+    /// What will close a gap between this review's base and `parent`, the
+    /// local parent git-stk records - or `None` when the review is in no
+    /// platform stack, in which case an ordinary retarget closes it.
     ///
-    /// Default `false`: only GitHub keeps stacks.
-    fn platform_refuses_base_change(&self, review: &ReviewRequest) -> Result<bool> {
-        let _ = review;
-        Ok(false)
-    }
-
-    /// Whether the platform can still bring this review's base to `parent`
-    /// itself, so a base and a local parent that disagree are a chain still
-    /// unwinding rather than a fault.
+    /// One question rather than two, because every caller needs all three
+    /// answers: those that would retarget stand down for
+    /// [`BaseGap::Platform`], and those that report a disagreement need to
+    /// name a different remedy for each of the other two.
     ///
-    /// Asked by every caller that meets the disagreement: those that would
-    /// retarget stand down, and those that read it wait rather than report.
-    /// `false` while the review is nonetheless in a stack is the dead end -
-    /// see [`ReviewProvider::platform_refuses_base_change`].
-    ///
-    /// Defaults to `false`, and errs that way too, because the two mistakes
-    /// are not equally bad. Answering `false` wrongly means attempting a
-    /// retarget the platform refuses: a loud, recoverable error, and
-    /// `update_review_base` checks again itself, so a blip that clears in
-    /// between still lands on the friendly message. Answering `true` wrongly
-    /// means skipping a retarget that was needed - in `cleanup` the layer
-    /// then still points at a branch about to be deleted, and a platform that
-    /// auto-closes a review whose base disappears takes the review with it,
-    /// comments and approvals included, silently.
-    fn platform_will_base_on(&self, review: &ReviewRequest, parent: &str) -> Result<bool> {
+    /// Defaults to `None`, and errs that way, because the two mistakes are
+    /// not equally bad. Answering `None` wrongly means attempting a retarget
+    /// the platform refuses: a loud, recoverable error, and
+    /// `update_review_base` checks again itself. Answering
+    /// [`BaseGap::Platform`] wrongly means skipping a retarget that was
+    /// needed - in `cleanup` the layer then still points at a branch about to
+    /// be deleted, and a platform that auto-closes a review whose base
+    /// disappears takes the review with it, comments and approvals included,
+    /// silently.
+    fn base_gap(&self, review: &ReviewRequest, parent: &str) -> Result<Option<BaseGap>> {
         let _ = (review, parent);
-        Ok(false)
+        Ok(None)
     }
 
     /// Retitle an existing review. Platforms that encode draft state in the
@@ -895,6 +894,29 @@ pub fn plan_stack_registration(
         number: stack.number,
         fresh: fresh.to_vec(),
     })
+}
+
+/// What, if anything, will close a gap between a review's base and the local
+/// parent git-stk records for it.
+///
+/// The four commands that meet this gap all need the same answer, and it is
+/// three-valued rather than two: asking "will the platform move it?" and "is
+/// it in a stack?" separately is what let a call site wait for a move that was
+/// never coming, or send someone to dissolve a stack that only needed a sync.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BaseGap {
+    /// The platform will close it: `parent` is where its stack puts this base
+    /// next, once the layer below lands. Wait rather than retarget - a base
+    /// change by hand is refused anyway.
+    Platform,
+    /// `git stk sync` will close it: the platform has already moved the base
+    /// where it keeps it, and the local parent is a layer that has since
+    /// landed. Local metadata is behind, not the review.
+    Sync,
+    /// Nothing will: the stack cannot reach this parent and refuses a change
+    /// by hand - a re-rooted or reordered line, or the stack's own bottom.
+    /// Dissolving the stack is what unblocks it.
+    Neither,
 }
 
 /// A merge git-stk itself refused, rather than one the platform rejected.

@@ -3,7 +3,7 @@ use clap_complete::engine::ArgValueCompleter;
 
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{CheckStatus, ReviewState, detect_review_provider};
+use crate::providers::{BaseGap, CheckStatus, ReviewState, detect_review_provider};
 use crate::style;
 use crate::{git, stack};
 
@@ -101,42 +101,37 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                         // Asked only on a disagreement, which is rare: the
                         // lookup costs a call, and the annotation cannot
                         // answer it.
-                        if review_provider
-                            .platform_will_base_on(review, parent)
-                            .unwrap_or(false)
-                        {
-                            anstream::println!(
+                        match review_provider.base_gap(review, parent).unwrap_or(None) {
+                            Some(BaseGap::Platform) => anstream::println!(
                                 "{}",
                                 style::paint(
                                     style::DIM,
                                     &format!(
                                         "review base is {}, local parent is {parent} - \
-                                         GitHub retargets it as the layer below lands",
+                                         the platform retargets it as the layer below lands",
                                         review.base
                                     )
                                 )
-                            );
-                        } else if review_provider
-                            .platform_refuses_base_change(review)
-                            .unwrap_or(false)
-                        {
-                            // In a stack, but not one that can reach this
-                            // parent. `submit` is the wrong advice here - it
-                            // refuses a review in a stack - so name what
-                            // actually unblocks it, as `submit` itself does.
-                            anstream::println!(
-                                "{} review base is {}, local parent is {parent} - the platform \
-                                 will not move it there and refuses a change by hand; dissolve \
-                                 the stack on the platform, then run `git stk submit`",
+                            ),
+                            Some(BaseGap::Sync) => anstream::println!(
+                                "{} review base is {}, local parent is {parent} - the \
+                                 platform moved it when {parent} landed; run `git stk sync`",
                                 style::paint(style::WARN, "warning:"),
                                 review.base
-                            );
-                        } else {
-                            anstream::println!(
+                            ),
+                            Some(BaseGap::Neither) => anstream::println!(
+                                "{} review base is {}, local parent is {parent} - the \
+                                 platform will not move it there and refuses a change by \
+                                 hand; dissolve the stack on the platform, then run \
+                                 `git stk submit`",
+                                style::paint(style::WARN, "warning:"),
+                                review.base
+                            ),
+                            None => anstream::println!(
                                 "{} review base is {}, local parent is {parent} - run `git stk submit`",
                                 style::paint(style::WARN, "warning:"),
                                 review.base
-                            );
+                            ),
                         }
                     }
                 }
