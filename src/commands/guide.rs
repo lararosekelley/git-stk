@@ -57,9 +57,9 @@ const TOPICS: &[(&str, &str, Walk)] = &[
 pub struct Guide {
     /// Which tour to run; omit for a menu.
     // Derived from `TOPICS`, so the menu and the accepted values cannot drift
-    // apart - a tour added to one but not the other used to parse as invalid,
-    // which only someone running that exact tour would ever see. A plain
-    // comment, not a doc one: clap renders `///` here as the argument's help.
+    // apart: a tour in one but not the other would parse as invalid, which
+    // only someone running that exact tour would ever see. A plain comment,
+    // not a doc one: clap renders `///` here as the argument's help.
     #[arg(value_parser = clap::builder::PossibleValuesParser::new(
         TOPICS.iter().map(|(name, _, _)| *name).collect::<Vec<_>>()
     ))]
@@ -491,7 +491,12 @@ fn github(tour: &mut Tour) -> Result<()> {
     tour.say("   opposite of what you asked. Rerun without it once checks are green.");
     tour.say("3. `submit` and `cleanup` stop retargeting layers. GitHub moves each");
     tour.say("   one onto the trunk as the layer below it lands, and git-stk says so");
-    tour.say("   rather than claiming a change it did not make.");
+    tour.say("   rather than claiming a change it did not make. Where the stack");
+    tour.say("   will not make the move - it only ever puts a layer on the one");
+    tour.say("   below it or on the stack's base - they say which of two things");
+    tour.say("   closes the gap: `git stk sync` if the platform already moved it");
+    tour.say("   and your local stack is behind, or `git stk unstack` if nothing");
+    tour.say("   will move it, as after re-rooting a registered line.");
     tour.say("");
     tour.say("`list` marks each layer with its place in GitHub's stack - `⛁2/3` -");
     tour.say("and `status` names the stack, so it is visible which of the two is in");

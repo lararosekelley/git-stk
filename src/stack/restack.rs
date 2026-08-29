@@ -465,12 +465,11 @@ fn reconcile_diverged_remotes(
     }
 
     if !prompt::confirm("cherry-pick these into your local branches before pushing? [y/N] ")? {
-        // Declining used to end the run, leaving the only way forward a
-        // command the user had to assemble themselves - and the one that reads
-        // as the more dangerous of the two. Offer it instead: the restack that
-        // follows pushes with `--force-with-lease`, so answering yes here is
-        // exactly "discard them", and the lease still refuses if the remote
-        // moves again between now and then.
+        // The other half of the offer, rather than an error naming a command
+        // to assemble by hand - and the more dangerous-looking of the two at
+        // that. The restack that follows pushes with `--force-with-lease`, so
+        // answering yes here is exactly "discard them", and the lease still
+        // refuses if the remote moves again in between.
         if prompt::confirm("discard them and overwrite the remote branches instead? [y/N] ")? {
             return Ok(());
         }
