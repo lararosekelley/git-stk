@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "git-stk"
-version = "0.11.6"
+version = "0.12.0"
 dependencies = [
  "anstream",
  "anstyle",
