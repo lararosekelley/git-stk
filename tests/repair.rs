@@ -580,9 +580,10 @@ fn repair_uses_githubs_stack_even_when_registration_is_off() {
     repo.git(["switch", "-c", "feature/b"]);
     repo.commit_file("b.txt", "b\n", "b work");
 
+    // Both layers open, so the stack's ordering is still current.
     let stacks = r##"[{"number":4,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"feature/a"}},
-        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .on("repos/owner/repo/stacks", stacks)
