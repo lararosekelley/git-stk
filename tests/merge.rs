@@ -1150,7 +1150,9 @@ fn merge_says_so_when_the_async_result_cannot_be_read() {
 }
 
 /// `merge --all` over a two-layer stack where GitHub has not retargeted the
-/// upper layer yet. `cleanup` moves the local parent to the trunk but stands
+/// upper layer yet - the sibling of
+/// `merge_all_lands_a_registered_stack_through_the_async_endpoint`, which
+/// covers the same loop once the retarget has happened. `cleanup` moves the local parent to the trunk but stands
 /// down from the retarget, so for a moment the review's base and the local
 /// parent disagree - and the check that notices sends the user to
 /// `git stk submit`, which refuses for a review in a stack. The loop must
@@ -1342,9 +1344,16 @@ fn merge_uses_the_async_endpoint_for_a_stack_git_stk_did_not_register() {
     );
 }
 
-/// `merge --all` over a registered stack: every layer goes through the async
-/// endpoint, the loop survives GitHub retargeting the layers server-side
-/// between iterations, and `gh pr merge` is never reached.
+/// `merge --all` over a registered stack, with GitHub having retargeted the
+/// upper layer *before* the loop looks: every layer goes through the async
+/// endpoint and `gh pr merge` is never reached.
+///
+/// The sibling case - GitHub not having retargeted yet - is
+/// `merge_all_carries_on_when_github_has_not_retargeted_yet`. The two fixtures
+/// are the two sides of `NativeStack::can_base_on`: there `#13`'s base is a
+/// layer, so the gap is the platform's to close; here it is already the
+/// stack's own base, so `open_review_for` finds nothing to reconcile and
+/// returns before the predicate is consulted at all.
 #[test]
 fn merge_all_lands_a_registered_stack_through_the_async_endpoint() {
     let repo = TestRepo::new();
@@ -1472,9 +1481,12 @@ fn merge_surfaces_a_failed_async_merge() {
         .record(
             "pulls/12/merge-async -X PUT",
             "async.txt",
-            // Not a message on the transient-retry list: otherwise this
-            // passes by exhausting three retries rather than by "failed is an
-            // error", and would keep passing if the arm were deleted.
+            // The `failed` status is read in `await_async_merge`, outside the
+            // retry - which wraps only the enqueue, since the `PUT` is not
+            // idempotent. So the wording is not about retries at all: it must
+            // stay off the "checks are not green" path in
+            // `explain_merge_failure`, or the test would pass on a rewritten
+            // diagnosis rather than on "failed is an error".
             r##"{"status":"failed","details":{"message":"Required checks have not passed."}}"##,
         )
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)

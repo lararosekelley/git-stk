@@ -484,8 +484,8 @@ fn github(tour: &mut Tour) -> Result<()> {
     tour.say("");
     tour.say("1. `merge` uses GitHub's asynchronous merge endpoint and waits for the");
     tour.say("   result - up to two minutes. If it is still going, you get");
-    tour.say("   \"still merging; `git stk sync` picks it up once it lands\" rather");
-    tour.say("   than a failure.");
+    tour.say("   \"#12 is still merging on GitHub; `git stk sync` picks it up once");
+    tour.say("   it lands\" rather than a failure.");
     tour.say("2. `merge --auto` is refused. Scheduling a merge for when checks pass");
     tour.say("   has no equivalent on that endpoint, and merging now would be the");
     tour.say("   opposite of what you asked. Rerun without it once checks are green.");
