@@ -539,13 +539,16 @@ fn repair_prefers_githubs_stack_to_the_review_base() {
     repo.git(["switch", "-c", "feature/b"]);
     repo.commit_file("b.txt", "b\n", "b work");
 
+    // Both layers still open, so the stack's ordering is current: nothing has
+    // landed for the platform to have retargeted anything away from.
     let stacks = r##"[{"number":4,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"feature/a"}},
-        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .on("repos/owner/repo/stacks", stacks)
-        // The review says something else - retargeted since, say.
+        // The review targets the trunk - opened against it, then added to the
+        // stack - so the stated ordering is the better answer.
         .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
         .fallback("[]")
         .install(&repo);
@@ -595,5 +598,50 @@ fn repair_ignores_githubs_stack_unless_it_is_enabled() {
     assert_eq!(
         repo.git(["config", "--get", "branch.feature/b.stkParent"]),
         "main"
+    );
+}
+
+/// But not once the layer below has landed. The platform keeps a landed layer
+/// listed, so the ordering goes on naming a merged branch as the parent - while
+/// the platform itself already retargeted the review away from it, and is the
+/// only thing that can, since it refuses a base change by hand. Taking the
+/// stale answer would write a `stkParent` pointing at a merged branch for
+/// `restack` to rebase and force-push against.
+#[test]
+fn repair_prefers_the_review_base_once_the_layer_below_has_landed() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.git(["switch", "-c", "feature/a"]);
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "-c", "feature/b"]);
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // feature/a landed and stays listed; the platform moved #13 onto main.
+    let stacks = r##"[{"number":4,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"closed","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["repair"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "feature/b: set parent main (from github review #13)",
+        ))
+        // feature/a still reads from the stack: its parent is the stack's own
+        // base, which no layer landing can stale.
+        .stdout(predicates::str::contains("feature/b: set parent feature/a").not());
+
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "main",
+        "the parent must be where the platform actually put the base"
     );
 }

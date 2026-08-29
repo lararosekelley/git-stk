@@ -336,9 +336,9 @@ fn open_review_for(
         {
             bail!(
                 "review {} targets {}, but {branch}'s stack parent is {expected} - \
-                 it is in a platform stack, which has no base change left to make \
-                 here and refuses one by hand; dissolve the stack on the platform, \
-                 then run `git stk submit`",
+                 its stack will not move it there, and the platform refuses a \
+                 change by hand; dissolve the stack on the platform, then run \
+                 `git stk submit`",
                 review.id,
                 review.base
             );

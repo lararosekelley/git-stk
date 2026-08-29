@@ -116,14 +116,25 @@ pub fn repair(dry_run: bool) -> Result<()> {
 
         let mut found: Option<(String, String)> = None;
 
-        // The platform's own stack first, when it keeps one: it is an ordering
-        // someone stated rather than one inferred, it survives a wiped
-        // `.git/config`, and it is right even where the review base has since
-        // been retargeted. Best effort - `native_stack_for` answers `None` for
-        // every provider but GitHub, and for GitHub unless `stk.githubStacks`
-        // is on.
+        // The platform's own stack first, when it keeps one and its answer is
+        // still current: it is an ordering someone stated rather than one
+        // inferred, and it survives a wiped `.git/config`.
+        //
+        // Current is the load-bearing word. The platform keeps a landed layer
+        // listed, so the ordering goes on naming a merged branch as the parent
+        // long after the platform itself retargeted this review away from it -
+        // and the platform is the only thing that ever retargets a stacked
+        // review, since it refuses a change by hand. So once the layer below
+        // has landed, the review base is the fresher answer and this falls
+        // through to it. Taking the stale one would write a `stkParent`
+        // pointing at a merged branch, which `restack` then rebases and
+        // force-pushes against.
+        //
+        // Best effort - `native_stack_for` answers `None` for every provider
+        // but GitHub, and for GitHub unless `stk.githubStacks` is on.
         if let Some((_, review_provider)) = &provider
             && let Ok(Some(stack)) = review_provider.native_stack_for(branch)
+            && stack.parent_is_current(branch)
             && let Some(parent) = stack.parent_of(branch)
             && parent != branch
         {

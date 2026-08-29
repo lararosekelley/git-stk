@@ -27,8 +27,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   that endpoint has no scheduled mode - and `submit`/`cleanup` stop
   retargeting a review GitHub owns - it moves each layer itself as the one
   below it lands, and says so rather than claiming a change git-stk did not
-  make. Where GitHub has no move left to make and still refuses one by hand -
-  a stack's bottom layer, or one everything below has landed for - `submit`,
+  make. Where GitHub will not make the move and still refuses one by hand -
+  wherever the stack will not bring a base to the recorded parent - `submit`,
   `cleanup`, and `merge` say so, and say to dissolve the stack on the platform,
   rather than promising a retarget that never comes. All of this is inert with `stk.githubStacks` off.
 - **stack:** rooting a stack on a branch other than the trunk records that
