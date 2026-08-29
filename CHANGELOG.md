@@ -10,8 +10,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 - **restack:** a squash-merged parent no longer makes `restack` report the
   remaining branches as missing its commits. The squash's patch id matches none
-  of the originals, so comparing commits could not see the work had landed;
-  identical trees now settle it, whatever the commit graphs look like. With
+  of the originals, so comparing commits could not see the work had landed; a
+  three-way merge now settles it, whatever the commit graphs look like. With
   `stk.mergeStrategy = squash` this fired after every merge in a stack (#311).
 
 ## 0.12.0

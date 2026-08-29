@@ -1112,10 +1112,14 @@ fn restack_never_rewrites_a_stack_base_that_acquired_a_parent() {
 /// The squash-merge shape from #311. The remote branch carries the two commits
 /// a PR was squash-merged from; the local branch has been rebased onto a trunk
 /// that already contains that work, so those commits are gone on purpose. The
-/// squash's patch-id matches neither original, so `--cherry-pick` still reads
-/// them as missing - but the trees are identical, and there is nothing to
-/// incorporate. With `stk.mergeStrategy = squash` this otherwise fires after
-/// every merge in a stack.
+/// squash's patch id matches neither original, so `--cherry-pick` still reads
+/// them as missing - but merging the remote in would bring nothing, and there
+/// is nothing to incorporate. With `stk.mergeStrategy = squash` this otherwise
+/// fires after every merge in a stack.
+///
+/// The trunk also carries an unrelated commit, which is the common case and
+/// the one a plain tree comparison cannot answer: it makes the two trees
+/// differ while the remote still adds nothing.
 #[test]
 fn restack_ignores_remote_commits_a_squash_merge_already_landed() {
     let repo = TestRepo::new();
@@ -1130,25 +1134,34 @@ fn restack_ignores_remote_commits_a_squash_merge_already_landed() {
     let remote_a = repo.remote_sha(&bare, "feature/a");
 
     // The trunk takes both changes as a single squashed commit, exactly as a
-    // squash merge would: same content, one commit, unrelated patch-ids.
+    // squash merge would - plus an unrelated commit beside it.
     repo.git(["switch", "main"]);
     repo.write("a.txt", "one\n");
     repo.write("a2.txt", "two\n");
     repo.git(["add", "."]);
     repo.git(["commit", "-m", "squashed pair (#1)"]);
+    repo.commit_file("unrelated.txt", "elsewhere\n", "someone else's commit");
 
     // And the local branch is rebased onto it, dropping the originals - which
     // is what `sync` does, and is correct.
     repo.git(["switch", "feature/a"]);
     repo.git(["reset", "--hard", "main"]);
+    repo.git(["switch", "feature/b"]);
 
+    // The real path: `restack --push`, which is where the prompt lived. No
+    // stdin, so a prompt would read EOF as "no" and fail the run.
     repo.stack()
-        .args(["restack", "--push", "--dry-run"])
+        .args(["restack", "--push"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("cherry-pick").not())
-        .stdout(predicates::str::contains("not in your local").not());
+        .stderr(predicates::str::contains("not in your local").not())
+        .stdout(predicates::str::contains("cherry-pick").not());
 
-    // Nothing was pushed by the dry run, and the remote still has the originals.
-    assert_eq!(repo.remote_sha(&bare, "feature/a"), remote_a);
+    // The remote was overwritten with the rebased branch, discarding the
+    // originals the squash already landed.
+    assert_ne!(repo.remote_sha(&bare, "feature/a"), remote_a);
+    assert_eq!(
+        repo.remote_sha(&bare, "feature/a"),
+        repo.git(["rev-parse", "feature/a"])
+    );
 }

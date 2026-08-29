@@ -418,13 +418,13 @@ fn reconcile_diverged_remotes(
         if extra.is_empty() {
             continue;
         }
-        // Commits the remote has and we do not, but identical trees: the work
-        // is already in the local branch under different commits. A squash
-        // merge is the usual way this happens - it lands the parent's commits
-        // as one whose patch-id matches none of them, so `--cherry-pick`
-        // cannot see they are gone on purpose, and the restack that dropped
-        // them was right. There is nothing to incorporate, so do not ask.
-        if git::same_content(branch, &tracking)? {
+        // Commits the remote has and we do not, but nothing in them that the
+        // local branch lacks. A squash merge is the usual way this happens: it
+        // lands the parent's commits as one whose patch id matches none of
+        // them, so `--cherry-pick` cannot see they are gone on purpose, and
+        // the restack that dropped them was right. There is nothing to
+        // incorporate, so do not ask.
+        if git::merge_adds_nothing(branch, &tracking)? {
             continue;
         }
         diverged.push((branch.clone(), extra));

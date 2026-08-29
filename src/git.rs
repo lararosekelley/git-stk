@@ -1000,18 +1000,33 @@ pub fn remote_only_commits(branch: &str, tracking: &str) -> Result<Vec<(String, 
     Ok(commits)
 }
 
-/// Whether two refs have identical trees - the same content, whatever their
-/// commit graphs look like.
+/// Whether merging `other` into `one` would bring nothing new - every change
+/// it carries is already there, whatever the commit graphs look like.
 ///
-/// A squash merge rewrites a branch's commits into one whose patch-id matches
+/// A squash merge rewrites a branch's commits into one whose patch id matches
 /// none of the originals, so comparing commits (even with `--cherry-pick`)
-/// reports the originals as missing long after the work has landed. The trees
-/// are the decisive answer, and they are strategy-agnostic: identical content
-/// means there is nothing to reconcile.
-pub fn same_content(one: &str, other: &str) -> Result<bool> {
-    // `--quiet` exits 1 for a difference, which is an answer rather than a
-    // failure.
-    Ok(output_codes(&["diff", "--quiet", one, other], &[1], "git diff --quiet")?.is_some())
+/// reports them as missing long after the work has landed. Comparing trees
+/// directly is not enough either: any unrelated commit alongside the squash
+/// makes the trees differ again while the remote still adds nothing. A
+/// three-way merge asks the question the caller actually has, and needs no
+/// knowledge of how the merge upstream was done.
+///
+/// A merge that conflicts is a real divergence, and reads as `false`.
+pub fn merge_adds_nothing(one: &str, other: &str) -> Result<bool> {
+    // `--write-tree` writes the merged tree and prints its oid; a conflict
+    // exits 1, which is an answer rather than a failure. Needs git 2.38, the
+    // same floor `rebase --update-refs` already sets.
+    let Some(merged) = output_codes(
+        &["merge-tree", "--write-tree", one, other],
+        &[1],
+        "git merge-tree --write-tree",
+    )?
+    else {
+        return Ok(false);
+    };
+    let ours = output(&["rev-parse", &format!("{one}^{{tree}}")])
+        .with_context(|| format!("failed to read the tree of {one}"))?;
+    Ok(merged.lines().next().unwrap_or_default().trim() == ours.trim())
 }
 
 pub fn config_get(key: &str) -> Result<Option<String>> {
