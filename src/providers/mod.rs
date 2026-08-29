@@ -158,8 +158,9 @@ pub struct NativeStack {
 
 impl NativeStack {
     /// Whether this stack can still bring `branch`'s base to `parent` on its
-    /// own - `parent` is somewhere the platform puts a base: the stack's own
-    /// base, or a layer still between them.
+    /// own - `parent` is one of the two places the platform puts a base: the
+    /// layer recorded directly below `branch`, or the stack's own base, which
+    /// is where every layer ends up once the ones beneath it land.
     ///
     /// This is the question every caller has, and it needs the local parent
     /// to answer. A base and a parent that disagree while the stack can still

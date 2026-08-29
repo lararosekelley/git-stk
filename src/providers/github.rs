@@ -804,7 +804,7 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
         return Some(NativeStack {
             number: stack.get("number")?.as_u64()?,
             base: stack.get("base")?.get("ref")?.as_str().map(str::to_owned)?,
-            // All layers or none. `parent_of` and `position_of` are
+            // All layers or none. `parent_of` and `can_base_on` are
             // positional, so dropping one unreadable layer silently shifts
             // every layer above it - and `repair` writes that shifted order as
             // `stkParent`, which `restack` then rebases and force-pushes

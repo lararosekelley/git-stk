@@ -801,16 +801,18 @@ fn submit_branch(
             );
             return Ok(SubmitAction::Skipped);
         }
-        // A stack's bottom layer: nothing lands below it, so the platform will
-        // never move this base - and it refuses a change by hand. Saying the
-        // platform will handle it would be a promise nothing keeps, so name
-        // the one way out instead.
+        // In a stack, but not one that can reach this parent - the bottom
+        // layer, a layer everything below has already landed for, or a
+        // reordered one. The platform will not make this move and refuses one
+        // by hand, so saying it will handle it would be a promise nothing
+        // keeps. Name the one way out instead, and describe the state rather
+        // than a position: which layer this is varies, the dead end does not.
         if review_provider.platform_refuses_base_change(&review)? {
             anstream::println!(
                 "{}",
                 style::warn(&format!(
-                    "{} targets {} but should target {parent}, and it is a stack's bottom \
-                     layer - the platform will not move it and refuses a change by hand; \
+                    "{} targets {} but should target {parent}, and its stack will not \
+                     move it there - the platform refuses a change by hand too; \
                      dissolve the stack on the platform and submit again",
                     review.id, review.base
                 ))
