@@ -1066,6 +1066,10 @@ fn restack_dry_run_reports_remote_only_commits() {
         .success()
         .stdout(predicates::str::contains(
             "would offer to cherry-pick these into your local branches",
+        ))
+        // Both halves of the offer, since both are real answers.
+        .stdout(predicates::str::contains(
+            "or to discard them and overwrite the remote",
         ));
 
     // Dry run changed nothing.
@@ -1195,9 +1199,27 @@ fn restack_offers_to_discard_remote_only_commits_when_the_pick_is_declined() {
             predicates::str::contains("remote branches have commits not in your local stack").not(),
         );
 
-    // The remote was overwritten, and the web-only commit is gone as asked.
+    // Discarded, not incorporated: the remote now matches the local branch
+    // exactly, and neither side carries the web-only commit any more. On the
+    // cherry-pick path both of those would be false - the commit would be in
+    // the local branch and in the pushed history.
     assert_ne!(repo.remote_sha(&bare, "feature/a"), remote_a);
-    assert!(!repo.path().join("web.txt").exists());
+    assert_eq!(
+        repo.remote_sha(&bare, "feature/a"),
+        repo.git(["rev-parse", "feature/a"])
+    );
+    assert!(
+        !repo
+            .git(["log", "--format=%s", "feature/a"])
+            .contains("web edit on feature/a"),
+        "the discarded commit is still in the local branch"
+    );
+    assert!(
+        !repo
+            .git(["log", "--format=%s", &format!("{}/feature/a", "origin")])
+            .contains("web edit on feature/a"),
+        "the discarded commit is still on the remote"
+    );
 }
 
 /// And declining both still stops, with a hint that names the lease rather

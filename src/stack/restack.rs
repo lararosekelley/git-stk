@@ -370,6 +370,11 @@ fn warn_bases_behind_remote(branches: &[String], parents: &BTreeMap<String, Stri
 /// rebase loop that follows replays descendants onto the reconciled tip, and
 /// the push lease then matches.
 ///
+/// Declining that offers the other half - discarding them, which the same
+/// rebase-and-lease-push then carries out by overwriting the remote. Declining
+/// both stops, because the third option is to change nothing and push anyway,
+/// and that is the one this exists to prevent.
+///
 /// Only runs when we are about to push (a no-push restack leaves the remote
 /// untouched, so a divergence is not yet fatal) and a remote exists. Under
 /// `--dry-run` it reports without fetching or changing anything.
@@ -451,7 +456,10 @@ fn reconcile_diverged_remotes(
     if dry_run {
         anstream::println!(
             "{}",
-            style::dim("would offer to cherry-pick these into your local branches before pushing")
+            style::dim(
+                "would offer to cherry-pick these into your local branches before pushing, \
+                 or to discard them and overwrite the remote",
+            )
         );
         return Ok(());
     }
