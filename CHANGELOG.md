@@ -4,6 +4,16 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.12.1
+
+### Fixed
+
+- **restack:** a squash-merged parent no longer makes `restack` report the
+  remaining branches as missing its commits. The squash's patch id matches none
+  of the originals, so comparing commits could not see the work had landed;
+  identical trees now settle it, whatever the commit graphs look like. With
+  `stk.mergeStrategy = squash` this fired after every merge in a stack (#311).
+
 ## 0.12.0
 
 ### Added

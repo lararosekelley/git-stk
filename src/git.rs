@@ -1000,6 +1000,20 @@ pub fn remote_only_commits(branch: &str, tracking: &str) -> Result<Vec<(String, 
     Ok(commits)
 }
 
+/// Whether two refs have identical trees - the same content, whatever their
+/// commit graphs look like.
+///
+/// A squash merge rewrites a branch's commits into one whose patch-id matches
+/// none of the originals, so comparing commits (even with `--cherry-pick`)
+/// reports the originals as missing long after the work has landed. The trees
+/// are the decisive answer, and they are strategy-agnostic: identical content
+/// means there is nothing to reconcile.
+pub fn same_content(one: &str, other: &str) -> Result<bool> {
+    // `--quiet` exits 1 for a difference, which is an answer rather than a
+    // failure.
+    Ok(output_codes(&["diff", "--quiet", one, other], &[1], "git diff --quiet")?.is_some())
+}
+
 pub fn config_get(key: &str) -> Result<Option<String>> {
     // git config --get exits 1 when the key is unset.
     output_codes(&["config", "--get", key], &[1], "git config --get")
