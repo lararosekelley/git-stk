@@ -1108,3 +1108,47 @@ fn restack_never_rewrites_a_stack_base_that_acquired_a_parent() {
         "the base must not have been rewritten or force-pushed"
     );
 }
+
+/// The squash-merge shape from #311. The remote branch carries the two commits
+/// a PR was squash-merged from; the local branch has been rebased onto a trunk
+/// that already contains that work, so those commits are gone on purpose. The
+/// squash's patch-id matches neither original, so `--cherry-pick` still reads
+/// them as missing - but the trees are identical, and there is nothing to
+/// incorporate. With `stk.mergeStrategy = squash` this otherwise fires after
+/// every merge in a stack.
+#[test]
+fn restack_ignores_remote_commits_a_squash_merge_already_landed() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "one\n", "first of the squashed pair");
+    repo.commit_file("a2.txt", "two\n", "second of the squashed pair");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "child change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+    let remote_a = repo.remote_sha(&bare, "feature/a");
+
+    // The trunk takes both changes as a single squashed commit, exactly as a
+    // squash merge would: same content, one commit, unrelated patch-ids.
+    repo.git(["switch", "main"]);
+    repo.write("a.txt", "one\n");
+    repo.write("a2.txt", "two\n");
+    repo.git(["add", "."]);
+    repo.git(["commit", "-m", "squashed pair (#1)"]);
+
+    // And the local branch is rebased onto it, dropping the originals - which
+    // is what `sync` does, and is correct.
+    repo.git(["switch", "feature/a"]);
+    repo.git(["reset", "--hard", "main"]);
+
+    repo.stack()
+        .args(["restack", "--push", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("cherry-pick").not())
+        .stdout(predicates::str::contains("not in your local").not());
+
+    // Nothing was pushed by the dry run, and the remote still has the originals.
+    assert_eq!(repo.remote_sha(&bare, "feature/a"), remote_a);
+}
