@@ -285,8 +285,8 @@ The setting gates _registering_, not _noticing_. A stack can exist without git-s
 `gh stack submit`, the GitHub web UI - and GitHub refuses the ordinary merge and retarget for those pull
 requests just the same, so git-stk reads and handles a stack whoever made it.
 
-Registering hands two things to GitHub, and git-stk follows it there. A pull request in a stack cannot be
-merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merge and waits for the
+A stack hands two things to GitHub - whoever registered it - and git-stk follows it there. A pull request
+in a stack cannot be merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merge and waits for the
 result, and refuses `--auto` there because that endpoint has no scheduled mode. Its base cannot be changed
 by hand either. GitHub retargets each layer onto the stack's base as the one below it lands, so `submit`
 and `cleanup` report that instead of retargeting. A stack only ever puts a layer on the one recorded below

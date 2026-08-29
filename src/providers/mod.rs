@@ -434,9 +434,12 @@ pub trait ReviewProvider {
     /// Whether this provider would register a stack at all - the provider
     /// keeps stacks, and the user has asked for it.
     ///
-    /// Exists so a dry run can decline for the same reason the real run would,
-    /// rather than promising a stack on a provider that has none or with the
-    /// setting off. Default `false`: only GitHub keeps stacks.
+    /// Asked before anything is fetched, and by the dry run and the real run
+    /// alike, so the two decline for the same reason rather than one
+    /// promising a stack the other declines - and so a provider that keeps no
+    /// stacks spends no lookups discovering that.
+    ///
+    /// Default `false`: only GitHub keeps stacks.
     fn registers_stacks(&self) -> bool {
         false
     }
