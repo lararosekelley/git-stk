@@ -820,6 +820,12 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
                             .get("ref")?
                             .as_str()
                             .map(str::to_owned)?,
+                        // Absent reads as landed, which is the safe side here:
+                        // it makes the stack's ordering answer "not current"
+                        // and lets `repair` fall through to the review base,
+                        // which the platform keeps up to date.
+                        open: review.get("state").and_then(serde_json::Value::as_str)
+                            == Some("open"),
                     })
                 })
                 .collect::<Option<Vec<_>>>()?,

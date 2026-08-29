@@ -134,6 +134,11 @@ pub enum MergeBlocker {
 pub struct NativeStackLayer {
     pub id: String,
     pub branch: String,
+    /// Whether this layer's review is still open. A landed layer keeps its
+    /// place in the listing (verified live), so the ordering alone cannot say
+    /// what has already happened - and a landed layer is one the platform has
+    /// already retargeted away from.
+    pub open: bool,
 }
 
 /// A stack as the platform records it: its layers bottom first - the order it
@@ -157,6 +162,23 @@ pub struct NativeStack {
 }
 
 impl NativeStack {
+    /// Whether this stack's own answer for `branch`'s parent is still current.
+    ///
+    /// It is not, once that parent's own review has landed: the platform keeps
+    /// a landed layer listed, so the ordering keeps naming it forever, while
+    /// the platform has already retargeted `branch` away from it. The stack's
+    /// base is always current - it is a branch, not a layer, and nothing
+    /// lands it out from under the stack.
+    pub fn parent_is_current(&self, branch: &str) -> bool {
+        let Some(parent) = self.parent_of(branch) else {
+            return false;
+        };
+        self.layers
+            .iter()
+            .find(|layer| layer.branch == parent)
+            .is_none_or(|layer| layer.open)
+    }
+
     /// Whether this stack can still bring `branch`'s base to `parent` on its
     /// own - `parent` is one of the two places the platform puts a base: the
     /// layer recorded directly below `branch`, or the stack's own base, which
@@ -977,6 +999,7 @@ mod tests {
                 .map(|id| NativeStackLayer {
                     id: (*id).to_owned(),
                     branch: id.trim_start_matches('#').to_owned(),
+                    open: true,
                 })
                 .collect(),
         }

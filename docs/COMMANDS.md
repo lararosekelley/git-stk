@@ -283,8 +283,10 @@ merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merg
 result, and refuses `--auto` there because that endpoint has no scheduled mode. Its base cannot be changed
 by hand either. GitHub retargets each layer onto the stack's base as the one below it lands, so `submit`
 and `cleanup` report that instead of retargeting - but the two are separate refusals, and where they come
-apart there is a dead end: a layer the stack has nothing left to move, the bottom one included, keeps a
-base neither side will change - a line re-rooted onto a release branch after it was registered, say.
+apart there is a dead end: wherever the stack will not bring a base to the parent git-stk records, that
+base is one neither side will change. A stack only ever puts a layer on the one recorded below it or on its
+own base, so a line re-rooted onto a release branch, a reordered one, and the stack's bottom all land
+there.
 `submit`, `cleanup`, and `merge` all name that state and say to dissolve the stack on the platform, after
 which an ordinary retarget works again. The local side is unchanged: git-stk still
 owns `restack`, `absorb`, worktrees, and the stack metadata.
