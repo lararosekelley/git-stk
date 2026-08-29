@@ -1,8 +1,9 @@
 # Commands
 
-The full command reference. For install, the quickstart, configuration, the
-worktree overview, and a one-line index of every command, see the
-[README](../README.md).
+The reference for the commands that build, move, and land a stack. Setting
+git-stk up - `setup`, `completions`, `guide`, `uninstall` - lives in the
+[README](../README.md), along with install, the quickstart, configuration, the
+worktree overview, and a one-line index of every command.
 
 ## Building and inspecting the stack
 
@@ -10,7 +11,7 @@ worktree overview, and a one-line index of every command, see the
 git stk new <branch> [--insert | --prepend | --worktree] [--dry-run]
 git stk parent [branch]
 git stk children [branch]
-git stk list [--all] [--commits] [--format <markdown|plain>]
+git stk list [--all] [--commits] [--reviews] [--local] [--format <markdown|plain>]
 git stk adopt [branch] [--parent <parent>] [--dry-run]   # defaults: current branch, trunk
 git stk detach [branch]
 git stk unstack [--dry-run] [-y]                         # dissolve the platform's own stack
@@ -79,6 +80,11 @@ branch is behind its parent, `submit` when a review base went stale, `sync` when
 merged. A stack's base gets none of those - nothing rebases, submits, or lands it - so `status` names it as
 the base and points at `git stk detach` instead; a base whose own review landed, and a layer sitting on
 one, are told that finishing it is theirs to do rather than sent to a command that would skip it.
+
+`list --reviews` adds each review's approvals, comments, and requested changes beneath its branch, so the
+tree doubles as a "what is waiting on whom" view. `list --local` goes the other way: it skips every provider
+lookup and draws the tree from local metadata alone - no review numbers, CI dots, or queue markers, and no
+network at all, which is what makes it usable offline or against a rate-limited host.
 
 `list --format markdown` prints a shareable summary instead - a status line and the PRs in merge order
 with links and states, ready to paste into a tracking issue or PR comment:
@@ -191,8 +197,8 @@ git stk view [branch]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
 git stk repair [--dry-run | --from-remote]
-git stk submit [branch] [--no-stack] [-t <title>] [-d <desc>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
-git stk submit [--stack | --no-stack | --downstack] [-t <title>] [-d <desc>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--rebuild-overview] [--dry-run] [--push | --no-push]
+git stk submit [branch] [--no-stack] [-t <title>] [-d <desc> | --desc-file <path>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
+git stk submit [--stack | --no-stack | --downstack] [-t <title>] [-d <desc> | --desc-file <path>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--rebuild-overview] [--dry-run] [--push | --no-push]
 git stk cleanup [branch] [--dry-run] [--keep-branch]
 ```
 

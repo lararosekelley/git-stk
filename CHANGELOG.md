@@ -4,6 +4,18 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.12.2
+
+### Fixed
+
+- **docs:** `list --reviews` and `list --local` were documented nowhere; both
+  are now in the command reference. `submit`'s synopsis names `--desc-file`,
+  and `docs/COMMANDS.md` no longer calls itself the full reference while four
+  setup commands live only in the README.
+- **guide:** the `github` tour covers the base dead end - where a stack will
+  not move a base and neither will git-stk - and which of `sync` or `unstack`
+  closes it.
+
 ## 0.12.1
 
 ### Fixed
@@ -53,6 +65,7 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   dissolving the stack on the platform when nothing will move it - a re-rooted
   or reordered line, or the stack's own bottom. Registering itself needs
   `stk.githubStacks`; following a stack GitHub already holds does not.
+
 - **unstack:** `git stk unstack` dissolves the platform's own stack for the
   stack you are on, leaving its reviews open and standalone - registering one
   was otherwise a one-way door, since turning `stk.githubStacks` off left every
@@ -108,7 +121,7 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   is pushed, rather than left to the forge to reject when the review above it is
   opened against a ref that does not exist there. Submitting the base itself now
   says there is nothing below it to submit and points at `git stk submit
-  --stack` run from that branch, rather than reporting it as unstacked and
+--stack` run from that branch, rather than reporting it as unstacked and
   offering to re-root it onto the trunk. The trunk keeps its own messages rather
   than being reported as some stack's base (#307).
 - **submit, merge, status, repair, guide:** every message suggesting a bare
