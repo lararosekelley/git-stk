@@ -589,10 +589,11 @@ fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String
     // Verified live on a three-layer stack: the stack stays `open` with the
     // landed layer still listed (as `closed`) until every layer has landed, at
     // which point it flips to `open: false`. GitHub also retargets each layer
-    // onto the trunk as the one below it lands. So the answer here does change
-    // - but no caller re-reads it inside a single merge, precisely because
-    // that retarget means `cleanup` finds nothing to do. This is defensive:
-    // it costs one request and removes the question.
+    // onto the trunk as the one below it lands. So the answer here changes in
+    // two ways at once - which layers are still open, and where their bases
+    // point - and `merge --all` reads it again for every layer after this
+    // one, through `base_gap`. One request, and the next read is of the stack
+    // as it is rather than as it was.
     forget_stacks_listing();
     Ok((path, output))
 }
