@@ -5,7 +5,7 @@ use clap_complete::engine::ArgValueCompleter;
 use crate::commands::Run;
 use crate::completions;
 use crate::providers::{
-    ReviewProvider, ReviewState, detect_review_provider, owned_review_for_branch,
+    BaseGap, ReviewProvider, ReviewState, detect_review_provider, owned_review_for_branch,
 };
 use crate::settings;
 use crate::style;
@@ -416,36 +416,48 @@ fn update_child_review_base(
         return Ok(());
     }
 
-    // Asked before the announcement, not after it: a review the platform owns
-    // is one git-stk will not touch, and saying "would update" first and
-    // "actually, the platform does that" second describes a decision that was
-    // already made. On a dry run the old order printed only the first half.
-    if review_provider.platform_will_base_on(&review, parent)? {
-        anstream::println!(
-            "{}",
-            style::dim(&format!(
-                "{} is in a stack; the platform retargets it as the stack lands",
-                review.id
-            ))
-        );
-        return Ok(());
-    }
-    // In a stack, but not one that can reach this parent - whose base the
-    // platform will therefore never move, and will not let us move either.
-    // Loud rather than dim: the branch this
-    // review targets is the one being cleaned up, so leaving it unsaid ends
-    // with the review pointing at a deleted branch.
-    if review_provider.platform_refuses_base_change(&review)? {
-        anstream::println!(
-            "{}",
-            style::warn(&format!(
-                "{} still targets {} and its stack will not move it to {parent} - the \
-                 platform refuses a change by hand too; dissolve the stack on the platform, \
-                 then run `git stk submit`",
-                review.id, review.base
-            ))
-        );
-        return Ok(());
+    // Asked before the announcement, not after it: a base git-stk will not
+    // touch is a decision already made, and saying "would update" first
+    // describes it backwards. On a dry run the old order printed only the
+    // first half.
+    match review_provider.base_gap(&review, parent)? {
+        Some(BaseGap::Platform) => {
+            anstream::println!(
+                "{}",
+                style::dim(&format!(
+                    "{} is in a stack; the platform retargets it as the stack lands",
+                    review.id
+                ))
+            );
+            return Ok(());
+        }
+        // Loud rather than dim for both of these: the branch this review
+        // targets is the one being cleaned up, so leaving it unsaid ends with
+        // the review pointing at a deleted branch.
+        Some(BaseGap::Sync) => {
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "{} already targets {} - the platform moved it when {parent} landed; \
+                     run `git stk sync` to catch the local stack up",
+                    review.id, review.base
+                ))
+            );
+            return Ok(());
+        }
+        Some(BaseGap::Neither) => {
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "{} still targets {} and its stack will not move it to {parent} - the \
+                     platform refuses a change by hand too; dissolve the stack on the \
+                     platform, then run `git stk submit`",
+                    review.id, review.base
+                ))
+            );
+            return Ok(());
+        }
+        None => {}
     }
 
     anstream::println!(

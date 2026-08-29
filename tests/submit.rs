@@ -2135,8 +2135,8 @@ fn submit_stack_refuses_to_extend_a_stack_that_does_not_hold_the_bottom() {
     // Stack 7 holds the two upper layers only - feature/n was rooted under it
     // afterwards.
     let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"feature/a"}},
-        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .record("api repos/owner/repo/stacks -X POST", "register.txt", "{}")
@@ -2183,9 +2183,9 @@ fn submit_downstack_says_nothing_about_a_stack_that_already_holds_more() {
 
     // The stack holds all three; `--downstack` from feature/b submits two.
     let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"feature/a"}},
-        {"number":13,"head":{"ref":"feature/b"}},
-        {"number":14,"head":{"ref":"feature/c"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}},
+        {"number":14,"state":"open","head":{"ref":"feature/c"}}]}]"##;
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .record("api repos/owner/repo/stacks -X POST", "register.txt", "{}")
@@ -2220,8 +2220,8 @@ fn submit_stack_extends_a_stack_the_submitted_line_grew_on_top_of() {
     repo.stack().args(["new", "feature/c"]).assert().success();
 
     let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"feature/a"}},
-        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .record("api repos/owner/repo/stacks -X POST", "register.txt", "{}")
@@ -2293,8 +2293,8 @@ fn submit_stack_dry_run_reports_a_stack_it_would_leave_alone() {
     repo.stack().args(["new", "feature/b"]).assert().success();
 
     let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"feature/a"}},
-        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .on("repos/owner/repo/stacks", stacks)
@@ -2398,8 +2398,8 @@ fn submit_does_not_retarget_a_review_github_owns() {
     repo.stack().args(["new", "feature/b"]).assert().success();
 
     let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"feature/a"}},
-        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         // Narrow: `pr edit --body` is the overview, which still happens.
         .record("pr edit 13 --base", "retarget.txt", "")
@@ -2444,8 +2444,8 @@ fn submit_names_the_way_out_for_a_stack_bottom_with_a_stale_base() {
 
     // ma/a is the stack's bottom, and its review still targets main.
     let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"ma/a"}},
-        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
     let fake = FakeProvider::new()
         .record("pr edit", "retarget.txt", "")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
@@ -2498,8 +2498,8 @@ fn submit_warns_about_a_reordered_stacks_bottom_rather_than_promising_a_move() {
     let _bare = repo.add_bare_origin(&["main", "ma/a", "ma/b"]);
 
     let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"ma/a"}},
-        {"number":13,"head":{"ref":"ma/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
     let fake = FakeProvider::new()
         .record("pr edit 12 --base", "retarget.txt", "")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
@@ -2520,4 +2520,43 @@ fn submit_warns_about_a_reordered_stacks_bottom_rather_than_promising_a_move() {
         !repo.path().join("retarget.txt").exists(),
         "the platform refuses this call, so it must not be attempted"
     );
+}
+
+/// The base moved and the local stack has not caught up: merge the bottom on
+/// the web, then submit before syncing. The platform already retargeted this
+/// review and will not move it again, so waiting is wrong - but so is
+/// dissolving the stack. `git stk sync` is what closes the gap.
+#[test]
+fn submit_sends_you_to_sync_when_the_platform_moved_the_base_already() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    let _bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+
+    // feature/a landed and stays listed; #13 is already on main.
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"closed","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .record("pr edit 13 --base", "retarget.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://example.com/13"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "feature/b"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("run `git stk sync`"))
+        // Neither of the other two remedies.
+        .stdout(predicates::str::contains("dissolve the stack").not())
+        .stdout(predicates::str::contains("the platform moves it as the stack lands").not());
+
+    assert!(!repo.path().join("retarget.txt").exists());
 }

@@ -8,7 +8,7 @@ use clap_complete::engine::ArgValueCompleter;
 use crate::cli::PushMode;
 use crate::commands::Run;
 use crate::completions;
-use crate::providers::{NativeStack, ReviewProvider, ReviewState, detect_review_provider};
+use crate::providers::{BaseGap, NativeStack, ReviewProvider, ReviewState, detect_review_provider};
 use crate::settings;
 use crate::style;
 use crate::{git, stack};
@@ -787,37 +787,43 @@ fn submit_branch(
             return Ok(SubmitAction::Skipped);
         }
 
-        // A layer of a GitHub stack - whoever registered it - has its base
-        // moved by GitHub as the layer below it lands, and retargeting by
-        // hand is refused there. Say so instead of claiming a change git-stk
-        // did not make.
-        if review_provider.platform_will_base_on(&review, parent)? {
-            anstream::println!(
-                "{}",
-                style::dim(&format!(
-                    "{} targets {} and is in a stack; the platform moves it as the stack lands",
-                    review.id, review.base
-                ))
-            );
-            return Ok(SubmitAction::Skipped);
-        }
-        // In a stack, but not one that can reach this parent - the bottom
-        // layer, a layer everything below has already landed for, or a
-        // reordered one. The platform will not make this move and refuses one
-        // by hand, so saying it will handle it would be a promise nothing
-        // keeps. Name the one way out instead, and describe the state rather
-        // than a position: which layer this is varies, the dead end does not.
-        if review_provider.platform_refuses_base_change(&review)? {
-            anstream::println!(
-                "{}",
-                style::warn(&format!(
-                    "{} targets {} but should target {parent}, and its stack will not \
-                     move it there - the platform refuses a change by hand too; \
-                     dissolve the stack on the platform and submit again",
-                    review.id, review.base
-                ))
-            );
-            return Ok(SubmitAction::Skipped);
+        // A base git-stk will not move itself: either the platform is going
+        // to, or nothing is. Say which, since the remedies differ.
+        match review_provider.base_gap(&review, parent)? {
+            Some(BaseGap::Platform) => {
+                anstream::println!(
+                    "{}",
+                    style::dim(&format!(
+                        "{} targets {} and is in a stack; the platform moves it as the stack lands",
+                        review.id, review.base
+                    ))
+                );
+                return Ok(SubmitAction::Skipped);
+            }
+            Some(BaseGap::Sync) => {
+                anstream::println!(
+                    "{}",
+                    style::warn(&format!(
+                        "{} already targets {} - the platform moved it when {parent} landed; \
+                         run `git stk sync` to catch the local stack up",
+                        review.id, review.base
+                    ))
+                );
+                return Ok(SubmitAction::Skipped);
+            }
+            Some(BaseGap::Neither) => {
+                anstream::println!(
+                    "{}",
+                    style::warn(&format!(
+                        "{} targets {} but should target {parent}, and its stack will not \
+                         move it there - the platform refuses a change by hand too; \
+                         dissolve the stack on the platform and submit again",
+                        review.id, review.base
+                    ))
+                );
+                return Ok(SubmitAction::Skipped);
+            }
+            None => {}
         }
 
         let output = if dry_run {
