@@ -39,11 +39,6 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   dissolving the stack on the platform when nothing will move it - a re-rooted
   or reordered line, or the stack's own bottom. Registering itself needs
   `stk.githubStacks`; following a stack GitHub already holds does not.
-- **list, status:** show when a review sits in the platform's own stack.
-  `list` marks the layer with its position (`⛁2/3`) and `status` names the
-  stack, so it is visible that GitHub - not git-stk - is what merges and
-  retargets those reviews. Both read it from the query the annotations already
-  make, so it costs no extra round trip (#316).
 - **unstack:** `git stk unstack` dissolves the platform's own stack for the
   stack you are on, leaving its reviews open and standalone - registering one
   was otherwise a one-way door, since turning `stk.githubStacks` off left every
