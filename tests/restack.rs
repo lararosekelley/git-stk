@@ -1165,3 +1165,64 @@ fn restack_ignores_remote_commits_a_squash_merge_already_landed() {
         repo.git(["rev-parse", "feature/a"])
     );
 }
+
+/// Declining the cherry-pick is no longer a dead end. The second question is
+/// the remedy the error used to describe and leave the user to assemble - and
+/// the restack that follows pushes with `--force-with-lease`, so answering it
+/// *is* the discard, with the lease still guarding against the remote moving
+/// again in between.
+#[test]
+fn restack_offers_to_discard_remote_only_commits_when_the_pick_is_declined() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "parent change");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "child change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+    add_remote_only_commit(&repo, "feature/a", "web.txt", "web edit on feature/a");
+    let remote_a = repo.remote_sha(&bare, "feature/a");
+    repo.git(["switch", "feature/b"]);
+
+    // No to the cherry-pick, yes to discarding.
+    repo.stack()
+        .args(["restack", "--push"])
+        .write_stdin("n\ny\n")
+        .assert()
+        .success()
+        .stderr(
+            predicates::str::contains("remote branches have commits not in your local stack").not(),
+        );
+
+    // The remote was overwritten, and the web-only commit is gone as asked.
+    assert_ne!(repo.remote_sha(&bare, "feature/a"), remote_a);
+    assert!(!repo.path().join("web.txt").exists());
+}
+
+/// And declining both still stops, with a hint that names the lease rather
+/// than a bare `--force`.
+#[test]
+fn restack_declining_both_stops_and_names_force_with_lease() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "parent change");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "child change");
+
+    let bare = repo.add_bare_origin(&["main", "feature/a", "feature/b"]);
+    add_remote_only_commit(&repo, "feature/a", "web.txt", "web edit on feature/a");
+    let remote_a = repo.remote_sha(&bare, "feature/a");
+    repo.git(["switch", "feature/b"]);
+
+    repo.stack()
+        .args(["restack", "--push"])
+        .write_stdin("n\nn\n")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--force-with-lease"))
+        .stderr(predicates::str::contains("push --force origin").not());
+
+    assert_eq!(repo.remote_sha(&bare, "feature/a"), remote_a);
+}

@@ -457,10 +457,19 @@ fn reconcile_diverged_remotes(
     }
 
     if !prompt::confirm("cherry-pick these into your local branches before pushing? [y/N] ")? {
+        // Declining used to end the run, leaving the only way forward a
+        // command the user had to assemble themselves - and the one that reads
+        // as the more dangerous of the two. Offer it instead: the restack that
+        // follows pushes with `--force-with-lease`, so answering yes here is
+        // exactly "discard them", and the lease still refuses if the remote
+        // moves again between now and then.
+        if prompt::confirm("discard them and overwrite the remote branches instead? [y/N] ")? {
+            return Ok(());
+        }
         bail!(
             "remote branches have commits not in your local stack\n\
              incorporate them (`git switch <branch> && git cherry-pick <sha>`) and re-run, \
-             or discard them with `git push --force {remote} <branch>`"
+             or discard them with `git push --force-with-lease {remote} <branch>`"
         );
     }
 

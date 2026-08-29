@@ -13,6 +13,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   of the originals, so comparing commits could not see the work had landed; a
   three-way merge now settles it, whatever the commit graphs look like. With
   `stk.mergeStrategy = squash` this fired after every merge in a stack (#311).
+- **restack:** declining the cherry-pick offer now asks whether to discard the
+  remote commits instead of failing with a command to assemble by hand. The
+  push that follows uses `--force-with-lease`, which the hint on the remaining
+  error now names too (#311).
 
 ## 0.12.0
 
