@@ -2599,8 +2599,8 @@ fn submit_does_not_retarget_in_a_stack_git_stk_did_not_register() {
     repo.stack().args(["new", "feature/b"]).assert().success();
 
     let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
-        {"number":12,"head":{"ref":"feature/a"}},
-        {"number":13,"head":{"ref":"feature/b"}}]}]"##;
+        {"number":12,"state":"open","head":{"ref":"feature/a"}},
+        {"number":13,"state":"open","head":{"ref":"feature/b"}}]}]"##;
     let fake = FakeProvider::new()
         .record("pr edit 13 --base", "retarget.txt", "")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
