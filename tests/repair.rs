@@ -1,6 +1,7 @@
 mod common;
 
 use common::{FakeProvider, TestRepo};
+use predicates::prelude::PredicateBooleanExt;
 
 /// Run a git plumbing command in `dir`, feeding `stdin`, returning trimmed
 /// stdout. For crafting refs the TestRepo helper can't (it has no stdin).
