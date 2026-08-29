@@ -83,9 +83,11 @@ impl ReviewProvider for GitHubProvider {
         };
         Ok(Some(if stack.can_base_on(&review.branch, parent) {
             super::BaseGap::Platform
-        } else if stack.has_landed_layer(parent) {
-            // The platform moved this base when that layer landed; the local
-            // parent is what has not caught up.
+        } else if stack.parent_landed(&review.branch, parent) {
+            // `parent` is this review's own recorded predecessor and it has
+            // landed - the exact disjunct `can_base_on` stops accepting, so
+            // the two arms are complements. The platform moved this base when
+            // that layer landed; the local parent is what has not caught up.
             super::BaseGap::Sync
         } else {
             super::BaseGap::Neither
@@ -783,7 +785,8 @@ fn parse_native_stack(json: &str, branch: &str) -> Option<NativeStack> {
         // dead one as live makes `cleanup` skip a retarget it needed, and
         // GitHub then closes the child review when its base branch goes -
         // silently, with its comments and approvals. Same asymmetry the
-        // `platform_will_base_on` default is built on.
+        // whichever answer callers default to when the platform cannot be
+        // reached is built on.
         if stack.get("open").and_then(serde_json::Value::as_bool) != Some(true) {
             continue;
         }

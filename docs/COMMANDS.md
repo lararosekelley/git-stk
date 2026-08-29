@@ -284,14 +284,14 @@ Registering hands two things to GitHub, and git-stk follows it there. A pull req
 merged through the ordinary endpoint, so `merge` uses GitHub's asynchronous merge and waits for the
 result, and refuses `--auto` there because that endpoint has no scheduled mode. Its base cannot be changed
 by hand either. GitHub retargets each layer onto the stack's base as the one below it lands, so `submit`
-and `cleanup` report that instead of retargeting - but the two are separate refusals, and where they come
-apart there is a dead end: wherever the stack will not bring a base to the parent git-stk records, that
-base is one neither side will change. A stack only ever puts a layer on the one recorded below it or on its
-own base, so a line re-rooted onto a release branch, a reordered one, and the stack's bottom all land
-there.
-`submit`, `cleanup`, and `merge` all name that state and say to dissolve the stack on the platform, after
-which an ordinary retarget works again. The local side is unchanged: git-stk still
-owns `restack`, `absorb`, worktrees, and the stack metadata.
+and `cleanup` report that instead of retargeting. A stack only ever puts a layer on the one recorded below
+it or on its own base, so when the parent git-stk records is neither of those, the gap will not close on
+its own - and `submit`, `cleanup`, `merge`, and `status` all say which of two things closes it. If the
+platform has already moved the base because the layer below landed, the local stack is what is behind:
+`git stk sync`. Otherwise nothing will move it - a line re-rooted onto a release branch, a reordered one,
+the stack's own bottom - and dissolving the stack on the platform is what makes an ordinary retarget work
+again. The local side is unchanged: git-stk still owns `restack`, `absorb`, worktrees, and the stack
+metadata.
 
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens

@@ -179,11 +179,15 @@ impl NativeStack {
             .is_none_or(|layer| layer.open)
     }
 
-    /// Whether `branch` is a layer of this stack whose review has landed.
-    pub fn has_landed_layer(&self, branch: &str) -> bool {
-        self.layers
-            .iter()
-            .any(|layer| layer.branch == branch && !layer.open)
+    /// Whether `parent` is `branch`'s own recorded predecessor *and* has
+    /// landed - so the platform has already moved this base off it and will
+    /// never put it back.
+    ///
+    /// The exact case [`NativeStack::can_base_on`] stops accepting, which is
+    /// what makes the two complementary: some other landed layer says nothing
+    /// about where this review's base went.
+    pub fn parent_landed(&self, branch: &str, parent: &str) -> bool {
+        self.parent_of(branch) == Some(parent) && !self.parent_is_current(branch)
     }
 
     /// Whether this stack can still bring `branch`'s base to `parent` on its
@@ -1013,15 +1017,25 @@ pub(crate) fn label(title: &str, id: &str) -> String {
 mod tests {
 
     fn stack_of(number: u64, ids: &[&str]) -> NativeStack {
+        stack_with(
+            number,
+            &ids.iter().map(|id| (*id, true)).collect::<Vec<_>>(),
+        )
+    }
+
+    /// A stack whose layers carry their own landed/open state - what GitHub
+    /// sends, and what tells "the platform will move this base" apart from
+    /// "it already did".
+    fn stack_with(number: u64, layers: &[(&str, bool)]) -> NativeStack {
         NativeStack {
             number,
             base: "main".to_owned(),
-            layers: ids
+            layers: layers
                 .iter()
-                .map(|id| NativeStackLayer {
+                .map(|(id, open)| NativeStackLayer {
                     id: (*id).to_owned(),
                     branch: id.trim_start_matches('#').to_owned(),
-                    open: true,
+                    open: *open,
                 })
                 .collect(),
         }
@@ -1048,6 +1062,26 @@ mod tests {
         assert!(!stack.can_base_on("13", "rc-20260817"));
         // And a branch the stack does not hold at all.
         assert!(!stack.can_base_on("other", "main"));
+
+        // The predecessor only counts while it is still open. Once it lands
+        // the platform has moved this base onto the stack's base and will not
+        // put it back - and `parent_landed` is exactly that case, so the two
+        // are complements rather than overlapping.
+        let landed = stack_with(7, &[("#12", false), ("#13", true), ("#14", true)]);
+        assert!(!landed.can_base_on("13", "12"));
+        assert!(landed.parent_landed("13", "12"));
+        assert!(landed.can_base_on("13", "main"));
+
+        // Some *other* landed layer says nothing about where this review's
+        // base went, so it is neither.
+        assert!(!landed.can_base_on("14", "12"));
+        assert!(!landed.parent_landed("14", "12"));
+
+        // And `parent_is_current` is what both read.
+        assert!(!landed.parent_is_current("13"));
+        assert!(landed.parent_is_current("14"));
+        // The bottom's parent is the stack's base, which no landing stales.
+        assert!(landed.parent_is_current("12"));
     }
 
     /// The whole decision table for registering, in one place - this is what
