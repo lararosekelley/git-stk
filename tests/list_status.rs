@@ -31,10 +31,12 @@ fn graphql_batch(
         r#"{{"data":{{"repository":{{
         "p0":{{"nodes":[{{"number":9,"headRefName":"feature/a","mergeQueueEntry":{a_queue},
             "latestReviews":{{"nodes":{a_reviews}}},
-            "commits":{{"nodes":[{{"commit":{{"statusCheckRollup":{{"state":"{a_state}"}}}}}}]}}}}]}},
+            "commits":{{"nodes":[{{"commit":{{"statusCheckRollup":{{"contexts":{{"nodes":[
+                {{"name":"build","status":"COMPLETED","conclusion":"{a_state}"}}]}}}}}}}}]}}}}]}},
         "p1":{{"nodes":[{{"number":10,"headRefName":"feature/b","mergeQueueEntry":{b_queue},
             "latestReviews":{{"nodes":{b_reviews}}},
-            "commits":{{"nodes":[{{"commit":{{"statusCheckRollup":{{"state":"{b_state}"}}}}}}]}}}}]}}
+            "commits":{{"nodes":[{{"commit":{{"statusCheckRollup":{{"contexts":{{"nodes":[
+                {{"name":"build","status":"COMPLETED","conclusion":"{b_state}"}}]}}}}}}}}]}}}}]}}
     }}}}}}"#
     )
 }
@@ -368,4 +370,34 @@ fn status_names_the_stack_of_a_merged_review_without_the_open_query() {
         !calls.contains("api graphql"),
         "the annotate query asks states:OPEN and cannot match a merged review:\n{calls}"
     );
+}
+
+/// End to end for #331: a superseded cancelled run beside the successful
+/// re-run of the same check, on the same head. `list` must read the newest per
+/// check, not the whole list.
+#[test]
+fn list_ignores_a_cancelled_run_a_later_one_superseded() {
+    let repo = two_branch_stack();
+    let graphql = r#"{"data":{"repository":{
+        "p0":{"nodes":[{"number":9,"headRefName":"feature/a","mergeQueueEntry":null,
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+                {"name":"plan","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-08-29T23:01:56Z"},
+                {"name":"plan","status":"COMPLETED","conclusion":"CANCELLED","startedAt":"2026-08-29T23:01:52Z"}
+            ]}}}}]}}]},
+        "p1":{"nodes":[{"number":10,"headRefName":"feature/b","mergeQueueEntry":null,
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+                {"name":"plan","status":"COMPLETED","conclusion":"CANCELLED"}
+            ]}}}}]}}]}
+    }}}"#;
+    let fake = github_fake(&repo, graphql);
+
+    repo.stack_faked(&fake)
+        .arg("list")
+        .assert()
+        .success()
+        // The superseded cancellation is not a failure.
+        .stdout(predicates::str::contains("🟢 #9"))
+        .stdout(predicates::str::contains("🔴 #9").not())
+        // But one that is the newest run of its check is not green either.
+        .stdout(predicates::str::contains("⚪ #10"));
 }

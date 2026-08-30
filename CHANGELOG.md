@@ -4,6 +4,23 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## Unreleased
+
+### Fixed
+
+- **list, status:** a superseded check run no longer pins a review red. GitHub's
+  rollup keeps every run recorded against the head commit, so a workflow
+  cancelled by its own `concurrency` group - which `restack` triggers by pushing
+  a whole stack at once - sat beside the successful re-run of the same check and
+  outvoted it, for as long as that commit was the head. Only the newest run of
+  each check counts now, which is how GitHub decides whether a required check
+  passed (#331).
+- **list, status:** a cancelled run that _is_ the newest of its check reads as
+  `⚪` rather than red. Nothing failed - the run was stopped - but a required
+  check in that state still blocks the merge, so neither red nor green said
+  something true. `ACTION_REQUIRED`, which waits on a person, reads the same
+  way (#331).
+
 ## 0.12.2
 
 ### Fixed
