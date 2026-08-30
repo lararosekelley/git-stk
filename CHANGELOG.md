@@ -24,8 +24,15 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 - **merge:** `--wait` no longer merges past checks that stopped without a
   verdict - a GitLab pipeline waiting on a person, or a GitHub check whose
   newest run was cancelled. Both stop the run and say so, which is what the dot
-  already reported: the gate and the dot read the same commit and disagreed
+  already reported: the gate and the dot read the same commit and disagreed.
+  `gh pr checks` has no bucket for either state, so both of its settled verdicts
+  are checked against the rollup rather than guessing which one they land in
   (#331).
+- **list:** a commit with more than 100 check runs falls back to GitHub's own
+  rollup verdict. Reading the newest run per check needs the runs, and the
+  query can only ask for so many - past that a check whose only entry fell off
+  would vanish, and a missing check is not a failure, so the dot could go green
+  on a red commit (#331).
 
 ## 0.12.2
 

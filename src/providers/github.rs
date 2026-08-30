@@ -304,18 +304,26 @@ impl ReviewProvider for GitHubProvider {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
             match interpret_checks(out.status.code(), &stdout, &stderr) {
-                // `gh pr checks` reports a verdict per check but has no exit
-                // code for "stopped without one", so a cancelled newest run
-                // can land in the green code. Ask the rollup, which is what
-                // the dot reads - the gate and the dot must not disagree
-                // about the same commit.
+                // `gh pr checks` buckets every check as pass, fail, pending,
+                // skipping or cancel - it has no bucket for "stopped without a
+                // verdict", so a cancelled or action-required run lands in one
+                // of the others depending on which. Ask the rollup on both
+                // settled arms rather than guessing which: it is what the dot
+                // reads, and the gate must not contradict it. Only the verdict
+                // moves - a rollup that says anything else leaves the arm's own
+                // answer alone.
                 ChecksState::Passed => {
                     return Ok(match self.check_status(review) {
                         Ok(CheckStatus::Inconclusive) => WaitOutcome::Inconclusive,
                         _ => WaitOutcome::Passed,
                     });
                 }
-                ChecksState::Failed => return Ok(WaitOutcome::Failed),
+                ChecksState::Failed => {
+                    return Ok(match self.check_status(review) {
+                        Ok(CheckStatus::Inconclusive) => WaitOutcome::Inconclusive,
+                        _ => WaitOutcome::Failed,
+                    });
+                }
                 // gh itself failed (network, auth, an API 5xx) - not a check
                 // verdict. Surface the real error instead of a false "checks
                 // failed"; `merge --all` is rerun-safe, so the user retries
@@ -604,7 +612,8 @@ fn build_annotation_query_with(count: usize, detail: bool, stack_fields: bool) -
         // Bounded by the branches being annotated - this is not the
         // `open_reviews` listing, which covers every open PR in the repo.
         aliases.push_str(
-            "commits(last:1){nodes{commit{statusCheckRollup{contexts(last:100){nodes{\
+            "commits(last:1){nodes{commit{statusCheckRollup{state contexts(last:100){\
+             totalCount nodes{\
              __typename ... on CheckRun{name status conclusion startedAt \
              checkSuite{workflowRun{workflow{name}} app{slug}}} \
              ... on StatusContext{context state createdAt}}}}}}}}",
@@ -634,9 +643,27 @@ fn parse_annotation_batch(json: &str, detail: bool) -> Result<BTreeMap<String, R
         ) else {
             continue;
         };
-        let checks = node
-            .pointer("/commits/nodes/0/commit/statusCheckRollup/contexts/nodes")
-            .map_or(CheckStatus::None, aggregate_rollup);
+        let rollup = node.pointer("/commits/nodes/0/commit/statusCheckRollup");
+        // The cap counts *runs*, not checks, and keeping every run is the
+        // point - a wide matrix restacked a few times passes 100 easily. Past
+        // that the oldest fall off, which is usually harmless (they are the
+        // superseded ones) but need not be: a check that failed and was never
+        // re-run would vanish, and a check with no entry is not a failure, so
+        // the dot would go green on a red commit. GitHub's own aggregate sees
+        // everything, so fall back to it rather than answer from a slice.
+        let truncated = rollup
+            .and_then(|rollup| rollup.pointer("/contexts/totalCount"))
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|total| total > ROLLUP_CONTEXTS);
+        let checks = match rollup {
+            Some(rollup) if truncated => {
+                rollup_state_to_status(rollup.get("state").and_then(serde_json::Value::as_str))
+            }
+            Some(rollup) => rollup
+                .pointer("/contexts/nodes")
+                .map_or(CheckStatus::None, aggregate_rollup),
+            None => CheckStatus::None,
+        };
         let queued = node
             .get("mergeQueueEntry")
             .is_some_and(|entry| !entry.is_null());
@@ -653,6 +680,24 @@ fn parse_annotation_batch(json: &str, detail: bool) -> Result<BTreeMap<String, R
         );
     }
     Ok(annotations)
+}
+
+/// How many rollup entries the annotate query asks for. Past this the oldest
+/// are dropped, and [`parse_annotation_batch`] falls back to GitHub's own
+/// aggregate rather than answering from a slice.
+const ROLLUP_CONTEXTS: u64 = 100;
+
+/// GitHub's own rollup verdict, for the commits whose check list is too long
+/// to read whole. Coarser than [`aggregate_rollup`] - it counts superseded
+/// runs, which is the bug this all started with - but it sees every entry,
+/// and reporting a stale red beats reporting a green that is not there.
+fn rollup_state_to_status(state: Option<&str>) -> CheckStatus {
+    match state {
+        Some("SUCCESS") => CheckStatus::Passing,
+        Some("FAILURE" | "ERROR") => CheckStatus::Failing,
+        Some("PENDING" | "EXPECTED") => CheckStatus::Pending,
+        _ => CheckStatus::None,
+    }
 }
 
 /// `mergeQueueEntry` exposes merge-queue membership, but only over GraphQL -
@@ -1648,6 +1693,29 @@ mod tests {
             {"name": "plan", "status": "QUEUED"},
         ]);
         assert_eq!(aggregate_rollup(&replaced), CheckStatus::Pending);
+    }
+
+    /// Past the cap the oldest entries fall off, and a check with no entry is
+    /// not a failure - so answering from the slice could paint a red commit
+    /// green. GitHub's own aggregate sees everything, superseded runs and all.
+    #[test]
+    fn parse_annotation_batch_falls_back_to_the_aggregate_when_truncated() {
+        let truncated = r#"{"data":{"repository":{
+            "p0":{"nodes":[{"number":9,"headRefName":"feature/a","mergeQueueEntry":null,
+                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE",
+                    "contexts":{"totalCount":140,"nodes":[
+                        {"name":"build","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS"}
+                    ]}}}}]}}]}
+        }}}"#;
+        let annotations = parse_annotation_batch(truncated, false).expect("parse");
+        // The slice says passing; the aggregate says otherwise, and it is the
+        // one that saw the whole list.
+        assert_eq!(annotations["feature/a"].checks, CheckStatus::Failing);
+
+        // Within the cap, the deduplicated read stands.
+        let whole = truncated.replace(r#""totalCount":140"#, r#""totalCount":1"#);
+        let annotations = parse_annotation_batch(&whole, false).expect("parse");
+        assert_eq!(annotations["feature/a"].checks, CheckStatus::Passing);
     }
 
     /// A job name is not a check identity. Two workflows can each define
