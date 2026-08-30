@@ -203,10 +203,13 @@ impl ReviewProvider for GitLabProvider {
                     return Ok(WaitOutcome::Passed);
                 }
                 None => no_pipeline += 1,
-                Some("success") | Some("skipped") | Some("manual") => {
-                    return Ok(WaitOutcome::Passed);
-                }
-                Some("failed") | Some("canceled") => return Ok(WaitOutcome::Failed),
+                Some("success") | Some("skipped") => return Ok(WaitOutcome::Passed),
+                Some("failed") => return Ok(WaitOutcome::Failed),
+                // The same two states the dot calls inconclusive
+                // (`map_pipeline_status`): stopped without a verdict, and
+                // GitLab holds the merge for both. Merging past them would
+                // contradict the dot the user just read.
+                Some("canceled") | Some("manual") => return Ok(WaitOutcome::Inconclusive),
                 // Pipeline exists and is running: it registered, so reset.
                 _ => no_pipeline = 0,
             }

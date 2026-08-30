@@ -1517,3 +1517,39 @@ fn status_says_nothing_about_a_base_whose_review_is_still_running() {
         .success()
         .stdout(predicates::str::contains("yours to finish").not());
 }
+
+/// The dot and the merge must agree about the same pipeline. A `manual` one is
+/// blocked awaiting a person, which GitLab holds the merge for - so `--wait`
+/// stops and says why, rather than merging past a gate the `⚪` just reported.
+#[test]
+fn merge_wait_stops_on_a_gitlab_pipeline_waiting_on_a_person() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .record("mr merge", "merged.txt", "")
+        // `mr view` answers a single object; the listing answers an array.
+        .on(
+            "mr view 34 --output json",
+            r##"{"iid":34,"state":"opened","target_branch":"main","source_branch":"feature/a","head_pipeline":{"status":"manual"}}"##,
+        )
+        .fallback(
+            r##"[{"iid":34,"state":"opened","target_branch":"main","source_branch":"feature/a","web_url":"https://gitlab.com/o/r/-/merge_requests/34"}]"##,
+        )
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y", "--wait"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("stopped without a verdict"))
+        // Not "failed" - nothing did.
+        .stderr(predicates::str::contains("checks failed").not());
+
+    assert!(
+        !repo.path().join("merged.txt").exists(),
+        "merged past a pipeline the dot reports as held"
+    );
+}

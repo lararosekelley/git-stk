@@ -196,6 +196,11 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
                     "checks failed for {}; fix them and rerun `git stk merge --all`",
                     review.id
                 ),
+                WaitOutcome::Inconclusive => bail!(
+                    "checks for {} stopped without a verdict - a cancelled run, or one \
+                     waiting on a person; resolve it and rerun `git stk merge --all`",
+                    review.id
+                ),
                 // Merged out-of-band while we waited: skip the redundant merge,
                 // let sync reconcile it, and carry on with the next review.
                 WaitOutcome::Landed => {

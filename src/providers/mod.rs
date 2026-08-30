@@ -364,6 +364,14 @@ pub enum WaitOutcome {
     Passed,
     /// A required check failed - stop the run.
     Failed,
+    /// Checks stopped without a verdict - a cancelled run, or one waiting on a
+    /// person. Nothing failed, but nothing passed either, and the platform
+    /// still holds the merge, so the run stops and says which it was.
+    ///
+    /// The same distinction [`CheckStatus::Inconclusive`] draws for the dot.
+    /// A provider that encodes check states in both places must map them the
+    /// same way, or the dot and the merge disagree about the same pipeline.
+    Inconclusive,
     /// The review merged out-of-band while we waited (an admin merge on the
     /// web, say). Skip the redundant merge and let `sync` reconcile it.
     Landed,
