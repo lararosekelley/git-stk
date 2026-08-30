@@ -368,9 +368,12 @@ pub enum WaitOutcome {
     /// person. Nothing failed, but nothing passed either, and the platform
     /// still holds the merge, so the run stops and says which it was.
     ///
-    /// The same distinction [`CheckStatus::Inconclusive`] draws for the dot.
-    /// A provider that encodes check states in both places must map them the
-    /// same way, or the dot and the merge disagree about the same pipeline.
+    /// The same distinction [`CheckStatus::Inconclusive`] draws for the dot,
+    /// and deliberately so: a provider decides both, and the two must agree
+    /// about one commit or the gate contradicts the dot the user just read.
+    /// Where a provider's gate cannot see the difference on its own - GitHub's
+    /// reads `gh pr checks` exit codes, which have no code for it - it asks
+    /// the same rollup the dot came from.
     Inconclusive,
     /// The review merged out-of-band while we waited (an admin merge on the
     /// web, say). Skip the redundant merge and let `sync` reconcile it.

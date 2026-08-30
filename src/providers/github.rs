@@ -304,7 +304,17 @@ impl ReviewProvider for GitHubProvider {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
             match interpret_checks(out.status.code(), &stdout, &stderr) {
-                ChecksState::Passed => return Ok(WaitOutcome::Passed),
+                // `gh pr checks` reports a verdict per check but has no exit
+                // code for "stopped without one", so a cancelled newest run
+                // can land in the green code. Ask the rollup, which is what
+                // the dot reads - the gate and the dot must not disagree
+                // about the same commit.
+                ChecksState::Passed => {
+                    return Ok(match self.check_status(review) {
+                        Ok(CheckStatus::Inconclusive) => WaitOutcome::Inconclusive,
+                        _ => WaitOutcome::Passed,
+                    });
+                }
                 ChecksState::Failed => return Ok(WaitOutcome::Failed),
                 // gh itself failed (network, auth, an API 5xx) - not a check
                 // verdict. Surface the real error instead of a false "checks
@@ -1220,8 +1230,13 @@ fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
     let mut newest: BTreeMap<String, ((bool, String), &serde_json::Value)> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
         let field = |name| item.get(name).and_then(serde_json::Value::as_str);
+        // Two shapes for one fact: GraphQL nests the workflow under
+        // `checkSuite`, and `gh pr view --json statusCheckRollup` flattens it
+        // to `workflowName`. Both feed this function, so read either - missing
+        // it entirely would drop the key back to the bare job name.
         let workflow = item
             .pointer("/checkSuite/workflowRun/workflow/name")
+            .or_else(|| item.get("workflowName"))
             .or_else(|| item.pointer("/checkSuite/app/slug"))
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
@@ -1651,6 +1666,17 @@ mod tests {
              "checkSuite": {"workflowRun": {"workflow": {"name": "Release"}}}},
         ]);
         assert_eq!(aggregate_rollup(&two_workflows), CheckStatus::Failing);
+
+        // The same rollup as `gh pr view --json statusCheckRollup` sends it,
+        // which flattens the workflow to `workflowName` and omits
+        // `checkSuite` entirely. `check_status` feeds that shape in.
+        let flattened = serde_json::json!([
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-08-29T23:01:56Z", "workflowName": "CI"},
+            {"name": "build", "status": "COMPLETED", "conclusion": "FAILURE",
+             "startedAt": "2026-08-29T23:01:52Z", "workflowName": "Release"},
+        ]);
+        assert_eq!(aggregate_rollup(&flattened), CheckStatus::Failing);
 
         // A check with no workflow run behind it is identified by its app.
         let other_app = serde_json::json!([

@@ -1553,3 +1553,39 @@ fn merge_wait_stops_on_a_gitlab_pipeline_waiting_on_a_person() {
         "merged past a pipeline the dot reports as held"
     );
 }
+
+/// GitHub's gate and its dot must agree too. `gh pr checks` has no exit code
+/// for "stopped without a verdict", so a cancelled newest run can land in the
+/// green one - and merging there would contradict the `⚪` the user just read.
+#[test]
+fn merge_wait_stops_on_a_github_check_that_was_cancelled() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .record("pr merge", "merged.txt", "")
+        // Exit 0: gh sees nothing failing.
+        .on("pr checks 12", "all checks passing")
+        // The rollup says the newest run of `plan` was cancelled.
+        .on(
+            "pr view 12 --json statusCheckRollup",
+            r##"{"statusCheckRollup":[{"name":"plan","workflowName":"CI","status":"COMPLETED","conclusion":"CANCELLED","startedAt":"2026-08-29T23:01:56Z"}]}"##,
+        )
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y", "--wait"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("stopped without a verdict"))
+        .stderr(predicates::str::contains("checks failed").not());
+
+    assert!(
+        !repo.path().join("merged.txt").exists(),
+        "merged past a check the dot reports as held"
+    );
+}
