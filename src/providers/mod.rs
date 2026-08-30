@@ -269,6 +269,10 @@ pub struct ReviewRequest {
 pub enum CheckStatus {
     Passing,
     Failing,
+    /// Finished without a verdict - a run that was cancelled, or one waiting
+    /// on a human. Nothing is wrong, but not everything is green, so folding
+    /// it into either would say something untrue.
+    Inconclusive,
     Pending,
     None,
 }
@@ -280,6 +284,7 @@ impl CheckStatus {
         match self {
             Self::Passing => "🟢 ",
             Self::Failing => "🔴 ",
+            Self::Inconclusive => "⚪ ",
             Self::Pending => "🟡 ",
             Self::None => "",
         }

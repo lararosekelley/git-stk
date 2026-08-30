@@ -586,7 +586,18 @@ fn build_annotation_query_with(count: usize, detail: bool, stack_fields: bool) -
             aliases.push_str("stack{number size} stackEntry{position} ");
         }
         aliases.push_str(reviews_field);
-        aliases.push_str("commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}");
+        // The contexts, not the rollup's own `state`: that aggregate counts
+        // every run recorded against the head commit, so a superseded
+        // cancelled run pins it to FAILURE while the re-run of the same check
+        // passed. `aggregate_rollup` keeps the newest per check instead.
+        //
+        // Bounded by the branches being annotated - this is not the
+        // `open_reviews` listing, which covers every open PR in the repo.
+        aliases.push_str(
+            "commits(last:1){nodes{commit{statusCheckRollup{contexts(last:100){nodes{\
+             __typename ... on CheckRun{name status conclusion startedAt completedAt} \
+             ... on StatusContext{context state createdAt}}}}}}}}",
+        );
     }
     format!("query({vars}){{repository(owner:$owner,name:$repo){{{aliases}}}}}")
 }
@@ -612,10 +623,9 @@ fn parse_annotation_batch(json: &str, detail: bool) -> Result<BTreeMap<String, R
         ) else {
             continue;
         };
-        let checks = rollup_state_to_status(
-            node.pointer("/commits/nodes/0/commit/statusCheckRollup/state")
-                .and_then(serde_json::Value::as_str),
-        );
+        let checks = node
+            .pointer("/commits/nodes/0/commit/statusCheckRollup/contexts/nodes")
+            .map_or(CheckStatus::None, aggregate_rollup);
         let queued = node
             .get("mergeQueueEntry")
             .is_some_and(|entry| !entry.is_null());
@@ -632,17 +642,6 @@ fn parse_annotation_batch(json: &str, detail: bool) -> Result<BTreeMap<String, R
         );
     }
     Ok(annotations)
-}
-
-/// Map GraphQL's aggregate `StatusState` to a check dot (the GraphQL rollup
-/// already reduces every check to one state, unlike the REST array).
-fn rollup_state_to_status(state: Option<&str>) -> CheckStatus {
-    match state {
-        Some("SUCCESS") => CheckStatus::Passing,
-        Some("FAILURE" | "ERROR") => CheckStatus::Failing,
-        Some("PENDING" | "EXPECTED") => CheckStatus::Pending,
-        _ => CheckStatus::None,
-    }
 }
 
 /// `mergeQueueEntry` exposes merge-queue membership, but only over GraphQL -
@@ -1186,16 +1185,54 @@ fn rollup_status(value: &serde_json::Value) -> CheckStatus {
     }
 }
 
-/// Reduce GitHub's `statusCheckRollup` (a mix of CheckRun nodes, which carry a
-/// `status` and `conclusion`, and StatusContext nodes, which carry a `state`)
-/// to one status: any failure wins, then any check still in flight is pending,
-/// otherwise passing. An empty or absent rollup means there are no checks.
+/// Reduce GitHub's `statusCheckRollup` - a mix of CheckRun nodes, which carry
+/// a `name`, `status` and `conclusion`, and StatusContext nodes, which carry a
+/// `context` and `state` - to one status.
+///
+/// The rollup holds *every* run recorded against the head commit, superseded
+/// ones included. A workflow with a `concurrency` group cancels its in-flight
+/// run when the branch is pushed again - which `restack` does to every branch
+/// in a stack at once - leaving a cancelled entry beside the successful re-run
+/// of the same check, on the same commit, forever. Aggregating the list as-is
+/// pins the review red for as long as that commit is the head.
+///
+/// So: keep only the newest entry per check, which is how GitHub itself
+/// decides whether a required check passed, then aggregate those. Any failure
+/// wins, then anything still in flight, then anything that finished without a
+/// verdict; otherwise passing.
 fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
     let Some(items) = rollup.as_array().filter(|items| !items.is_empty()) else {
         return CheckStatus::None;
     };
+
+    // Newest per check. `name` identifies a CheckRun and `context` a
+    // StatusContext; the two node types also timestamp differently, so take
+    // whichever field is there. An entry with no identity of its own cannot be
+    // grouped, so it stands alone under a key that cannot collide.
+    let mut newest: BTreeMap<String, (String, &serde_json::Value)> = BTreeMap::new();
+    for (index, item) in items.iter().enumerate() {
+        let field = |name| item.get(name).and_then(serde_json::Value::as_str);
+        let key = field("name")
+            .or_else(|| field("context"))
+            .map_or_else(|| format!("\u{0}{index}"), str::to_owned);
+        let stamp = field("completedAt")
+            .or_else(|| field("startedAt"))
+            .or_else(|| field("createdAt"))
+            .unwrap_or("")
+            .to_owned();
+        match newest.get(&key) {
+            // RFC 3339 stamps from one host sort lexicographically. Ties keep
+            // the later entry, which is the order the API returns them in.
+            Some((seen, _)) if *seen > stamp => {}
+            _ => {
+                newest.insert(key, (stamp, item));
+            }
+        }
+    }
+
     let mut pending = false;
-    for item in items {
+    let mut inconclusive = false;
+    for (_, item) in newest.values() {
         let field = |name| {
             item.get(name)
                 .and_then(serde_json::Value::as_str)
@@ -1204,15 +1241,21 @@ fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
         let conclusion = field("conclusion");
         let status = field("status");
         let state = field("state");
-        if matches!(
-            conclusion,
-            "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
-        ) || matches!(state, "FAILURE" | "ERROR")
+        // A real failure: the check ran and did not pass.
+        if matches!(conclusion, "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE")
+            || matches!(state, "FAILURE" | "ERROR")
         {
             return CheckStatus::Failing;
         }
-        // A CheckRun that has not COMPLETED, or a StatusContext still expecting
-        // a result, is running.
+        // Finished without a verdict. Cancelled is not a failure - nothing
+        // went wrong, the run was stopped - and `ACTION_REQUIRED` is waiting
+        // on a person. Neither is green either: a required check in this state
+        // still blocks the merge.
+        if matches!(conclusion, "CANCELLED" | "ACTION_REQUIRED") {
+            inconclusive = true;
+        }
+        // A CheckRun that has not COMPLETED, or a StatusContext still
+        // expecting a result, is running.
         if (!status.is_empty() && status != "COMPLETED") || matches!(state, "PENDING" | "EXPECTED")
         {
             pending = true;
@@ -1220,6 +1263,8 @@ fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
     }
     if pending {
         CheckStatus::Pending
+    } else if inconclusive {
+        CheckStatus::Inconclusive
     } else {
         CheckStatus::Passing
     }
@@ -1493,26 +1538,84 @@ mod tests {
         assert_eq!(rollup_status(&serde_json::json!({})), CheckStatus::None);
     }
 
+    /// The shape from #331: a workflow with a `concurrency` group is cancelled
+    /// when the branch is pushed again - which `restack` does to every branch
+    /// at once - and re-run seconds later on the same head. Both entries stay
+    /// in the rollup for as long as that commit is the head, so aggregating
+    /// the list as-is pins the review red forever.
     #[test]
-    fn rollup_state_to_status_maps_the_graphql_aggregate() {
-        assert_eq!(
-            rollup_state_to_status(Some("SUCCESS")),
-            CheckStatus::Passing
-        );
-        assert_eq!(
-            rollup_state_to_status(Some("FAILURE")),
-            CheckStatus::Failing
-        );
-        assert_eq!(rollup_state_to_status(Some("ERROR")), CheckStatus::Failing);
-        assert_eq!(
-            rollup_state_to_status(Some("PENDING")),
-            CheckStatus::Pending
-        );
-        assert_eq!(
-            rollup_state_to_status(Some("EXPECTED")),
-            CheckStatus::Pending
-        );
-        assert_eq!(rollup_state_to_status(None), CheckStatus::None);
+    fn aggregate_rollup_keeps_only_the_newest_run_of_each_check() {
+        let superseded = serde_json::json!([
+            {"name": "plan", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-08-29T23:01:56Z"},
+            {"name": "plan", "status": "COMPLETED", "conclusion": "CANCELLED",
+             "startedAt": "2026-08-29T23:01:52Z"},
+            {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-08-29T23:01:50Z"},
+        ]);
+        assert_eq!(aggregate_rollup(&superseded), CheckStatus::Passing);
+
+        // The other order, since the API does not promise one.
+        let reversed = serde_json::json!([
+            {"name": "plan", "status": "COMPLETED", "conclusion": "CANCELLED",
+             "startedAt": "2026-08-29T23:01:52Z"},
+            {"name": "plan", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-08-29T23:01:56Z"},
+        ]);
+        assert_eq!(aggregate_rollup(&reversed), CheckStatus::Passing);
+
+        // A real failure still wins, superseded or not.
+        let failed = serde_json::json!([
+            {"name": "plan", "status": "COMPLETED", "conclusion": "CANCELLED",
+             "startedAt": "2026-08-29T23:01:52Z"},
+            {"name": "plan", "status": "COMPLETED", "conclusion": "FAILURE",
+             "startedAt": "2026-08-29T23:01:56Z"},
+        ]);
+        assert_eq!(aggregate_rollup(&failed), CheckStatus::Failing);
+    }
+
+    /// Cancelled is not a failure - nothing went wrong, the run was stopped -
+    /// and not a pass either, since a required check in that state still
+    /// blocks the merge. Only when it is the newest run of its check.
+    #[test]
+    fn aggregate_rollup_reads_a_current_cancellation_as_inconclusive() {
+        let cancelled = serde_json::json!([
+            {"name": "plan", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]);
+        assert_eq!(aggregate_rollup(&cancelled), CheckStatus::Inconclusive);
+
+        // Waiting on a person is the same kind of answer.
+        let manual = serde_json::json!([
+            {"name": "deploy", "status": "COMPLETED", "conclusion": "ACTION_REQUIRED"},
+        ]);
+        assert_eq!(aggregate_rollup(&manual), CheckStatus::Inconclusive);
+
+        // Something still running outranks it: it may yet resolve.
+        let running = serde_json::json!([
+            {"name": "plan", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"name": "test", "status": "IN_PROGRESS"},
+        ]);
+        assert_eq!(aggregate_rollup(&running), CheckStatus::Pending);
+    }
+
+    /// Legacy commit statuses identify and timestamp themselves differently,
+    /// and are deduplicated on their own terms.
+    #[test]
+    fn aggregate_rollup_deduplicates_status_contexts_too() {
+        let contexts = serde_json::json!([
+            {"context": "ci/travis", "state": "SUCCESS", "createdAt": "2026-08-29T23:01:56Z"},
+            {"context": "ci/travis", "state": "FAILURE", "createdAt": "2026-08-29T23:01:52Z"},
+        ]);
+        assert_eq!(aggregate_rollup(&contexts), CheckStatus::Passing);
+
+        // An entry with neither name nor context cannot be grouped, so it
+        // stands alone rather than colliding with its neighbours.
+        let anonymous = serde_json::json!([
+            {"state": "SUCCESS"},
+            {"state": "FAILURE"},
+        ]);
+        assert_eq!(aggregate_rollup(&anonymous), CheckStatus::Failing);
     }
 
     #[test]
@@ -1530,10 +1633,13 @@ mod tests {
         let json = r#"{"data":{"repository":{
             "p0":{"nodes":[{"number":9,"headRefName":"feature/a","mergeQueueEntry":null,
                 "latestReviews":{"nodes":[{"state":"APPROVED"},{"state":"APPROVED"}]},
-                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}]},
+                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+                    {"name":"build","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-01-01T00:00:02Z"},
+                    {"name":"build","status":"COMPLETED","conclusion":"CANCELLED","startedAt":"2026-01-01T00:00:01Z"}]}}}}]}}]},
             "p1":{"nodes":[{"number":10,"headRefName":"feature/b","mergeQueueEntry":{"state":"QUEUED"},
                 "latestReviews":{"nodes":[{"state":"CHANGES_REQUESTED"}]},
-                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}}]},
+                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+                    {"name":"build","status":"COMPLETED","conclusion":"FAILURE"}]}}}}]}}]},
             "p2":{"nodes":[]}
         }}}"#;
         let annotations = parse_annotation_batch(json, true).expect("parse");
@@ -1555,7 +1661,8 @@ mod tests {
     #[test]
     fn parse_annotation_batch_omits_summary_without_detail() {
         let json = r#"{"data":{"repository":{"p0":{"nodes":[{"number":9,"headRefName":"feature/a",
-            "mergeQueueEntry":null,"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING"}}}]}}]}}}}"#;
+            "mergeQueueEntry":null,"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+                {"name":"build","status":"IN_PROGRESS"}]}}}}]}}]}}}}"#;
         let annotations = parse_annotation_batch(json, false).expect("parse");
         let a = &annotations["feature/a"];
         assert_eq!(a.checks, CheckStatus::Pending);
