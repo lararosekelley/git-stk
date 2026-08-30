@@ -67,10 +67,11 @@ prompts; without it, an interactive picker lets you group commits and name each 
 base has none by design.
 
 Each submitted review also carries a CI dot: `🟢` all checks passed, `🔴` one failed, `🟡` still running,
-`⚪` finished without a verdict - a run that was cancelled, or one waiting on a person. Only the newest run
-of each check counts, so a run superseded by a later one on the same commit does not colour the dot; that
-is how the platform decides whether a required check passed. `🕑` in place of the dot means the review is
-in a merge queue.
+`⚪` finished without a verdict - a run that was cancelled, or one waiting on a person (GitHub's
+`CANCELLED` and `ACTION_REQUIRED`, GitLab's `canceled` and `manual`). Only the newest run of each check
+counts, so a run superseded by a later one on the same commit does not colour the dot; that is how the
+platform decides whether a required check passed. `🕑` in place of the dot means the review is in a merge
+queue.
 
 A review the platform holds in a stack of its own is marked with its position in that stack - `⛁2/3` in
 the `list` tree, and a `stack:` line in `status`. That is worth seeing: for those reviews GitHub, not
