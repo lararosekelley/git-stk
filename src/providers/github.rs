@@ -611,13 +611,10 @@ fn build_annotation_query_with(count: usize, detail: bool, stack_fields: bool) -
         //
         // Bounded by the branches being annotated - this is not the
         // `open_reviews` listing, which covers every open PR in the repo.
-        aliases.push_str(
-            "commits(last:1){nodes{commit{statusCheckRollup{state contexts(last:100){\
-             totalCount nodes{\
-             __typename ... on CheckRun{name status conclusion startedAt \
-             checkSuite{workflowRun{workflow{name}} app{slug}}} \
-             ... on StatusContext{context state createdAt}}}}}}}}",
-        );
+        // The cap comes from the constant the truncation guard reads, so the
+        // two cannot drift: ask for a different number and the guard fires at
+        // the new one.
+        aliases.push_str(&format!("commits(last:1){{nodes{{commit{{statusCheckRollup{{state contexts(last:{ROLLUP_CONTEXTS}){{totalCount nodes{{__typename ... on CheckRun{{name status conclusion startedAt checkSuite{{workflowRun{{workflow{{name}}}} app{{slug}}}}}} ... on StatusContext{{context state createdAt}}}}}}}}}}}}}}}}}}"));
     }
     format!("query({vars}){{repository(owner:$owner,name:$repo){{{aliases}}}}}")
 }
@@ -1797,6 +1794,16 @@ mod tests {
         assert!(plain.contains("mergeQueueEntry"));
         assert!(!plain.contains("latestReviews"));
         assert!(build_annotation_query(1, true).contains("latestReviews"));
+
+        // The cap the truncation guard reads is the cap the query asks for.
+        assert!(plain.contains(&format!("contexts(last:{ROLLUP_CONTEXTS})")));
+        assert!(plain.contains("totalCount"));
+        // Balanced, since it is assembled by hand.
+        assert_eq!(
+            plain.chars().filter(|c| *c == '{').count(),
+            plain.chars().filter(|c| *c == '}').count(),
+            "unbalanced braces in: {plain}"
+        );
     }
 
     #[test]

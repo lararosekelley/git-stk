@@ -294,6 +294,23 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
     stk(work, &["submit", "--stack", "--push"])?;
     wait_for_review_count(provider, slug, 2)?;
 
+    // `list` against the real host. Its annotate query is assembled by hand
+    // and asks for a deep, provider-specific selection; the fakes replay
+    // canned JSON, so a query the host rejects looks identical to a repo with
+    // no CI - the tree still prints, just without review numbers. Asserting
+    // the numbers are there is what makes a rejection loud.
+    let listed = stk(work, &["list"])?;
+    for branch in ["feat/a", "feat/b"] {
+        if !listed.contains(branch) {
+            return Err(format!("list did not show {branch}:\n{listed}"));
+        }
+    }
+    if !listed.contains('#') && !listed.contains('!') {
+        return Err(format!(
+            "list showed no review ids - the annotate query was rejected:\n{listed}"
+        ));
+    }
+
     // --title retitles an existing review through each host's own CLI flag,
     // which only a live run exercises.
     stk(work, &["submit", "feat/a", "--title", "e2e retitled"])?;
