@@ -411,12 +411,19 @@ fn gitlab_pipeline_status(value: &serde_json::Value) -> CheckStatus {
 }
 
 /// Map GitLab's pipeline status string to a check dot: a red pipeline fails, a
-/// green/skipped/manual one passes, anything else in flight is pending, and an
-/// absent pipeline shows nothing.
+/// green or skipped one passes, one that stopped without a verdict is
+/// inconclusive, anything else in flight is pending, and an absent pipeline
+/// shows nothing.
+///
+/// `canceled` and `manual` are the same shape as GitHub's `CANCELLED` and
+/// `ACTION_REQUIRED` - nothing failed, but nothing finished either, and a
+/// pipeline in that state still holds the merge. The dot means the same thing
+/// on every provider or it means nothing.
 fn map_pipeline_status(status: Option<&str>) -> CheckStatus {
     match status {
-        Some("success" | "skipped" | "manual") => CheckStatus::Passing,
-        Some("failed" | "canceled") => CheckStatus::Failing,
+        Some("success" | "skipped") => CheckStatus::Passing,
+        Some("failed") => CheckStatus::Failing,
+        Some("canceled" | "manual") => CheckStatus::Inconclusive,
         Some(_) => CheckStatus::Pending,
         None => CheckStatus::None,
     }
@@ -650,9 +657,18 @@ mod tests {
     #[test]
     fn map_pipeline_status_maps_gitlab_states() {
         assert_eq!(map_pipeline_status(Some("success")), CheckStatus::Passing);
-        assert_eq!(map_pipeline_status(Some("manual")), CheckStatus::Passing);
+        assert_eq!(map_pipeline_status(Some("skipped")), CheckStatus::Passing);
         assert_eq!(map_pipeline_status(Some("failed")), CheckStatus::Failing);
-        assert_eq!(map_pipeline_status(Some("canceled")), CheckStatus::Failing);
+        // Stopped without a verdict, like GitHub's CANCELLED/ACTION_REQUIRED:
+        // nothing failed, nothing finished, and the merge is still held.
+        assert_eq!(
+            map_pipeline_status(Some("canceled")),
+            CheckStatus::Inconclusive
+        );
+        assert_eq!(
+            map_pipeline_status(Some("manual")),
+            CheckStatus::Inconclusive
+        );
         assert_eq!(map_pipeline_status(Some("running")), CheckStatus::Pending);
         assert_eq!(map_pipeline_status(None), CheckStatus::None);
     }

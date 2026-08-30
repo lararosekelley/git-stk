@@ -1209,23 +1209,34 @@ fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
     // StatusContext; the two node types also timestamp differently, so take
     // whichever field is there. An entry with no identity of its own cannot be
     // grouped, so it stands alone under a key that cannot collide.
-    let mut newest: BTreeMap<String, (String, &serde_json::Value)> = BTreeMap::new();
+    let mut newest: BTreeMap<String, ((bool, String), &serde_json::Value)> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
         let field = |name| item.get(name).and_then(serde_json::Value::as_str);
         let key = field("name")
             .or_else(|| field("context"))
             .map_or_else(|| format!("\u{0}{index}"), str::to_owned);
-        let stamp = field("completedAt")
-            .or_else(|| field("startedAt"))
+        // One clock per comparison: a CheckRun's `startedAt` against another's,
+        // a StatusContext's `createdAt` against another's. Mixing in
+        // `completedAt` would rank a finished run against an unfinished one's
+        // start time, which is how a cancelled entry outranks the re-run that
+        // replaced it.
+        //
+        // A run still in flight wins outright, whatever the stamps say: it
+        // cannot have been superseded by one that has already stopped, and a
+        // queued run may not have a start time yet.
+        let in_flight = field("status").is_some_and(|status| status != "COMPLETED")
+            || matches!(field("state"), Some("PENDING" | "EXPECTED"));
+        let stamp = field("startedAt")
             .or_else(|| field("createdAt"))
             .unwrap_or("")
             .to_owned();
+        let rank = (in_flight, stamp);
         match newest.get(&key) {
             // RFC 3339 stamps from one host sort lexicographically. Ties keep
             // the later entry, which is the order the API returns them in.
-            Some((seen, _)) if *seen > stamp => {}
+            Some((seen, _)) if *seen > rank => {}
             _ => {
-                newest.insert(key, (stamp, item));
+                newest.insert(key, (rank, item));
             }
         }
     }
@@ -1597,6 +1608,16 @@ mod tests {
             {"name": "test", "status": "IN_PROGRESS"},
         ]);
         assert_eq!(aggregate_rollup(&running), CheckStatus::Pending);
+
+        // And the re-run *of the same check* that replaced the cancelled one,
+        // still in flight and with no start time of its own yet. Ranking it by
+        // the cancelled entry's completion time would hide a running build.
+        let replaced = serde_json::json!([
+            {"name": "plan", "status": "COMPLETED", "conclusion": "CANCELLED",
+             "startedAt": "2026-08-29T23:01:52Z", "completedAt": "2026-08-29T23:01:59Z"},
+            {"name": "plan", "status": "QUEUED"},
+        ]);
+        assert_eq!(aggregate_rollup(&replaced), CheckStatus::Pending);
     }
 
     /// Legacy commit statuses identify and timestamp themselves differently,

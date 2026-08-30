@@ -4,7 +4,7 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
-## Unreleased
+## 0.12.3
 
 ### Fixed
 
@@ -19,7 +19,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   `⚪` rather than red. Nothing failed - the run was stopped - but a required
   check in that state still blocks the merge, so neither red nor green said
   something true. `ACTION_REQUIRED`, which waits on a person, reads the same
-  way (#331).
+  way, as do GitLab's `canceled` and `manual` - the dot means the same thing on
+  every provider (#331).
 
 ## 0.12.2
 
