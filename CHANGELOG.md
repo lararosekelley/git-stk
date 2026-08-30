@@ -34,6 +34,13 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   would vanish, and a missing check is not a failure, so the dot could go green
   on a red commit (#331).
 
+### Internal
+
+- The live e2e suite runs `git stk list` against the real host. Its annotate
+  query is assembled by hand, and a host that rejects it looks exactly like a
+  repo with no CI - the tree still prints, just without review numbers - so
+  nothing but a live run can tell the two apart.
+
 ## 0.12.2
 
 ### Fixed
