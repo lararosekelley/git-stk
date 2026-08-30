@@ -21,6 +21,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   something true. `ACTION_REQUIRED`, which waits on a person, reads the same
   way, as do GitLab's `canceled` and `manual` - the dot means the same thing on
   every provider (#331).
+- **merge:** `--wait` no longer merges a GitLab MR whose pipeline is waiting on
+  a person. `manual` and `canceled` now stop the run and say the checks ended
+  without a verdict, which is what the dot already reported - the two read the
+  same pipeline and disagreed (#331).
 
 ## 0.12.2
 

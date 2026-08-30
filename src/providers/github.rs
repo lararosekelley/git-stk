@@ -595,7 +595,8 @@ fn build_annotation_query_with(count: usize, detail: bool, stack_fields: bool) -
         // `open_reviews` listing, which covers every open PR in the repo.
         aliases.push_str(
             "commits(last:1){nodes{commit{statusCheckRollup{contexts(last:100){nodes{\
-             __typename ... on CheckRun{name status conclusion startedAt completedAt} \
+             __typename ... on CheckRun{name status conclusion startedAt \
+             checkSuite{workflowRun{workflow{name}} app{slug}}} \
              ... on StatusContext{context state createdAt}}}}}}}}",
         );
     }
@@ -1205,16 +1206,30 @@ fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
         return CheckStatus::None;
     };
 
-    // Newest per check. `name` identifies a CheckRun and `context` a
-    // StatusContext; the two node types also timestamp differently, so take
-    // whichever field is there. An entry with no identity of its own cannot be
-    // grouped, so it stands alone under a key that cannot collide.
+    // Newest per check - and a check is a job *within a workflow*, not a job
+    // name. `name` on a CheckRun is only the job's name, so two workflows that
+    // each define `build`, or an Actions job beside a same-named check from
+    // another CI app, would collapse into one and the newer would hide the
+    // other's failure. Pair it with the workflow (or the app, for a check with
+    // no workflow run behind it), which is stable across re-runs - so the
+    // cancelled run and the re-run that replaced it still group together.
+    //
+    // A StatusContext has no workflow: its `context` is already the full
+    // identity. An entry with neither cannot be grouped, so it stands alone
+    // under a key that cannot collide.
     let mut newest: BTreeMap<String, ((bool, String), &serde_json::Value)> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
         let field = |name| item.get(name).and_then(serde_json::Value::as_str);
-        let key = field("name")
-            .or_else(|| field("context"))
-            .map_or_else(|| format!("\u{0}{index}"), str::to_owned);
+        let workflow = item
+            .pointer("/checkSuite/workflowRun/workflow/name")
+            .or_else(|| item.pointer("/checkSuite/app/slug"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let key = match (field("name"), field("context")) {
+            (Some(name), _) => format!("{workflow}\u{1}{name}"),
+            (None, Some(context)) => format!("\u{2}{context}"),
+            (None, None) => format!("\u{0}{index}"),
+        };
         // One clock per comparison: a CheckRun's `startedAt` against another's,
         // a StatusContext's `createdAt` against another's. Mixing in
         // `completedAt` would rank a finished run against an unfinished one's
@@ -1618,6 +1633,47 @@ mod tests {
             {"name": "plan", "status": "QUEUED"},
         ]);
         assert_eq!(aggregate_rollup(&replaced), CheckStatus::Pending);
+    }
+
+    /// A job name is not a check identity. Two workflows can each define
+    /// `build`, as can an Actions job beside a same-named check from another
+    /// CI app - grouping on the name alone would keep only the newer and hide
+    /// the other's failure, which is worse than the red dot this all started
+    /// with.
+    #[test]
+    fn aggregate_rollup_does_not_merge_the_same_job_name_across_workflows() {
+        let two_workflows = serde_json::json!([
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-08-29T23:01:56Z",
+             "checkSuite": {"workflowRun": {"workflow": {"name": "CI"}}}},
+            {"name": "build", "status": "COMPLETED", "conclusion": "FAILURE",
+             "startedAt": "2026-08-29T23:01:52Z",
+             "checkSuite": {"workflowRun": {"workflow": {"name": "Release"}}}},
+        ]);
+        assert_eq!(aggregate_rollup(&two_workflows), CheckStatus::Failing);
+
+        // A check with no workflow run behind it is identified by its app.
+        let other_app = serde_json::json!([
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-08-29T23:01:56Z",
+             "checkSuite": {"workflowRun": {"workflow": {"name": "CI"}}}},
+            {"name": "build", "status": "COMPLETED", "conclusion": "FAILURE",
+             "startedAt": "2026-08-29T23:01:52Z",
+             "checkSuite": {"app": {"slug": "buildkite"}}},
+        ]);
+        assert_eq!(aggregate_rollup(&other_app), CheckStatus::Failing);
+
+        // But the same job in the same workflow, run twice, is still one
+        // check - which is the whole point of the deduplication.
+        let same_workflow = serde_json::json!([
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-08-29T23:01:56Z",
+             "checkSuite": {"workflowRun": {"workflow": {"name": "CI"}}}},
+            {"name": "build", "status": "COMPLETED", "conclusion": "CANCELLED",
+             "startedAt": "2026-08-29T23:01:52Z",
+             "checkSuite": {"workflowRun": {"workflow": {"name": "CI"}}}},
+        ]);
+        assert_eq!(aggregate_rollup(&same_workflow), CheckStatus::Passing);
     }
 
     /// Legacy commit statuses identify and timestamp themselves differently,
