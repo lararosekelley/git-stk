@@ -36,10 +36,12 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ### Internal
 
-- The live e2e suite runs `git stk list` against the real host. Its annotate
-  query is assembled by hand, and a host that rejects it looks exactly like a
-  repo with no CI - the tree still prints, just without review numbers - so
-  nothing but a live run can tell the two apart.
+- The live e2e suite runs `git stk list` against the real host, and asserts the
+  stack marker on a registered stack. That marker is the only thing the batched
+  annotate query produces and its per-branch fallback does not, so it is what
+  tells an accepted query from a rejected one - the ids and dots look the same
+  either way. The query's braces are counted in a unit test too, since it is
+  assembled by hand and the fakes never send it.
 
 ## 0.12.2
 

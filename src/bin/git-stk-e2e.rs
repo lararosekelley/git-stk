@@ -205,6 +205,20 @@ fn github_native_stack(provider: Provider, slug: &str, work: &Path) -> Result<()
     wait_for_review_count(provider, slug, baseline + 3)?;
     expect_open_stack(slug, &["ns/one", "ns/two", "ns/three"])?;
 
+    // The one assertion that can tell an accepted annotate query from a
+    // rejected one. `⛁` comes from `stack`/`stackEntry`, which only the
+    // batched GraphQL query selects - the per-branch fallback it degrades to
+    // sets no stack position at all, and prints the same review ids either
+    // way. An unbalanced brace in that hand-assembled query is invisible
+    // everywhere else.
+    let listed = stk(work, &["list"])?;
+    if !listed.contains('⛁') {
+        return Err(format!(
+            "list showed no stack marker for a registered stack - the annotate \
+             query was rejected and fell back to the per-branch path:\n{listed}"
+        ));
+    }
+
     // Merging: `gh pr merge` is refused for a stacked review, so this only
     // passes if the asynchronous endpoint is being used.
     stk(work, &["merge", "--all", "--no-wait", "--yes"])?;
@@ -294,11 +308,11 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
     stk(work, &["submit", "--stack", "--push"])?;
     wait_for_review_count(provider, slug, 2)?;
 
-    // `list` against the real host. Its annotate query is assembled by hand
-    // and asks for a deep, provider-specific selection; the fakes replay
-    // canned JSON, so a query the host rejects looks identical to a repo with
-    // no CI - the tree still prints, just without review numbers. Asserting
-    // the numbers are there is what makes a rejection loud.
+    // `list` against the real host, on every provider. This proves the tree
+    // renders with live review ids - not that GitHub accepted the batched
+    // query, which falls back to the per-branch path and prints the same ids.
+    // `github_native_stack` carries that assertion, since only the batched
+    // query can produce the stack marker.
     let listed = stk(work, &["list"])?;
     for branch in ["feat/a", "feat/b"] {
         if !listed.contains(branch) {
@@ -306,9 +320,7 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
         }
     }
     if !listed.contains('#') && !listed.contains('!') {
-        return Err(format!(
-            "list showed no review ids - the annotate query was rejected:\n{listed}"
-        ));
+        return Err(format!("list showed no review ids:\n{listed}"));
     }
 
     // --title retitles an existing review through each host's own CLI flag,

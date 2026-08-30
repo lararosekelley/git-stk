@@ -575,9 +575,14 @@ fn parse_stack_position(node: &serde_json::Value) -> Option<StackPosition> {
     })
 }
 
-/// Build the aliased GraphQL query for [`batched_annotate`]. Kept out of
-/// `format!` to dodge brace-escaping; the fields are exactly what
-/// [`ReviewAnnotation`] needs, no more.
+/// Build the aliased GraphQL query for [`batched_annotate`]. The fields are
+/// exactly what [`ReviewAnnotation`] needs, no more.
+///
+/// Assembled by hand, so its braces are the author's to balance - and an
+/// unbalanced one is invisible in this repo's tests, which replay canned
+/// responses rather than sending the query. `build_annotation_query_balances`
+/// counts them, and the live e2e sends it; a query the host rejects otherwise
+/// degrades to the per-branch fallback, which looks identical from outside.
 fn build_annotation_query(count: usize, detail: bool) -> String {
     build_annotation_query_with(
         count,
@@ -1798,12 +1803,22 @@ mod tests {
         // The cap the truncation guard reads is the cap the query asks for.
         assert!(plain.contains(&format!("contexts(last:{ROLLUP_CONTEXTS})")));
         assert!(plain.contains("totalCount"));
-        // Balanced, since it is assembled by hand.
-        assert_eq!(
-            plain.chars().filter(|c| *c == '{').count(),
-            plain.chars().filter(|c| *c == '}').count(),
-            "unbalanced braces in: {plain}"
-        );
+    }
+
+    /// The query is assembled by hand and never sent by these tests, so an
+    /// unbalanced brace reaches the host - where it degrades to the per-branch
+    /// fallback and looks like an ordinary answer. Counting is cheap and would
+    /// have caught it.
+    #[test]
+    fn build_annotation_query_balances() {
+        for (count, detail) in [(1, false), (2, false), (1, true), (3, true)] {
+            let query = build_annotation_query(count, detail);
+            assert_eq!(
+                query.chars().filter(|c| *c == '{').count(),
+                query.chars().filter(|c| *c == '}').count(),
+                "unbalanced braces for ({count}, {detail}): {query}"
+            );
+        }
     }
 
     #[test]
