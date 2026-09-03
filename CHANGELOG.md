@@ -4,6 +4,20 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.12.4
+
+### Fixed
+
+- **merge:** a stacked review whose base branch has a merge queue no longer
+  fails outright. A stacked pull request can only be merged through GitHub's
+  asynchronous endpoint, which the queue governs - so it rejects the
+  `stk.mergeStrategy` sent with it as an unsupported custom parameter, and does
+  it as a `failed` status on a `200`, which read as a failed merge. The
+  strategy is dropped and the merge re-sent when GitHub refuses it, which is
+  exactly when the queue's own configured method decides the merge anyway.
+  `merge` names the review the queue took over rather than switching methods
+  silently (#333).
+
 ## 0.12.3
 
 ### Fixed

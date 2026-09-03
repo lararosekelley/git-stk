@@ -979,6 +979,91 @@ fn merge_uses_githubs_async_endpoint_for_a_stacked_review() {
     );
 }
 
+/// A merge queue on the base branch decides the merge method itself, and
+/// GitHub rejects `merge_method` outright rather than ignoring it - as a
+/// `failed` status on a 200, so it arrives looking like a failed merge. Ask
+/// again without the parameter and let the queue take the review.
+#[test]
+fn merge_retries_without_the_method_when_a_merge_queue_refuses_it() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let refusal = r##"{"status":"failed","details":{"message":"Custom merge params are not supported when merging via a merge queue"}}"##;
+    let queued = r##"{"status":"enqueued","details":{"uuid":"u-1"}}"##;
+    let fake = FakeProvider::new()
+        // Specific rule first: both calls contain the second needle, and the
+        // first rule to match wins.
+        .record_append(
+            "merge-async -X PUT -f merge_method=squash",
+            "async.txt",
+            refusal,
+        )
+        .record_append("merge-async -X PUT", "async.txt", queued)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("a merge queue governs"));
+
+    let calls = fs::read_to_string(repo.path().join("async.txt")).expect("async merge calls");
+    let calls: Vec<&str> = calls.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(calls.len(), 2, "got: {calls:?}");
+    assert!(calls[0].contains("merge_method=squash"), "got: {calls:?}");
+    assert!(!calls[1].contains("merge_method"), "got: {calls:?}");
+}
+
+/// Only the complaint about the parameter is retried. A merge that failed for
+/// a real reason must be reported as it was, not quietly re-sent without the
+/// strategy the user asked for.
+#[test]
+fn merge_reports_a_real_async_failure_without_retrying() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let failed = r##"{"status":"failed","details":{"message":"Base branch was modified. Review and try the merge again."}}"##;
+    let fake = FakeProvider::new()
+        .record_append("merge-async -X PUT", "async.txt", failed)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on(
+            "pr view 12 --json mergeable,mergeStateStatus",
+            r##"{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}"##,
+        )
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Base branch was modified"));
+
+    let calls = fs::read_to_string(repo.path().join("async.txt")).expect("async merge calls");
+    let calls: Vec<&str> = calls.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "a real failure must not be re-sent: {calls:?}"
+    );
+}
+
 /// `--auto` asks for a merge *when checks pass*. The async endpoint has no
 /// such mode, so a stacked review must refuse rather than merge now - which
 /// would land the code early, the opposite of what was asked.

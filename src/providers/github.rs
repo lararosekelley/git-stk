@@ -773,7 +773,26 @@ fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String
         .with_context(|| format!("could not read a pull request number from {}", review.id))?;
     let path = format!("repos/{owner}/{repo}/pulls/{number}/merge-async");
     let method = format!("merge_method={strategy}");
-    let output = command_output("gh", &["api", &path, "-X", "PUT", "-f", &method])?;
+    let mut output = command_output("gh", &["api", &path, "-X", "PUT", "-f", &method])?;
+    // A merge queue on the base branch decides the merge method itself, and
+    // GitHub rejects the whole request rather than ignoring the parameter.
+    // Nothing merged, so asking again without it is safe.
+    //
+    // Reactive rather than probing for a queue first: a probe that answered
+    // wrong in the other direction would drop the method on a repo that does
+    // honour it and land the review by the repo's default instead of
+    // `stk.mergeStrategy`. Retrying only on GitHub's own refusal drops it
+    // exactly when it would not have been obeyed anyway.
+    if merge_method_refused(&output) {
+        anstream::eprintln!(
+            "{}",
+            crate::style::warn(&format!(
+                "a merge queue governs {}, so its own merge method applies rather than {strategy}",
+                review.id
+            ))
+        );
+        output = command_output("gh", &["api", &path, "-X", "PUT"])?;
+    }
     // The PUT is the write: from here GitHub is landing the layer, so a cached
     // listing is a pre-merge snapshot however the wait then returns - merged,
     // enqueued, or still going when the polls run out and the caller finds it
@@ -878,6 +897,26 @@ fn async_merge_outcome(status: &str, id: &str, body: &str) -> Option<Result<Stri
             "GitHub reported an unknown merge status {other:?} for {id}: {body}"
         ))),
     }
+}
+
+/// Whether GitHub refused the merge *because of* the `merge_method` parameter.
+///
+/// The refusal arrives as a `failed` status on a 200, not an HTTP error, so it
+/// is only visible in the body. Matched on the parameter half of the message
+/// rather than the "merge queue" half: the parameter being unsupported is what
+/// dropping it answers, whatever GitHub names as the reason.
+fn merge_method_refused(body: &str) -> bool {
+    if !matches!(parse_async_merge(body), Some((status, _)) if status == "failed") {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    value
+        .pointer("/details/message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_lowercase)
+        .is_some_and(|message| message.contains("merge param") || message.contains("merge_method"))
 }
 
 /// `(status, uuid)` from an async-merge response.
@@ -2016,6 +2055,28 @@ mod tests {
         assert_eq!(review_number("!13"), None);
         assert_eq!(review_number("#"), None);
         assert_eq!(review_number(""), None);
+    }
+
+    /// The merge-queue refusal arrives as a `failed` status on a 200, so it is
+    /// only distinguishable from a real merge failure by its message.
+    #[test]
+    fn merge_method_refused_reads_the_parameter_complaint_only() {
+        let refusal = r#"{"status":"failed","details":{"message":"Custom merge params are not supported when merging via a merge queue"}}"#;
+        assert!(merge_method_refused(refusal));
+        assert!(merge_method_refused(
+            r#"{"status":"failed","details":{"message":"merge_method may not be set here"}}"#
+        ));
+        // A real merge failure must still be reported, not silently retried.
+        assert!(!merge_method_refused(
+            r#"{"status":"failed","details":{"message":"Base branch was modified"}}"#
+        ));
+        assert!(!merge_method_refused(r#"{"status":"failed"}"#));
+        // Only a refusal is a refusal: a merge that succeeded is not retried
+        // however its message reads.
+        assert!(!merge_method_refused(
+            r#"{"status":"merged","details":{"message":"custom merge params"}}"#
+        ));
+        assert!(!merge_method_refused("not json"));
     }
 
     #[test]

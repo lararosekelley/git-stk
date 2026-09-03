@@ -334,6 +334,11 @@ the stack's own bottom - and dissolving the stack on the platform is what makes 
 again. The local side is unchanged: git-stk still owns `restack`, `absorb`, worktrees, and the stack
 metadata.
 
+A **merge queue** on the base branch adds one more owner. The queue decides the merge method, and GitHub
+rejects `stk.mergeStrategy` alongside it rather than ignoring it, so `merge` drops the strategy and says
+which review the queue took over. The layer is then enqueued rather than merged, which stops `merge --all`
+the way a scheduled merge does: the queue lands it on its own schedule and `git stk sync` picks it up.
+
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens
 new reviews as drafts; `--no-draft` overrides the config, and `submit --ready` flips the submitted
