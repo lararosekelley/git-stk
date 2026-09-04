@@ -231,7 +231,8 @@ dropped by the next restack (a merged parent's are dropped, because the trunk al
 
 `merge` merges the review at the bottom of the stack via the provider CLI (strategy from
 `stk.mergeStrategy`; squash by default), confirming first unless `-y` is passed, then runs the full `sync`
-flow. `merge --all` repeats that bottom-up until the stack is complete, with one confirmation up front.
+flow. `merge --all` repeats that bottom-up until the stack is complete, with one confirmation up front -
+except under a merge queue, where the whole stack is handed over in one call (see below).
 
 - `--auto` schedules the merge when required checks are still running (GitHub `--auto`, GitLab
   auto-merge). A merge that only got scheduled - the default on GitLab - skips the sync and stops `--all`,
@@ -241,7 +242,9 @@ flow. `merge --all` repeats that bottom-up until the stack is complete, with one
   would be the opposite of what was asked. Rerun without it once checks are green.
 - `--wait` (or `stk.mergeWait`) polls each review's checks until they settle before merging it, making the
   landing genuinely one command. A failing check stops the loop; `--no-wait` overrides the config. Checks
-  that are queued but not yet registered are waited out, not read as "no checks."
+  that are queued but not yet registered are waited out, not read as "no checks." On the merge-queue
+  handover there is one merge rather than one per layer, so it polls that review only - the queue gates
+  the rest itself.
 - The wait gives up after `stk.checkTimeout` (default 30m; `0` waits forever), so a pipeline that never
   settles can't block the landing. Ctrl-c is always safe - rerun to resume from the new bottom.
 
@@ -347,8 +350,9 @@ that also holds a review beneath the line would land that too. Without either, `
 bottom-up as usual, because merging the top of a line the platform does not hold would land it into the
 layer below rather than hand over the stack.
 
-Plain `git stk merge` still merges the bottom - it means "land the next one" - and a queue takes that one
-layer only. So does `merge --all` when it walks bottom-up. The entry then lands on the queue's schedule,
+Plain `--wait` on the handover polls the top alone, since that is the one merge it makes. Plain `git stk merge`
+still merges the bottom - it means "land the next one" - and a queue takes that one layer only. So does
+`merge --all` when it walks bottom-up. The entry then lands on the queue's schedule,
 not when checks pass, and it leaves the layer merged on the platform but still recorded locally, so `sync`
 has to clear it before any merge rerun will carry on. A rerun is named only while a layer remains above
 the queued one: plain `merge` has landed what it was asked to, and on the last layer `sync` leaves nothing

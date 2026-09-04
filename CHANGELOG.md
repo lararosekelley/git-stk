@@ -22,8 +22,9 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   each waiting out the queue's own schedule. Both a queue on the base and a
   platform stack covering the whole line are required - exactly, since the
   cascade takes every open layer below the top - and either lookup failing
-  keeps the bottom-up walk: merging the top of a line the platform does not
-  hold would land it into the layer below (#339).
+  keeps the bottom-up walk, as does a platform stack that lands somewhere other
+  than the branch the queue was found on: merging the top of a line the
+  platform does not hold would land it into the layer below (#339).
 - **merge:** a review the merge queue took is no longer reported as a scheduled
   merge. The advice that came with it - rerun `git stk sync` once checks pass -
   named the wrong condition: the queue lands the entry on its own schedule

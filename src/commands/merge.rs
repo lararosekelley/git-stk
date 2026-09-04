@@ -528,10 +528,20 @@ fn queued_stack_top(
         return None;
     }
     let top = branches.last()?;
+    let stack = review_provider.native_stack_for(top).ok().flatten()?;
+    // The queue is a property of the branch the *stack* lands in, which is the
+    // one its bottom review targets - not the parent recorded locally. Those
+    // drift (`adopt --parent`, `repair`, a review opened before the local
+    // parent moved), and the drift is invisible here: the top's own base is
+    // still the layer below it, so `open_review_for` passes and the prompt
+    // names a base the cascade never touches. The bottom-up walk refuses that
+    // state outright through `base_gap`; this path has to refuse it too.
+    if stack.base != base {
+        return None;
+    }
     if !review_provider.base_has_merge_queue(base).unwrap_or(false) {
         return None;
     }
-    let stack = review_provider.native_stack_for(top).ok().flatten()?;
     // The cascade takes the top and *everything open below it* in the platform
     // stack, so the two sets have to match exactly. Containment one way is not
     // enough: an open layer below the line's bottom - an off-trunk base, a
@@ -622,7 +632,22 @@ fn enqueue_whole_stack(
             );
             sync(false, PushMode::Config)
         }
-        MergeOutcome::Scheduled => Ok(()),
+        // Enqueued but unconfirmed: the merge went through and `queued` could
+        // not read the entry back. `merge_and_check` has already printed the
+        // scheduled wording, whose condition is wrong for a queue, so say what
+        // actually happened rather than returning bare on it.
+        MergeOutcome::Scheduled => {
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "{count} reviews were handed to the merge queue, but {}'s entry \
+                     could not be read back; `git stk list` shows the queue once it \
+                     registers",
+                    review.id
+                ))
+            );
+            Ok(())
+        }
     }
 }
 

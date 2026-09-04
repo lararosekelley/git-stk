@@ -281,7 +281,8 @@ Everything is optional; defaults shown below:
     cleanClosed = true
     ; Strategy for `merge`: squash, rebase, or merge. Default: squash.
     mergeStrategy = squash
-    ; `merge --all` waits for each review's checks before merging it. Default: false.
+    ; `merge --all` waits for each review's checks before merging it (for the one merge it
+    ; makes, under a merge queue). Default: false.
     mergeWait = true
     ; Seconds `merge --wait` polls a review's checks before giving up. 0 waits
     ; indefinitely. Default: 1800 (30m).
