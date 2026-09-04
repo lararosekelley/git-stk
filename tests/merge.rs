@@ -1032,7 +1032,9 @@ fn merge_all_walks_bottom_up_when_the_platform_stack_lands_somewhere_else() {
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .on("repos/owner/repo/stacks", stacks)
         .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
-        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        // The review's base tracks the stack, not the local parent - that is
+        // what the drift looks like from the platform's side.
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"develop","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
         .fallback("[]")
         .install(&repo);
 
@@ -1041,11 +1043,18 @@ fn merge_all_walks_bottom_up_when_the_platform_stack_lands_somewhere_else() {
     repo.stack_faked(&fake)
         .args(["merge", "--all", "-y"])
         .assert()
-        .failure();
+        .failure()
+        .stderr(predicates::str::contains(
+            "its stack will not move it there",
+        ));
 
     assert!(
         !repo.path().join("async-13.txt").exists(),
         "the top must not be merged into a queue the line does not land in"
+    );
+    assert!(
+        !repo.path().join("async-12.txt").exists(),
+        "nothing lands: the walk refuses the state rather than merging into it"
     );
 }
 

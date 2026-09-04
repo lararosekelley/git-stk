@@ -344,15 +344,17 @@ the queue decided the method.
 A queue also takes a **stack whole**. Merging a layer enqueues that layer and every one below it, so
 `merge --all` hands the queue the stack's _top_ in a single call rather than landing one layer per run -
 and the queue merges them in order on its own schedule, retargeting each as the one below lands. `git stk
-sync` reconciles the local stack as they land. This needs both a queue on the base and a platform stack
-whose open layers are _exactly_ the line - the cascade takes every open layer below the top, so a stack
-that also holds a review beneath the line would land that too. Without either, `merge --all` walks
-bottom-up as usual, because merging the top of a line the platform does not hold would land it into the
-layer below rather than hand over the stack.
+sync` reconciles the local stack as they land. Three things have to hold: a queue on the branch the stack
+lands in, a platform stack that lands in the branch the local line targets, and open layers that are
+_exactly_ that line - the cascade takes every open layer below the top, so a stack that also holds a
+review beneath the line would land that too. Fail any of them and `merge --all` walks bottom-up as usual,
+because merging the top of a line the platform does not hold would land it into the layer below rather
+than hand over the stack.
 
-Plain `--wait` on the handover polls the top alone, since that is the one merge it makes. Plain `git stk merge`
-still merges the bottom - it means "land the next one" - and a queue takes that one layer only. So does
-`merge --all` when it walks bottom-up. The entry then lands on the queue's schedule,
+Plain `--wait` on the handover polls the top alone, since that is the one merge it makes.
+
+Plain `git stk merge` still merges the bottom - it means "land the next one" - and a queue takes that one
+layer only. So does `merge --all` when it walks bottom-up. The entry then lands on the queue's schedule,
 not when checks pass, and it leaves the layer merged on the platform but still recorded locally, so `sync`
 has to clear it before any merge rerun will carry on. A rerun is named only while a layer remains above
 the queued one: plain `merge` has landed what it was asked to, and on the last layer `sync` leaves nothing
