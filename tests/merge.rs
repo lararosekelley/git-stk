@@ -1002,6 +1002,54 @@ fn merge_all_enqueues_the_whole_stack_from_its_top_when_a_queue_governs_the_base
     );
 }
 
+/// The cascade takes everything open below the top, so a platform stack that
+/// is *larger* than the confirmed line must keep the bottom-up walk - the one
+/// call would otherwise land a review the prompt never named and
+/// `open_review_for` never checked.
+#[test]
+fn merge_all_walks_bottom_up_when_the_platform_stack_reaches_below_the_line() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // The platform holds an open layer below this checkout's bottom.
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":11,"state":"open","head":{"ref":"ma/zero"}},
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let merged = r##"{"status":"merged","details":{"message":"Pull request was merged."}}"##;
+    let fake = FakeProvider::new()
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}"##,
+        )
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", merged)
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", merged)
+        .record("pr merge", "sync-merge.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on_after("ma/a", "async-12.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("added to the merge queue").not());
+
+    assert!(
+        repo.path().join("async-12.txt").exists(),
+        "a line the platform reaches below must still be walked from its bottom"
+    );
+}
+
 /// Without a queue there is nothing to cascade into, so the top must not be
 /// merged however complete the platform stack is: that call would land the top
 /// review into the layer below it rather than hand over the line.

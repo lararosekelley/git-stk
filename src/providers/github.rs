@@ -722,15 +722,6 @@ fn rollup_state_to_status(state: Option<&str>) -> CheckStatus {
     }
 }
 
-/// `mergeQueueEntry` exposes merge-queue membership, but only over GraphQL -
-/// there is no `gh pr view --json` field for it. Query each branch's open PR by
-/// head ref; a non-null entry means it is queued and the branch is locked.
-/// Whether a branch has a merge queue at all - `mergeQueue` is null when it
-/// does not. Distinct from [`MERGE_QUEUE_QUERY`], which asks whether one
-/// particular review is *sitting in* a queue.
-const BASE_MERGE_QUEUE_QUERY: &str = "query($owner:String!,$repo:String!,$branch:String!){\
-repository(owner:$owner,name:$repo){mergeQueue(branch:$branch){id}}}";
-
 /// A non-null `mergeQueue` for the branch. Anything unreadable is `false`:
 /// the caller turns a `true` into merging the top of a stack, which is only
 /// right when a queue will cascade it.
@@ -745,9 +736,18 @@ fn parse_base_merge_queue(json: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `mergeQueueEntry` exposes merge-queue membership, but only over GraphQL -
+/// there is no `gh pr view --json` field for it. Query each branch's open PR by
+/// head ref; a non-null entry means it is queued and the branch is locked.
 const MERGE_QUEUE_QUERY: &str = "query($owner:String!,$repo:String!,$head:String!){\
 repository(owner:$owner,name:$repo){\
 pullRequests(headRefName:$head,states:OPEN,first:1){nodes{mergeQueueEntry{state}}}}}";
+
+/// Whether a branch has a merge queue at all - `mergeQueue` is null when it
+/// does not. Distinct from [`MERGE_QUEUE_QUERY`] above, which asks whether one
+/// particular review is *sitting in* a queue.
+const BASE_MERGE_QUEUE_QUERY: &str = "query($owner:String!,$repo:String!,$branch:String!){\
+repository(owner:$owner,name:$repo){mergeQueue(branch:$branch){id}}}";
 
 /// GitHub merge-queue membership for `branches`. Best-effort: any failure (not
 /// a GitHub repo, an API hiccup, a query without queue access) warns once and
@@ -2156,6 +2156,27 @@ mod tests {
 
     /// The merge-queue refusal arrives as a `failed` status on a 200, so it is
     /// only distinguishable from a real merge failure by its message.
+    /// `true` only for a queue that is really there: the caller turns it into
+    /// merging the top of a stack, which lands that review into the layer
+    /// below unless a queue cascades it.
+    #[test]
+    fn parse_base_merge_queue_says_yes_only_to_a_queue() {
+        assert!(parse_base_merge_queue(
+            r#"{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}"#
+        ));
+        assert!(!parse_base_merge_queue(
+            r#"{"data":{"repository":{"mergeQueue":null}}}"#
+        ));
+        // A GraphQL error carries `data: null` beside `errors`, and an absent
+        // key reads the same way: no queue was reported, so none is assumed.
+        assert!(!parse_base_merge_queue(
+            r#"{"data":null,"errors":[{"message":"Could not resolve to a Repository"}]}"#
+        ));
+        assert!(!parse_base_merge_queue(r#"{"data":{"repository":{}}}"#));
+        assert!(!parse_base_merge_queue("not json"));
+        assert!(!parse_base_merge_queue(""));
+    }
+
     #[test]
     fn merge_method_refused_reads_the_parameter_complaint_only() {
         let refusal = r#"{"status":"failed","details":{"message":"Custom merge params are not supported when merging via a merge queue"}}"#;

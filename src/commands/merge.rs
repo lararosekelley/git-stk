@@ -531,17 +531,20 @@ fn queued_stack_top(
     if !review_provider.base_has_merge_queue(base).unwrap_or(false) {
         return None;
     }
-    // Every layer must be an open layer of the stack the top belongs to, or
-    // the single call would not cover what the prompt just promised.
     let stack = review_provider.native_stack_for(top).ok().flatten()?;
-    branches
+    // The cascade takes the top and *everything open below it* in the platform
+    // stack, so the two sets have to match exactly. Containment one way is not
+    // enough: an open layer below the line's bottom - an off-trunk base, a
+    // branch this checkout does not carry - would land in the same call,
+    // unnamed by the prompt and unchecked by `open_review_for`, which the
+    // bottom-up walk runs per layer.
+    let position = stack.layers.iter().position(|layer| layer.branch == *top)?;
+    let cascade: Vec<&String> = stack.layers[..=position]
         .iter()
-        .all(|branch| {
-            stack
-                .layers
-                .iter()
-                .any(|layer| layer.open && &layer.branch == branch)
-        })
+        .filter(|layer| layer.open)
+        .map(|layer| &layer.branch)
+        .collect();
+    (cascade.len() == branches.len() && branches.iter().all(|branch| cascade.contains(&branch)))
         .then(|| top.clone())
 }
 
@@ -562,7 +565,20 @@ fn enqueue_whole_stack(
             style::dim("(ctrl-c is safe; rerun `git stk merge --all` to resume)")
         );
         match review_provider.wait_for_checks(&review)? {
-            WaitOutcome::Passed | WaitOutcome::Landed => {}
+            WaitOutcome::Passed => {}
+            // Merged out-of-band while we waited. Merging it now would ask the
+            // async endpoint to land a closed review and surface a raw `gh`
+            // error; the bottom-up walk syncs instead, and so does this.
+            WaitOutcome::Landed => {
+                anstream::println!(
+                    "{}",
+                    style::warn(&format!(
+                        "{} was merged outside git-stk; syncing instead",
+                        review.id
+                    ))
+                );
+                return sync(false, PushMode::Config);
+            }
             WaitOutcome::Failed => bail!(
                 "checks failed for {}; fix them and rerun `git stk merge --all`",
                 review.id
