@@ -1002,6 +1002,148 @@ fn merge_all_enqueues_the_whole_stack_from_its_top_when_a_queue_governs_the_base
     );
 }
 
+/// The queue belongs to the branch the *stack* lands in, not the parent
+/// recorded locally. When those drift, the handover would enqueue into a queue
+/// that never sees the line - so it must keep the bottom-up walk, which
+/// refuses the state outright.
+#[test]
+fn merge_all_walks_bottom_up_when_the_platform_stack_lands_somewhere_else() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // Local parent is `main`, which has the queue; the registered stack lands
+    // in `develop`, which the prompt would never have named.
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"develop"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}"##,
+        )
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", "{}")
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", "{}")
+        .record("pr merge", "sync-merge.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    // The bottom-up walk refuses this state outright rather than landing it:
+    // the local parent and the review's base disagree with no retarget owed.
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .failure();
+
+    assert!(
+        !repo.path().join("async-13.txt").exists(),
+        "the top must not be merged into a queue the line does not land in"
+    );
+}
+
+/// The dry run has to preview the plan that will actually run, or it describes
+/// a bottom-up walk for a command that hands the stack over in one call.
+#[test]
+fn merge_all_dry_run_previews_the_queue_handover() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}"##,
+        )
+        .record("merge-async", "async.txt", "")
+        .record("pr merge", "sync-merge.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would add 2 reviews to main's merge queue by merging B work (#13)",
+        ))
+        // The bottom-up preview would name a merge per layer and a sync after
+        // each, neither of which this run does.
+        .stdout(predicates::str::contains("would sync after each merge").not())
+        .stdout(predicates::str::contains("would merge A work (#12)").not());
+
+    assert!(
+        !repo.path().join("async.txt").exists(),
+        "a dry run must not merge anything"
+    );
+}
+
+/// `--wait` on the handover polls the one review it is about to merge, and a
+/// top that lands mid-wait must sync rather than ask the async endpoint to
+/// merge a closed review.
+#[test]
+fn merge_all_wait_syncs_when_the_queued_stacks_top_lands_mid_wait() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}"##,
+        )
+        .record("merge-async", "async.txt", "")
+        .record("pr merge", "sync-merge.txt", "")
+        // Pending on the first poll, and the record flips the review to merged
+        // for the lookup that follows: merged out of band mid-wait.
+        .record_pending("pr checks", "checks.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on_after("ma/b", "checks.txt", r##"[{"number":13,"state":"MERGED","baseRefName":"main","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "--wait", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "#13 was merged outside git-stk; syncing instead",
+        ));
+
+    assert!(
+        !repo.path().join("async.txt").exists(),
+        "a review that landed mid-wait must not be handed to the async endpoint"
+    );
+}
+
 /// The cascade takes everything open below the top, so a platform stack that
 /// is *larger* than the confirmed line must keep the bottom-up walk - the one
 /// call would otherwise land a review the prompt never named and
