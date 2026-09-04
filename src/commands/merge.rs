@@ -421,14 +421,20 @@ fn merge_and_check(
         }
         // A queue and a scheduled auto-merge both leave the review open, and
         // only the provider can tell them apart. Ask before falling back to
-        // the scheduled wording, whose advice - `sync`, once checks pass - is
-        // wrong for a queue in both halves.
+        // the scheduled wording, whose *condition* is wrong for a queue: the
+        // entry lands on the queue's schedule, not when checks pass.
+        //
+        // Its command survives, though, and has to. A landed entry leaves the
+        // layer merged on the platform and still recorded locally, so a merge
+        // rerun straight away hits `open_review_for` and bails with "merged,
+        // not open" - `sync` is what clears the layer and makes the next one
+        // the bottom.
         _ if queued(review_provider, review) => {
             anstream::println!(
                 "{}",
                 style::warn(&format!(
-                    "{label} is in the merge queue; it lands on the queue's schedule, \
-                     then rerun `{rerun}`"
+                    "{label} is in the merge queue; once it lands, `git stk sync` \
+                     reconciles the stack - then `{rerun}` to carry on"
                 ))
             );
             Ok(MergeOutcome::Enqueued)

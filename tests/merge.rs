@@ -1187,6 +1187,47 @@ fn merge_reports_a_real_async_failure_without_retrying() {
     );
 }
 
+/// Plain `merge` takes the same queue path and must name its own rerun, not
+/// `--all`'s. The command matters as much as the condition: a landed entry
+/// leaves the layer merged on the platform and still recorded locally, so a
+/// merge rerun before `sync` bails with "merged, not open".
+#[test]
+fn merge_names_its_own_rerun_for_a_review_the_queue_took() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "mq/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":7,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"mq/a"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on(
+            "merge-async -X PUT",
+            r##"{"status":"enqueued","details":{"message":"Added to the merge queue."}}"##,
+        )
+        // Before the broad `mq/a` rule: that needle matches `head=mq/a` too.
+        .on(
+            "head=mq/a",
+            r##"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("mq/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"mq/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "A work (#12) is in the merge queue; once it lands, `git stk sync` reconciles the stack - then `git stk merge` to carry on",
+        ))
+        .stdout(predicates::str::contains("--all").not())
+        .stdout(predicates::str::contains("once checks pass").not());
+}
+
 /// `--auto` asks for a merge *when checks pass*. The async endpoint has no
 /// such mode, so a stacked review must refuse rather than merge now - which
 /// would land the code early, the opposite of what was asked.
@@ -1666,7 +1707,7 @@ fn merge_reports_a_stacked_review_taken_by_the_merge_queue() {
         // step and checks are not the condition - the advice for a scheduled
         // merge is wrong in both halves here.
         .stdout(predicates::str::contains(
-            "A work (#12) is in the merge queue; it lands on the queue's schedule, then rerun `git stk merge --all`",
+            "A work (#12) is in the merge queue; once it lands, `git stk sync` reconciles the stack - then `git stk merge --all` to carry on",
         ))
         .stdout(predicates::str::contains("rerun `git stk sync`").not())
         // A run that did everything available to it must not read as one that
