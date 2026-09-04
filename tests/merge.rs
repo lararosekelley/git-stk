@@ -1023,6 +1023,54 @@ fn merge_retries_without_the_method_when_a_merge_queue_refuses_it() {
     assert!(!calls[1].contains("merge_method"), "got: {calls:?}");
 }
 
+/// The shape GitHub actually produces. The `PUT` runs "only basic pull request
+/// state checks", so a merge queue's claim on the method is not evaluated
+/// there: the enqueue is accepted as `pending` and the refusal arrives from a
+/// poll of the background job. A retry that only inspected the enqueue
+/// response would never see it.
+#[test]
+fn merge_retries_without_the_method_when_the_refusal_arrives_at_a_poll() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let accepted = r##"{"status":"pending","details":{"uuid":"u-1"}}"##;
+    let refusal = r##"{"status":"failed","details":{"message":"Custom merge params are not supported when merging via a merge queue"}}"##;
+    let queued =
+        r##"{"status":"enqueued","details":{"message":"Pull request added to the merge queue."}}"##;
+    let fake = FakeProvider::new()
+        // Specific needle first: the retry's command is a prefix of this one.
+        .record_append(
+            "merge-async -X PUT -f merge_method=squash",
+            "puts.txt",
+            accepted,
+        )
+        .record_append("merge-async -X PUT", "puts.txt", queued)
+        .on("pulls/12/merge-async/u-1", refusal)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("added to the merge queue"))
+        .stderr(predicates::str::contains("GitHub refused squash for #12"));
+
+    let calls = fs::read_to_string(repo.path().join("puts.txt")).expect("async merge calls");
+    let calls: Vec<&str> = calls.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(calls.len(), 2, "got: {calls:?}");
+    assert!(calls[0].contains("merge_method=squash"), "got: {calls:?}");
+    assert!(!calls[1].contains("merge_method"), "got: {calls:?}");
+}
+
 /// The note describes a merge that happened, so a re-send that never lands
 /// must not leave it on screen - here with a non-zero exit, and below with the
 /// shape that actually matters. `-X PUT` with no `-f` is a distinct call, so

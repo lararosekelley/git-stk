@@ -257,11 +257,7 @@ impl ReviewProvider for GitHubProvider {
                 ))
                 .into());
             }
-            // Only the enqueue is retried: the `PUT` is not idempotent, so
-            // wrapping the wait in the retry too would re-ask GitHub to merge
-            // a review that is already merging whenever a poll blipped.
-            let (path, output) = merge_with_retry(|| enqueue_async_merge(review, strategy))?;
-            return await_async_merge(review, &path, &output);
+            return async_merge(review, strategy);
         }
 
         let mut args = vec!["pr", "merge", review.id_value(), flag];
@@ -764,46 +760,82 @@ fn async_merge_poll_interval() -> std::time::Duration {
     std::time::Duration::from_secs(2)
 }
 
+/// GitHub refused the merge *method*, not the merge.
+///
+/// Carried as an error rather than a return value because the refusal can
+/// arrive from either end of an async merge and both already report through
+/// `Result`. It holds the message it would otherwise have been, so a refusal
+/// that survives the retry still reads like any other failed merge.
+#[derive(Debug)]
+struct MergeMethodRefused(String);
+
+impl std::fmt::Display for MergeMethodRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for MergeMethodRefused {}
+
+/// Merge a stacked review, dropping the merge method if GitHub refuses it.
+///
+/// Something on GitHub's side can own the method - a merge queue on the base
+/// branch, in every case seen so far - and GitHub then rejects the whole
+/// request rather than ignoring the parameter. The refusal arrives from
+/// whichever end evaluates it: the `PUT` runs "only basic pull request state
+/// checks", so a rule's claim on the method is a verdict from the background
+/// job and surfaces at a poll instead. Nothing merged either way, so running
+/// the sequence again without the method is safe wherever it came from.
+///
+/// Reactive rather than probing for a queue first: a probe that answered wrong
+/// in the other direction would drop the method on a repo that does honour it
+/// and land the review by the repo's default instead of `stk.mergeStrategy`.
+/// Retrying only on GitHub's own refusal drops it exactly when it would not
+/// have been obeyed anyway - which is also why the note reports the refusal
+/// rather than naming a cause the refusal does not prove.
+fn async_merge(review: &ReviewRequest, strategy: &str) -> Result<String> {
+    let first = attempt_async_merge(review, Some(strategy));
+    match &first {
+        Err(error) if error.is::<MergeMethodRefused>() => {}
+        _ => return first,
+    }
+    // `?`: a re-send that never lands leaves nothing to say about which method
+    // decided the merge, and a second refusal reports itself in full.
+    let outcome = attempt_async_merge(review, None)?;
+    anstream::eprintln!(
+        "{}",
+        crate::style::warn(&format!(
+            "GitHub refused {strategy} for {}: the method configured on its \
+             side - a merge queue's, usually - decides this merge instead",
+            review.id
+        ))
+    );
+    Ok(outcome)
+}
+
+/// One enqueue-and-wait, with or without a merge method.
+fn attempt_async_merge(review: &ReviewRequest, strategy: Option<&str>) -> Result<String> {
+    // Only the enqueue is retried: the `PUT` is not idempotent, so wrapping
+    // the wait in the retry too would re-ask GitHub to merge a review that is
+    // already merging whenever a poll blipped.
+    let (path, output) = merge_with_retry(|| enqueue_async_merge(review, strategy))?;
+    await_async_merge(review, &path, &output)
+}
+
 /// Ask GitHub to start the merge. Split from the wait because the `PUT` is not
 /// idempotent: retrying it after a transient failure *later* in the sequence
 /// would ask for a second merge of a review already merging.
-fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String, String)> {
+fn enqueue_async_merge(review: &ReviewRequest, strategy: Option<&str>) -> Result<(String, String)> {
     let (owner, repo) = repo_owner_name().context("could not resolve the GitHub repository")?;
     let number = review_number(&review.id)
         .with_context(|| format!("could not read a pull request number from {}", review.id))?;
     let path = format!("repos/{owner}/{repo}/pulls/{number}/merge-async");
-    let method = format!("merge_method={strategy}");
-    let mut output = command_output("gh", &["api", &path, "-X", "PUT", "-f", &method])?;
-    // Something on GitHub's side owns the merge method - a merge queue on the
-    // base branch, in every case seen so far - and GitHub rejects the whole
-    // request rather than ignoring the parameter. Nothing merged, so asking
-    // again without it is safe.
-    //
-    // Reactive rather than probing for a queue first: a probe that answered
-    // wrong in the other direction would drop the method on a repo that does
-    // honour it and land the review by the repo's default instead of
-    // `stk.mergeStrategy`. Retrying only on GitHub's own refusal drops it
-    // exactly when it would not have been obeyed anyway - which is also why
-    // the note below reports the refusal rather than naming a cause the
-    // refusal does not prove.
-    if merge_method_refused(&output) {
-        output = command_output("gh", &["api", &path, "-X", "PUT"])?;
-        // Only once the re-send took. A failure arrives as a `failed` status
-        // on a `200` - the shape this whole branch exists for - so a zero exit
-        // proves nothing on its own, and a body that will not parse proves
-        // less. Either way, announcing which method decided the merge would be
-        // describing a merge nobody made.
-        if matches!(parse_async_merge(&output), Some((status, _)) if status != "failed") {
-            anstream::eprintln!(
-                "{}",
-                crate::style::warn(&format!(
-                    "GitHub refused {strategy} for {}: the method configured on its \
-                     side - a merge queue's, usually - decides this merge instead",
-                    review.id
-                ))
-            );
-        }
+    let mut args = vec!["api", path.as_str(), "-X", "PUT"];
+    let method = strategy.map(|strategy| format!("merge_method={strategy}"));
+    if let Some(method) = &method {
+        args.extend_from_slice(&["-f", method]);
     }
+    let output = command_output("gh", &args)?;
     // The PUT is the write: from here GitHub is landing the layer, so a cached
     // listing is a pre-merge snapshot however the wait then returns - merged,
     // enqueued, or still going when the polls run out and the caller finds it
@@ -902,7 +934,17 @@ fn async_merge_outcome(status: &str, id: &str, body: &str) -> Option<Result<Stri
         // A merge queue took it: it lands on its own schedule, and `sync`
         // picks that up later. Not a failure, and not something to wait on.
         "enqueued" => Some(Ok(format!("{id} added to the merge queue"))),
-        "failed" => Some(Err(anyhow!("{id} could not be merged: {body}"))),
+        // A refusal of the method is not a refusal of the merge: it is marked
+        // so the caller can drop the method and ask again, and carries the
+        // ordinary wording for when that has already been tried.
+        "failed" => {
+            let message = format!("{id} could not be merged: {body}");
+            Some(Err(if merge_method_refused(body) {
+                MergeMethodRefused(message).into()
+            } else {
+                anyhow!(message)
+            }))
+        }
         "pending" => None,
         other => Some(Err(anyhow!(
             "GitHub reported an unknown merge status {other:?} for {id}: {body}"
