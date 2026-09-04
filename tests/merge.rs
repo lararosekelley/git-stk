@@ -1187,6 +1187,47 @@ fn merge_reports_a_real_async_failure_without_retrying() {
     );
 }
 
+/// `--all` over a one-layer stack has nothing above the queued review, so the
+/// rerun must not be named: `sync` deletes the landed branch, and the rerun it
+/// pointed at would bail with "no stacked branches to merge".
+#[test]
+fn merge_all_names_no_rerun_when_the_queue_took_the_only_layer() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "sq/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":9,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"sq/a"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on(
+            "merge-async -X PUT",
+            r##"{"status":"enqueued","details":{"message":"Added to the merge queue."}}"##,
+        )
+        .on(
+            "head=sq/a",
+            r##"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("sq/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"sq/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "`git stk sync` reconciles the stack",
+        ))
+        .stdout(predicates::str::contains("to carry on").not())
+        .stdout(predicates::str::contains(
+            "merge complete: 0 of 1 review merged, 1 in the merge queue",
+        ));
+}
+
 /// Plain `merge` takes the same queue path and must name its own rerun, not
 /// `--all`'s. The command matters as much as the condition: a landed entry
 /// leaves the layer merged on the platform and still recorded locally, so a
@@ -1222,9 +1263,12 @@ fn merge_names_its_own_rerun_for_a_review_the_queue_took() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "A work (#12) is in the merge queue; once it lands, `git stk sync` reconciles the stack - then `git stk merge` to carry on",
+            "A work (#12) is in the merge queue; once it lands, `git stk sync` reconciles the stack",
         ))
-        .stdout(predicates::str::contains("--all").not())
+        // `merge` lands the bottom and is then done. Naming a rerun would send
+        // the reader into "no stacked branches to merge" on a one-layer stack,
+        // or into landing a layer they never asked for.
+        .stdout(predicates::str::contains("to carry on").not())
         .stdout(predicates::str::contains("once checks pass").not());
 }
 
