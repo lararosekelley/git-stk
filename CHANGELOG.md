@@ -21,8 +21,7 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   follows: the landed layer is still recorded locally, so `sync` clears it
   first, and a rerun is named only while a layer remains above the queued one -
   on the last one it would bail with nothing left to merge. `merge --all` also
-  counts
-  it rather than ending on `0 of N reviews merged` after a run that did
+  counts it rather than ending on `0 of N reviews merged` after a run that did
   everything it could (#336).
 
 ## 0.12.4
