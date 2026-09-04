@@ -791,8 +791,9 @@ impl std::error::Error for MergeMethodRefused {}
 /// in the other direction would drop the method on a repo that does honour it
 /// and land the review by the repo's default instead of `stk.mergeStrategy`.
 /// Retrying only on GitHub's own refusal drops it exactly when it would not
-/// have been obeyed anyway - which is also why the note reports the refusal
-/// rather than naming a cause the refusal does not prove.
+/// have been obeyed anyway. The match stays broad while the note names the
+/// queue: every refusal seen has been one, and the sentence is the clearer for
+/// saying so.
 fn async_merge(review: &ReviewRequest, strategy: &str) -> Result<String> {
     let first = attempt_async_merge(review, Some(strategy));
     match &first {
