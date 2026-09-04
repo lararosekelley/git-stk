@@ -556,6 +556,10 @@ fn github(tour: &mut Tour) -> Result<()> {
     tour.say("above onto the trunk; `sync` then cleans up locally:");
     tour.note("git stk merge --all");
     tour.say("");
+    tour.say("If a merge queue governs the trunk, that same command hands the queue");
+    tour.say("the whole stack in one call instead, and it lands the layers on its");
+    tour.say("own schedule.");
+    tour.say("");
     tour.say("The stack stays open on GitHub with landed layers still listed, until");
     tour.say("every layer has landed - so seeing a merged review in the stack map is");
     tour.say("expected, not a leftover.");
