@@ -336,8 +336,11 @@ metadata.
 
 A **merge queue** on the base branch adds one more owner. The queue decides the merge method, and GitHub
 rejects `stk.mergeStrategy` alongside it rather than ignoring it, so `merge` drops the strategy and says
-the queue decided the method. The layer is then enqueued rather than merged, which stops `merge --all`
-the way a scheduled merge does: the queue lands it on its own schedule and `git stk sync` picks it up.
+the queue decided the method. The layer is then enqueued rather than merged, which stops `merge --all` -
+and unlike a scheduled merge, `sync` is not what resumes it. A queue governs one branch, so only the
+bottom layer targets it; the layer above becomes eligible only once the entry lands and GitHub retargets
+it. Rerun `merge --all` then. The summary counts the queued review separately rather than reporting a run
+that did everything available to it as one that merged nothing.
 
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens

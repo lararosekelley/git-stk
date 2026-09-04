@@ -109,11 +109,17 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
     }
 
     stack::snapshot("merge");
-    match merge_and_check(review_provider.as_ref(), &review, &strategy, auto)? {
+    match merge_and_check(
+        review_provider.as_ref(),
+        &review,
+        &strategy,
+        auto,
+        "git stk merge",
+    )? {
         // Reconcile everything the merge changed: fetch, clean up, restack,
         // push.
         MergeOutcome::Merged => sync(false, PushMode::Config),
-        MergeOutcome::Scheduled => Ok(()),
+        MergeOutcome::Enqueued | MergeOutcome::Scheduled => Ok(()),
     }
 }
 
@@ -176,6 +182,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     // Each sync removes the merged bottom, so the loop is bounded by the
     // number of branches it started with.
     let mut landed = 0;
+    let mut enqueued = false;
     for _ in 0..count {
         let Some(bottom) = bottom_branch_excluding(pinned_base.as_deref())? else {
             break;
@@ -218,22 +225,35 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
             }
         }
 
-        match merge_and_check(review_provider.as_ref(), &review, &strategy, false)? {
+        match merge_and_check(
+            review_provider.as_ref(),
+            &review,
+            &strategy,
+            false,
+            "git stk merge --all",
+        )? {
             MergeOutcome::Merged => {
                 sync(false, PushMode::Config)?;
                 landed += 1;
+            }
+            MergeOutcome::Enqueued => {
+                enqueued = true;
+                break;
             }
             MergeOutcome::Scheduled => break,
         }
     }
 
-    anstream::println!(
-        "{}",
-        style::success(&format!(
-            "merge complete: {landed} of {count} review{} merged",
-            if count == 1 { "" } else { "s" }
-        ))
+    let mut summary = format!(
+        "merge complete: {landed} of {count} review{} merged",
+        if count == 1 { "" } else { "s" }
     );
+    // Otherwise a run that did everything available to it reads as a run that
+    // did nothing: the queue holds the only review that could have landed.
+    if enqueued {
+        summary.push_str(", 1 in the merge queue");
+    }
+    anstream::println!("{}", style::success(&summary));
     Ok(())
 }
 
@@ -366,6 +386,11 @@ fn open_review_for(
 
 enum MergeOutcome {
     Merged,
+    /// Handed to a merge queue. Distinct from `Scheduled` because the two
+    /// resume differently: a scheduled merge is waiting on checks and `sync`
+    /// picks it up, while a queued one has to *land* before the layer above
+    /// targets the queue's branch and becomes eligible at all.
+    Enqueued,
     Scheduled,
 }
 
@@ -377,6 +402,7 @@ fn merge_and_check(
     review: &ReviewRequest,
     strategy: &str,
     auto: bool,
+    rerun: &str,
 ) -> Result<MergeOutcome> {
     let label = review.label();
 
@@ -393,6 +419,20 @@ fn merge_and_check(
             anstream::println!("{}", style::success(&format!("merged {label}")));
             Ok(MergeOutcome::Merged)
         }
+        // A queue and a scheduled auto-merge both leave the review open, and
+        // only the provider can tell them apart. Ask before falling back to
+        // the scheduled wording, whose advice - `sync`, once checks pass - is
+        // wrong for a queue in both halves.
+        _ if queued(review_provider, review) => {
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "{label} is in the merge queue; it lands on the queue's schedule, \
+                     then rerun `{rerun}`"
+                ))
+            );
+            Ok(MergeOutcome::Enqueued)
+        }
         _ => {
             anstream::println!(
                 "{}",
@@ -403,6 +443,16 @@ fn merge_and_check(
             Ok(MergeOutcome::Scheduled)
         }
     }
+}
+
+/// Whether the review is sitting in a merge queue. Best-effort: the default
+/// implementation is empty and a failed lookup degrades to `false`, which only
+/// costs the queue wording, so it is never worth failing a merge over.
+fn queued(review_provider: &dyn ReviewProvider, review: &ReviewRequest) -> bool {
+    review_provider
+        .enqueued_branches(std::slice::from_ref(&review.branch))
+        .map(|queued| queued.contains(&review.branch))
+        .unwrap_or(false)
 }
 
 /// Turn a rejected merge into an actionable error. Ask the platform why from
