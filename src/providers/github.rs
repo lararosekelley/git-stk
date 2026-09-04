@@ -805,8 +805,7 @@ fn async_merge(review: &ReviewRequest, strategy: &str) -> Result<String> {
     anstream::eprintln!(
         "{}",
         crate::style::warn(&format!(
-            "GitHub refused {strategy} for {}: the method configured on its \
-             side - a merge queue's, usually - decides this merge instead",
+            "GitHub refused {strategy} for {}: the merge queue decides the merge method",
             review.id
         ))
     );
