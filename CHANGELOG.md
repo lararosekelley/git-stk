@@ -14,6 +14,15 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   is a verdict from the background job and reaches git-stk at a poll, which
   0.12.4 never inspected. The refusal is now recognised wherever it arrives,
   and the merge is re-run without the method from there (#333).
+- **merge --all:** a stack landing into a branch with a merge queue is now
+  handed over in one call instead of one layer per run. Merging a layer
+  enqueues that layer and every one below it, so the stack's top enqueues the
+  whole line - measured against a live queue as bottom one entry, middle two,
+  top all three. An eleven-layer stack was eleven enqueue-wait-`sync` cycles,
+  each waiting out the queue's own schedule. Both a queue on the base and a
+  platform stack covering the whole line are required, and either lookup
+  failing keeps the bottom-up walk: merging the top of a line the platform does
+  not hold would land it into the layer below (#339).
 - **merge:** a review the merge queue took is no longer reported as a scheduled
   merge. The advice that came with it - rerun `git stk sync` once checks pass -
   named the wrong condition: the queue lands the entry on its own schedule

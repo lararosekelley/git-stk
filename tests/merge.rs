@@ -940,6 +940,174 @@ fn merge_on_the_trunk_sees_an_off_trunk_stack() {
         .stderr(predicates::str::contains("no stacked branches").not());
 }
 
+/// A merge queue takes a stack whole: merging a layer enqueues that layer and
+/// every one below it, measured live as bottom -> 1 entry, top -> all. So
+/// `merge --all` hands the queue the *top* once instead of walking the stack
+/// from the bottom, one landing and one sync per layer.
+#[test]
+fn merge_all_enqueues_the_whole_stack_from_its_top_when_a_queue_governs_the_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}"##,
+        )
+        .record(
+            "pulls/13/merge-async -X PUT",
+            "async-13.txt",
+            r##"{"status":"enqueued","details":{"message":"Added to the merge queue."}}"##,
+        )
+        // Merging the bottom would enqueue only the bottom - the slow walk
+        // this exists to replace. Recorded so its absence is an assertion.
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", "{}")
+        .record("pr merge", "sync-merge.txt", "")
+        .on(
+            "head=ma/b",
+            r##"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "merge complete: 2 reviews added to the merge queue",
+        ))
+        // Nothing to carry on to: the one call took the whole line.
+        .stdout(predicates::str::contains("to carry on").not());
+
+    assert!(
+        repo.path().join("async-13.txt").exists(),
+        "the top review is what hands the queue the stack"
+    );
+    assert!(
+        !repo.path().join("async-12.txt").exists(),
+        "merging the bottom would enqueue only the bottom"
+    );
+}
+
+/// Without a queue there is nothing to cascade into, so the top must not be
+/// merged however complete the platform stack is: that call would land the top
+/// review into the layer below it rather than hand over the line.
+#[test]
+fn merge_all_walks_bottom_up_when_no_queue_governs_the_base() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let merged = r##"{"status":"merged","details":{"message":"Pull request was merged."}}"##;
+    let fake = FakeProvider::new()
+        // The whole difference from the enqueue case: no queue on the base.
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":null}}}"##,
+        )
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", merged)
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", merged)
+        .record("pr merge", "sync-merge.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on_after("ma/a", "async-12.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("merge queue").not());
+
+    assert!(
+        repo.path().join("async-12.txt").exists(),
+        "the bottom is what a queueless stack merges first"
+    );
+}
+
+/// The cascade only follows a *platform* stack, so a line the platform does
+/// not hold whole must keep the bottom-up walk: merging the top would land it
+/// into the layer below rather than hand over the line.
+#[test]
+fn merge_all_walks_bottom_up_when_the_platform_stack_does_not_cover_the_line() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    // The queue is there, but the stack holds only the top layer.
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"ma/a"},"pull_requests":[
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let fake = FakeProvider::new()
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}"##,
+        )
+        .record(
+            "pulls/12/merge-async -X PUT",
+            "async-12.txt",
+            r##"{"status":"enqueued","details":{"message":"Added to the merge queue."}}"##,
+        )
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", "{}")
+        .record("pr merge", "sync-merge.txt", "")
+        .on(
+            "head=ma/a",
+            r##"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "merge complete: 0 of 2 reviews merged",
+        ));
+
+    assert!(
+        !repo.path().join("async-13.txt").exists(),
+        "the top must not be merged: it would land into the layer below it"
+    );
+    // The bottom is outside the platform stack here, so it merges by the
+    // ordinary route - which is the point: the line was walked, not handed
+    // over.
+    assert!(
+        repo.path().join("sync-merge.txt").exists(),
+        "the bottom is what a line the platform does not hold whole must merge"
+    );
+}
+
 /// A stacked pull request cannot go through `gh pr merge` - GitHub requires
 /// the asynchronous endpoint, because landing a layer also retargets the ones
 /// above it. `merge` must take that path and wait for the result.

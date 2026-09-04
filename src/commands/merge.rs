@@ -109,7 +109,13 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
     }
 
     stack::snapshot("merge");
-    match merge_and_check(review_provider.as_ref(), &review, &strategy, auto, None)? {
+    match merge_and_check(
+        review_provider.as_ref(),
+        &review,
+        &strategy,
+        auto,
+        QueuedNext::Sync,
+    )? {
         // Reconcile everything the merge changed: fetch, clean up, restack,
         // push.
         MergeOutcome::Merged => sync(false, PushMode::Config),
@@ -143,8 +149,24 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     // next time round and land it - unprompted, since the confirmation below
     // names it as the destination, not as something being merged.
     let pinned_base = stack::unanchored_base(&line)?;
+    let base = stack::parent_of(&bottom)?.unwrap_or_else(|| "its base".to_owned());
+
+    // A merge queue takes a stack whole, so the top is one call for the entire
+    // line rather than one landing per layer.
+    let queue_top = queued_stack_top(review_provider.as_ref(), &branches, &base);
 
     if dry_run {
+        if let Some(top) = &queue_top {
+            let review = open_review_for(review_provider.as_ref(), provider.kind, top)?;
+            if wait {
+                anstream::println!("would wait for checks on {}", review.id);
+            }
+            anstream::println!(
+                "would add {count} reviews to {base}'s merge queue by merging {}",
+                review.label()
+            );
+            return Ok(());
+        }
         for branch in &branches {
             let review = open_review_for(review_provider.as_ref(), provider.kind, branch)?;
             if wait {
@@ -160,18 +182,30 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
         return Ok(());
     }
 
-    let base = stack::parent_of(&bottom)?.unwrap_or_else(|| "its base".to_owned());
-    if !yes
-        && !confirm(&format!(
+    let prompt = match &queue_top {
+        Some(_) => format!("add {count} reviews to {base}'s merge queue? [y/N] "),
+        None => format!(
             "merge {count} review{} into {base}, bottom-up ({strategy})? [y/N] ",
             if count == 1 { "" } else { "s" }
-        ))?
-    {
+        ),
+    };
+    if !yes && !confirm(&prompt)? {
         anstream::println!("merge cancelled");
         return Ok(());
     }
 
     stack::snapshot("merge --all");
+
+    if let Some(top) = queue_top {
+        return enqueue_whole_stack(
+            review_provider.as_ref(),
+            provider.kind,
+            &top,
+            &strategy,
+            count,
+            wait,
+        );
+    }
 
     // Each sync removes the merged bottom, so the loop is bounded by the
     // number of branches it started with.
@@ -227,7 +261,11 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
             &review,
             &strategy,
             false,
-            above.then_some("git stk merge --all"),
+            if above {
+                QueuedNext::SyncThen("git stk merge --all")
+            } else {
+                QueuedNext::Sync
+            },
         )? {
             MergeOutcome::Merged => {
                 sync(false, PushMode::Config)?;
@@ -381,6 +419,18 @@ fn open_review_for(
     Ok(review)
 }
 
+/// What to tell the reader after a merge queue takes the review.
+enum QueuedNext<'a> {
+    /// `sync` clears the landed layer, then this command carries the stack on.
+    SyncThen(&'a str),
+    /// `sync` clears it, and that is all: plain `merge` has landed what it was
+    /// asked to, and the last layer leaves nothing above it to merge.
+    Sync,
+    /// Nothing per review - one call handed the queue the whole line, and the
+    /// caller reports for the stack.
+    Deferred,
+}
+
 enum MergeOutcome {
     Merged,
     /// Handed to a merge queue. Distinct from `Scheduled` because the two
@@ -399,7 +449,7 @@ fn merge_and_check(
     review: &ReviewRequest,
     strategy: &str,
     auto: bool,
-    rerun: Option<&str>,
+    next: QueuedNext<'_>,
 ) -> Result<MergeOutcome> {
     let label = review.label();
 
@@ -427,23 +477,25 @@ fn merge_and_check(
         // not open" - `sync` is what clears the layer and makes the next one
         // the bottom.
         _ if queued(review_provider, review) => {
-            // The rerun after `sync` is only worth naming when a layer remains
-            // *above* this one. `merge` lands the bottom and is then done, and
-            // on a one-layer stack `sync` deletes the branch and leaves
-            // nothing to merge at all - so naming a command there sends the
-            // reader into "no stacked branches to merge", or into landing a
-            // review they never asked for.
-            let next = match rerun {
-                Some(rerun) => format!(" - then `{rerun}` to carry on"),
-                None => String::new(),
-            };
-            anstream::println!(
-                "{}",
-                style::warn(&format!(
+            // What follows differs by scope. A rerun is only worth naming
+            // while a layer remains *above* this one - `merge` lands the
+            // bottom and is then done, and on the last layer `sync` leaves
+            // nothing to merge at all, so naming a command there sends the
+            // reader into "no stacked branches to merge". And when one call
+            // handed the queue the whole line there is nothing to say per
+            // review: the caller reports for the stack.
+            let message = match next {
+                QueuedNext::SyncThen(rerun) => format!(
                     "{label} is in the merge queue; once it lands, `git stk sync` \
-                     reconciles the stack{next}"
-                ))
-            );
+                     reconciles the stack - then `{rerun}` to carry on"
+                ),
+                QueuedNext::Sync => format!(
+                    "{label} is in the merge queue; once it lands, `git stk sync` \
+                     reconciles the stack"
+                ),
+                QueuedNext::Deferred => format!("{label} is in the merge queue"),
+            };
+            anstream::println!("{}", style::warn(&message));
             Ok(MergeOutcome::Enqueued)
         }
         _ => {
@@ -455,6 +507,106 @@ fn merge_and_check(
             );
             Ok(MergeOutcome::Scheduled)
         }
+    }
+}
+
+/// The top branch to merge when a merge queue will take the whole stack, or
+/// `None` when `merge --all` should walk it bottom-up.
+///
+/// Both halves have to hold, and a failure of either reads as `None`. Merging
+/// a layer only cascades down a *platform* stack, so without one the call
+/// would merge that review into the layer below rather than land the line -
+/// and the same is true without a queue to cascade into.
+fn queued_stack_top(
+    review_provider: &dyn ReviewProvider,
+    branches: &[String],
+    base: &str,
+) -> Option<String> {
+    // One layer is the same call either way, so leave it on the path whose
+    // reporting and sync behaviour is already settled.
+    if branches.len() < 2 {
+        return None;
+    }
+    let top = branches.last()?;
+    if !review_provider.base_has_merge_queue(base).unwrap_or(false) {
+        return None;
+    }
+    // Every layer must be an open layer of the stack the top belongs to, or
+    // the single call would not cover what the prompt just promised.
+    let stack = review_provider.native_stack_for(top).ok().flatten()?;
+    branches
+        .iter()
+        .all(|branch| {
+            stack
+                .layers
+                .iter()
+                .any(|layer| layer.open && &layer.branch == branch)
+        })
+        .then(|| top.clone())
+}
+
+/// Hand the whole stack to the merge queue with one merge of its top.
+fn enqueue_whole_stack(
+    review_provider: &dyn ReviewProvider,
+    kind: ProviderKind,
+    top: &str,
+    strategy: &str,
+    count: usize,
+    wait: bool,
+) -> Result<()> {
+    let review = open_review_for(review_provider, kind, top)?;
+    if wait {
+        anstream::println!(
+            "waiting for checks on {} {}",
+            review.id,
+            style::dim("(ctrl-c is safe; rerun `git stk merge --all` to resume)")
+        );
+        match review_provider.wait_for_checks(&review)? {
+            WaitOutcome::Passed | WaitOutcome::Landed => {}
+            WaitOutcome::Failed => bail!(
+                "checks failed for {}; fix them and rerun `git stk merge --all`",
+                review.id
+            ),
+            WaitOutcome::Inconclusive => bail!(
+                "checks for {} stopped without a verdict - a cancelled run, or one \
+                 waiting on a person; resolve it and rerun `git stk merge --all`",
+                review.id
+            ),
+        }
+    }
+
+    match merge_and_check(
+        review_provider,
+        &review,
+        strategy,
+        false,
+        QueuedNext::Deferred,
+    )? {
+        MergeOutcome::Enqueued => {
+            anstream::println!(
+                "{}",
+                style::success(&format!(
+                    "merge complete: {count} reviews added to the merge queue; \
+                     `git stk sync` reconciles them as they land"
+                ))
+            );
+            Ok(())
+        }
+        // The queue answered for the base a moment ago, so reaching either of
+        // these means it stopped applying mid-run. Reported rather than
+        // smoothed over: what landed is not what the prompt described.
+        MergeOutcome::Merged => {
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "{} merged without the queue taking the stack; \
+                     rerun `git stk merge --all` for the rest",
+                    review.id
+                ))
+            );
+            sync(false, PushMode::Config)
+        }
+        MergeOutcome::Scheduled => Ok(()),
     }
 }
 

@@ -599,6 +599,22 @@ pub trait ReviewProvider {
     fn enqueued_branches(&self, _branches: &[String]) -> Result<BTreeSet<String>> {
         Ok(BTreeSet::new())
     }
+
+    /// Whether a merge queue governs `branch` - the branch a stack lands into.
+    ///
+    /// A queue takes a stack whole: merging a layer enqueues that layer and
+    /// every one below it, so a queued stack is landed by merging its *top*
+    /// once rather than walked from the bottom. Measured against a live queue
+    /// on a three-layer stack: bottom enqueues one entry, middle two, top all
+    /// three.
+    ///
+    /// This decides between those two shapes, so it has to be a fact rather
+    /// than a guess. The default is `false`, and a failed lookup must read the
+    /// same way: aiming the merge at the top of a stack in a repo with no
+    /// queue would merge that review into the layer below it.
+    fn base_has_merge_queue(&self, _branch: &str) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 /// Detect the provider and build its review client together - the pair nearly
