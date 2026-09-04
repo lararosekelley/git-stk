@@ -1644,6 +1644,12 @@ fn merge_reports_a_stacked_review_taken_by_the_merge_queue() {
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .on("repos/owner/repo/stacks", stacks)
         .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        // What tells a queued review from a scheduled one: the review is still
+        // open after the merge either way, so only this answers which.
+        .on(
+            "head=ma/a",
+            r##"{"data":{"repository":{"pullRequests":{"nodes":[{"mergeQueueEntry":{"state":"QUEUED"}}]}}}}"##,
+        )
         .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
         .fallback("[]")
         .install(&repo);
@@ -1656,8 +1662,17 @@ fn merge_reports_a_stacked_review_taken_by_the_merge_queue() {
         .assert()
         .success()
         .stdout(predicates::str::contains("#12 added to the merge queue"))
+        // The queue lands it on its own schedule, so `sync` is not the next
+        // step and checks are not the condition - the advice for a scheduled
+        // merge is wrong in both halves here.
         .stdout(predicates::str::contains(
-            "merge complete: 0 of 2 reviews merged",
+            "A work (#12) is in the merge queue; it lands on the queue's schedule, then rerun `git stk merge --all`",
+        ))
+        .stdout(predicates::str::contains("rerun `git stk sync`").not())
+        // A run that did everything available to it must not read as one that
+        // did nothing.
+        .stdout(predicates::str::contains(
+            "merge complete: 0 of 2 reviews merged, 1 in the merge queue",
         ))
         .stdout(predicates::str::contains("#13").not());
     assert!(

@@ -14,6 +14,13 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   is a verdict from the background job and reaches git-stk at a poll, which
   0.12.4 never inspected. The refusal is now recognised wherever it arrives,
   and the merge is re-run without the method from there (#333).
+- **merge:** a review the merge queue took is no longer reported as a scheduled
+  merge. The advice that came with it - rerun `git stk sync` once checks pass -
+  was wrong in both halves: `sync` does not advance the stack, and the queue
+  lands the entry on its own schedule rather than when checks pass. A queued
+  review now says so and names the rerun that applies, and `merge --all` counts
+  it rather than ending on `0 of N reviews merged` after a run that did
+  everything it could (#336).
 
 ## 0.12.4
 
