@@ -427,11 +427,7 @@ fn merge_and_check(
         // not open" - `sync` is what clears the layer and makes the next one
         // the bottom.
         _ if queued(review_provider, review) => {
-            // `sync` always follows: the entry lands on the platform while the
-            // layer is still recorded locally, and until that is cleared any
-            // merge rerun bails with "merged, not open".
-            //
-            // The rerun after it is only worth naming when a layer remains
+            // The rerun after `sync` is only worth naming when a layer remains
             // *above* this one. `merge` lands the bottom and is then done, and
             // on a one-layer stack `sync` deletes the branch and leaves
             // nothing to merge at all - so naming a command there sends the
