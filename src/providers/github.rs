@@ -788,17 +788,21 @@ fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String
     // refusal does not prove.
     if merge_method_refused(&output) {
         output = command_output("gh", &["api", &path, "-X", "PUT"])?;
-        // After the retry: a re-send that fails never happened as far as the
-        // merge is concerned, and saying the method was overridden would be
+        // Only once the re-send took. A failure arrives as a `failed` status
+        // on a `200` - the shape this whole branch exists for - so a zero exit
+        // proves nothing on its own, and a body that will not parse proves
+        // less. Either way, announcing which method decided the merge would be
         // describing a merge nobody made.
-        anstream::eprintln!(
-            "{}",
-            crate::style::warn(&format!(
-                "GitHub refused {strategy} for {}: the method configured on its \
-                 side - a merge queue's, usually - decides this merge instead",
-                review.id
-            ))
-        );
+        if matches!(parse_async_merge(&output), Some((status, _)) if status != "failed") {
+            anstream::eprintln!(
+                "{}",
+                crate::style::warn(&format!(
+                    "GitHub refused {strategy} for {}: the method configured on its \
+                     side - a merge queue's, usually - decides this merge instead",
+                    review.id
+                ))
+            );
+        }
     }
     // The PUT is the write: from here GitHub is landing the layer, so a cached
     // listing is a pre-merge snapshot however the wait then returns - merged,
