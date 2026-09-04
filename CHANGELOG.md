@@ -4,6 +4,17 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.12.5
+
+### Fixed
+
+- **merge:** a stacked review whose base branch has a merge queue still failed
+  after 0.12.4. The refusal does not come back from the request: the `PUT` runs
+  only basic pull request state checks, so a rule's claim on the merge method
+  is a verdict from the background job and reaches git-stk at a poll, which
+  0.12.4 never inspected. The refusal is now recognised wherever it arrives,
+  and the merge is re-run without the method from there (#333).
+
 ## 0.12.4
 
 ### Fixed
