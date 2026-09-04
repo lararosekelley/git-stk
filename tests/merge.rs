@@ -1014,13 +1014,49 @@ fn merge_retries_without_the_method_when_a_merge_queue_refuses_it() {
         .args(["merge", "-y"])
         .assert()
         .success()
-        .stderr(predicates::str::contains("a merge queue governs"));
+        .stderr(predicates::str::contains("GitHub refused squash for #12"));
 
     let calls = fs::read_to_string(repo.path().join("async.txt")).expect("async merge calls");
     let calls: Vec<&str> = calls.lines().filter(|line| !line.is_empty()).collect();
     assert_eq!(calls.len(), 2, "got: {calls:?}");
     assert!(calls[0].contains("merge_method=squash"), "got: {calls:?}");
     assert!(!calls[1].contains("merge_method"), "got: {calls:?}");
+}
+
+/// The note describes a merge that happened, so a re-send that fails must not
+/// leave it on screen. `-X PUT` with no `-f` is a distinct call, so the fake
+/// can fail it while the first attempt still returns the refusal.
+#[test]
+fn merge_says_nothing_about_the_method_when_the_retry_fails() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let refusal = r##"{"status":"failed","details":{"message":"Custom merge params are not supported when merging via a merge queue"}}"##;
+    let fake = FakeProvider::new()
+        .on("merge-async -X PUT -f merge_method=squash", refusal)
+        // Not a transient error, so the enqueue is not retried around this.
+        .fail("merge-async -X PUT", "HTTP 422: Unprocessable Entity")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on(
+            "pr view 12 --json mergeable,mergeStateStatus",
+            r##"{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}"##,
+        )
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Unprocessable Entity"))
+        .stderr(predicates::str::contains("GitHub refused squash").not());
 }
 
 /// Only the complaint about the parameter is retried. A merge that failed for
