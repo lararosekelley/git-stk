@@ -109,13 +109,7 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
     }
 
     stack::snapshot("merge");
-    match merge_and_check(
-        review_provider.as_ref(),
-        &review,
-        &strategy,
-        auto,
-        "git stk merge",
-    )? {
+    match merge_and_check(review_provider.as_ref(), &review, &strategy, auto, None)? {
         // Reconcile everything the merge changed: fetch, clean up, restack,
         // push.
         MergeOutcome::Merged => sync(false, PushMode::Config),
@@ -225,12 +219,15 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
             }
         }
 
+        // `landed` merges are behind us and this is the next, so anything
+        // above it is what makes a rerun worth naming.
+        let above = landed + 1 < count;
         match merge_and_check(
             review_provider.as_ref(),
             &review,
             &strategy,
             false,
-            "git stk merge --all",
+            above.then_some("git stk merge --all"),
         )? {
             MergeOutcome::Merged => {
                 sync(false, PushMode::Config)?;
@@ -402,7 +399,7 @@ fn merge_and_check(
     review: &ReviewRequest,
     strategy: &str,
     auto: bool,
-    rerun: &str,
+    rerun: Option<&str>,
 ) -> Result<MergeOutcome> {
     let label = review.label();
 
@@ -430,11 +427,25 @@ fn merge_and_check(
         // not open" - `sync` is what clears the layer and makes the next one
         // the bottom.
         _ if queued(review_provider, review) => {
+            // `sync` always follows: the entry lands on the platform while the
+            // layer is still recorded locally, and until that is cleared any
+            // merge rerun bails with "merged, not open".
+            //
+            // The rerun after it is only worth naming when a layer remains
+            // *above* this one. `merge` lands the bottom and is then done, and
+            // on a one-layer stack `sync` deletes the branch and leaves
+            // nothing to merge at all - so naming a command there sends the
+            // reader into "no stacked branches to merge", or into landing a
+            // review they never asked for.
+            let next = match rerun {
+                Some(rerun) => format!(" - then `{rerun}` to carry on"),
+                None => String::new(),
+            };
             anstream::println!(
                 "{}",
                 style::warn(&format!(
                     "{label} is in the merge queue; once it lands, `git stk sync` \
-                     reconciles the stack - then `{rerun}` to carry on"
+                     reconciles the stack{next}"
                 ))
             );
             Ok(MergeOutcome::Enqueued)

@@ -17,9 +17,11 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 - **merge:** a review the merge queue took is no longer reported as a scheduled
   merge. The advice that came with it - rerun `git stk sync` once checks pass -
   named the wrong condition: the queue lands the entry on its own schedule
-  rather than when checks pass. A queued review now says so, and names both
-  steps that follow - the landed layer is still recorded locally, so `sync`
-  clears it before a merge rerun can carry on. `merge --all` also counts
+  rather than when checks pass. A queued review now says so, and names what
+  follows: the landed layer is still recorded locally, so `sync` clears it
+  first, and a rerun is named only while a layer remains above the queued one -
+  on the last one it would bail with nothing left to merge. `merge --all` also
+  counts
   it rather than ending on `0 of N reviews merged` after a run that did
   everything it could (#336).
 
