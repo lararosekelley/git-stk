@@ -336,12 +336,22 @@ metadata.
 
 A **merge queue** on the base branch adds one more owner. The queue decides the merge method, and GitHub
 rejects `stk.mergeStrategy` alongside it rather than ignoring it, so `merge` drops the strategy and says
-the queue decided the method. The layer is then enqueued rather than merged, which stops `merge --all`.
-The entry lands on the queue's schedule, not when checks pass, and it leaves the layer merged on the
-platform but still recorded locally - so `sync` has to clear it before any merge rerun will carry on. A
-rerun is only named while a layer remains above the queued one: plain `merge` lands the bottom and is
-done, and on the last layer `sync` leaves nothing to merge at all. The summary counts the queued review
-separately rather than reporting a run that did everything available to it as one that merged nothing.
+the queue decided the method.
+
+A queue also takes a **stack whole**. Merging a layer enqueues that layer and every one below it, so
+`merge --all` hands the queue the stack's _top_ in a single call rather than landing one layer per run -
+and the queue merges them in order on its own schedule, retargeting each as the one below lands. `git stk
+sync` reconciles the local stack as they land. This needs both a queue on the base and a platform stack
+covering the whole line; without either, `merge --all` walks bottom-up as usual, because merging the top
+of a line the platform does not hold would land it into the layer below rather than hand over the stack.
+
+Plain `git stk merge` still merges the bottom - it means "land the next one" - and a queue takes that one
+layer only. So does `merge --all` when it walks bottom-up. The entry then lands on the queue's schedule,
+not when checks pass, and it leaves the layer merged on the platform but still recorded locally, so `sync`
+has to clear it before any merge rerun will carry on. A rerun is named only while a layer remains above
+the queued one: plain `merge` has landed what it was asked to, and on the last layer `sync` leaves nothing
+to merge at all. The `--all` summary counts queued reviews rather than reporting a run that did everything
+available to it as one that merged nothing.
 
 `submit --downstack` submits the stack from its bottom through the current branch only, so
 work-in-progress branches above you stay local. `--draft` (or `git config stk.submitDraft true`) opens

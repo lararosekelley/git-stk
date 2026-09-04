@@ -485,6 +485,30 @@ impl ReviewProvider for GitHubProvider {
     fn enqueued_branches(&self, branches: &[String]) -> Result<BTreeSet<String>> {
         Ok(github_enqueued_branches(branches))
     }
+
+    fn base_has_merge_queue(&self, branch: &str) -> Result<bool> {
+        let (owner, repo) = repo_owner_name().context("could not resolve the GitHub repository")?;
+        let owner_arg = format!("owner={owner}");
+        let repo_arg = format!("repo={repo}");
+        let branch_arg = format!("branch={branch}");
+        let query_arg = format!("query={BASE_MERGE_QUEUE_QUERY}");
+        let output = command_output(
+            "gh",
+            &[
+                "api",
+                "graphql",
+                "-f",
+                &owner_arg,
+                "-f",
+                &repo_arg,
+                "-f",
+                &branch_arg,
+                "-f",
+                &query_arg,
+            ],
+        )?;
+        Ok(parse_base_merge_queue(&output))
+    }
 }
 
 /// Fetch review annotations for `branches` in a single GraphQL query: one
@@ -701,6 +725,26 @@ fn rollup_state_to_status(state: Option<&str>) -> CheckStatus {
 /// `mergeQueueEntry` exposes merge-queue membership, but only over GraphQL -
 /// there is no `gh pr view --json` field for it. Query each branch's open PR by
 /// head ref; a non-null entry means it is queued and the branch is locked.
+/// Whether a branch has a merge queue at all - `mergeQueue` is null when it
+/// does not. Distinct from [`MERGE_QUEUE_QUERY`], which asks whether one
+/// particular review is *sitting in* a queue.
+const BASE_MERGE_QUEUE_QUERY: &str = "query($owner:String!,$repo:String!,$branch:String!){\
+repository(owner:$owner,name:$repo){mergeQueue(branch:$branch){id}}}";
+
+/// A non-null `mergeQueue` for the branch. Anything unreadable is `false`:
+/// the caller turns a `true` into merging the top of a stack, which is only
+/// right when a queue will cascade it.
+fn parse_base_merge_queue(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/data/repository/mergeQueue")
+                .map(|queue| !queue.is_null())
+        })
+        .unwrap_or(false)
+}
+
 const MERGE_QUEUE_QUERY: &str = "query($owner:String!,$repo:String!,$head:String!){\
 repository(owner:$owner,name:$repo){\
 pullRequests(headRefName:$head,states:OPEN,first:1){nodes{mergeQueueEntry{state}}}}}";
