@@ -1023,11 +1023,12 @@ fn merge_retries_without_the_method_when_a_merge_queue_refuses_it() {
     assert!(!calls[1].contains("merge_method"), "got: {calls:?}");
 }
 
-/// The note describes a merge that happened, so a re-send that fails must not
-/// leave it on screen. `-X PUT` with no `-f` is a distinct call, so the fake
-/// can fail it while the first attempt still returns the refusal.
+/// The note describes a merge that happened, so a re-send that never lands
+/// must not leave it on screen - here with a non-zero exit, and below with the
+/// shape that actually matters. `-X PUT` with no `-f` is a distinct call, so
+/// the fake can answer it while the first attempt still returns the refusal.
 #[test]
-fn merge_says_nothing_about_the_method_when_the_retry_fails() {
+fn merge_says_nothing_about_the_method_when_the_retry_errors() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     repo.git(["config", "stk.githubStacks", "true"]);
@@ -1056,6 +1057,44 @@ fn merge_says_nothing_about_the_method_when_the_retry_fails() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("Unprocessable Entity"))
+        .stderr(predicates::str::contains("GitHub refused squash").not());
+}
+
+/// The failure that matters: an async merge reports `failed` on a `200`, so
+/// the re-send exits zero and still merged nothing. Guarding only the non-zero
+/// exit above would announce the override right over the error saying the
+/// merge did not happen.
+#[test]
+fn merge_says_nothing_about_the_method_when_the_retry_reports_a_failure() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let refusal = r##"{"status":"failed","details":{"message":"Custom merge params are not supported when merging via a merge queue"}}"##;
+    let failed = r##"{"status":"failed","details":{"message":"Base branch was modified. Review and try the merge again."}}"##;
+    let fake = FakeProvider::new()
+        .on("merge-async -X PUT -f merge_method=squash", refusal)
+        // Exits zero, like every async-merge answer: the verdict is the body.
+        .on("merge-async -X PUT", failed)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on(
+            "pr view 12 --json mergeable,mergeStateStatus",
+            r##"{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}"##,
+        )
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Base branch was modified"))
         .stderr(predicates::str::contains("GitHub refused squash").not());
 }
 
