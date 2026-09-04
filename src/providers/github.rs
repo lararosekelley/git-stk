@@ -774,24 +774,31 @@ fn enqueue_async_merge(review: &ReviewRequest, strategy: &str) -> Result<(String
     let path = format!("repos/{owner}/{repo}/pulls/{number}/merge-async");
     let method = format!("merge_method={strategy}");
     let mut output = command_output("gh", &["api", &path, "-X", "PUT", "-f", &method])?;
-    // A merge queue on the base branch decides the merge method itself, and
-    // GitHub rejects the whole request rather than ignoring the parameter.
-    // Nothing merged, so asking again without it is safe.
+    // Something on GitHub's side owns the merge method - a merge queue on the
+    // base branch, in every case seen so far - and GitHub rejects the whole
+    // request rather than ignoring the parameter. Nothing merged, so asking
+    // again without it is safe.
     //
     // Reactive rather than probing for a queue first: a probe that answered
     // wrong in the other direction would drop the method on a repo that does
     // honour it and land the review by the repo's default instead of
     // `stk.mergeStrategy`. Retrying only on GitHub's own refusal drops it
-    // exactly when it would not have been obeyed anyway.
+    // exactly when it would not have been obeyed anyway - which is also why
+    // the note below reports the refusal rather than naming a cause the
+    // refusal does not prove.
     if merge_method_refused(&output) {
+        output = command_output("gh", &["api", &path, "-X", "PUT"])?;
+        // After the retry: a re-send that fails never happened as far as the
+        // merge is concerned, and saying the method was overridden would be
+        // describing a merge nobody made.
         anstream::eprintln!(
             "{}",
             crate::style::warn(&format!(
-                "a merge queue governs {}, so its own merge method applies rather than {strategy}",
+                "GitHub refused {strategy} for {}: the method configured on its \
+                 side - a merge queue's, usually - decides this merge instead",
                 review.id
             ))
         );
-        output = command_output("gh", &["api", &path, "-X", "PUT"])?;
     }
     // The PUT is the write: from here GitHub is landing the layer, so a cached
     // listing is a pre-merge snapshot however the wait then returns - merged,

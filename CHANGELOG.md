@@ -15,8 +15,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   it as a `failed` status on a `200`, which read as a failed merge. The
   strategy is dropped and the merge re-sent when GitHub refuses it, which is
   exactly when the queue's own configured method decides the merge anyway.
-  `merge` names the review the queue took over rather than switching methods
-  silently (#333).
+  `merge` says the strategy was refused rather than switching methods silently
+  (#333).
 
 ## 0.12.3
 
