@@ -2154,8 +2154,6 @@ mod tests {
         assert_eq!(review_number(""), None);
     }
 
-    /// The merge-queue refusal arrives as a `failed` status on a 200, so it is
-    /// only distinguishable from a real merge failure by its message.
     /// `true` only for a queue that is really there: the caller turns it into
     /// merging the top of a stack, which lands that review into the layer
     /// below unless a queue cascades it.
@@ -2177,6 +2175,8 @@ mod tests {
         assert!(!parse_base_merge_queue(""));
     }
 
+    /// The merge-queue refusal arrives as a `failed` status on a 200, so it is
+    /// only distinguishable from a real merge failure by its message.
     #[test]
     fn merge_method_refused_reads_the_parameter_complaint_only() {
         let refusal = r#"{"status":"failed","details":{"message":"Custom merge params are not supported when merging via a merge queue"}}"#;

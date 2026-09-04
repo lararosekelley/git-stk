@@ -342,8 +342,10 @@ A queue also takes a **stack whole**. Merging a layer enqueues that layer and ev
 `merge --all` hands the queue the stack's _top_ in a single call rather than landing one layer per run -
 and the queue merges them in order on its own schedule, retargeting each as the one below lands. `git stk
 sync` reconciles the local stack as they land. This needs both a queue on the base and a platform stack
-covering the whole line; without either, `merge --all` walks bottom-up as usual, because merging the top
-of a line the platform does not hold would land it into the layer below rather than hand over the stack.
+whose open layers are _exactly_ the line - the cascade takes every open layer below the top, so a stack
+that also holds a review beneath the line would land that too. Without either, `merge --all` walks
+bottom-up as usual, because merging the top of a line the platform does not hold would land it into the
+layer below rather than hand over the stack.
 
 Plain `git stk merge` still merges the bottom - it means "land the next one" - and a queue takes that one
 layer only. So does `merge --all` when it walks bottom-up. The entry then lands on the queue's schedule,
