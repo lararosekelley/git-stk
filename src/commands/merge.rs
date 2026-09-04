@@ -26,10 +26,12 @@ pub struct Merge {
     /// now.
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "all")]
     auto: bool,
-    /// Repeat merge-and-sync bottom-up until the whole stack has landed.
+    /// Repeat merge-and-sync bottom-up until the whole stack has landed, or
+    /// hand the stack to the merge queue in one call when one governs it.
     #[arg(long, action = ArgAction::SetTrue)]
     all: bool,
-    /// With --all: wait for each review's checks before merging it.
+    /// With --all: wait for each review's checks before merging it - the top
+    /// alone on the merge-queue handover, which makes one merge.
     #[arg(long, action = ArgAction::SetTrue, requires = "all", conflicts_with = "no_wait")]
     wait: bool,
     /// With --all: do not wait for checks, overriding stk.mergeWait.
@@ -127,6 +129,10 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
 /// the stack is complete. One confirmation up front; a merge that only gets
 /// scheduled stops the loop, and with `wait` each review's checks settle
 /// before its merge.
+///
+/// A merge queue takes the stack whole instead - see [`queued_stack_top`] -
+/// so that path makes one merge, waits on that review only, and reports for
+/// the line rather than looping.
 fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     let Some(bottom) = bottom_branch()? else {
         bail!(nothing_to_merge_hint()?);
@@ -513,10 +519,15 @@ fn merge_and_check(
 /// The top branch to merge when a merge queue will take the whole stack, or
 /// `None` when `merge --all` should walk it bottom-up.
 ///
-/// Both halves have to hold, and a failure of either reads as `None`. Merging
-/// a layer only cascades down a *platform* stack, so without one the call
-/// would merge that review into the layer below rather than land the line -
-/// and the same is true without a queue to cascade into.
+/// Three things have to hold, and a failure of any reads as `None`:
+///
+/// - a platform stack, since merging a layer only cascades down one - without
+///   it the call merges that review into the layer below rather than landing
+///   the line;
+/// - that stack landing where the local line says it does, since the queue is
+///   a property of the branch it lands in;
+/// - its open layers being exactly the line, since the cascade takes every
+///   open layer below the top.
 fn queued_stack_top(
     review_provider: &dyn ReviewProvider,
     branches: &[String],
