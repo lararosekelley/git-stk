@@ -138,6 +138,9 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
         // cannot go yet keeps its metadata too, and stays in the stack.
         if !keep_branch && let Some(reason) = deletion_blocker(&branch, &current_branch)? {
             report_kept(&branch, &reason);
+            if !dry_run && landing == Landing::Merged && !stack::landed_marker_retired(&branch) {
+                stack::set_landed(&branch)?;
+            }
             kept += 1;
             continue;
         }
@@ -257,6 +260,7 @@ pub(crate) fn cleanup_finished_branch(
     if !dry_run {
         stack::unset_parent(branch)?;
         stack::unset_base(branch)?;
+        stack::unset_landed(branch)?;
     }
 
     Ok(())

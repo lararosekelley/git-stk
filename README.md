@@ -312,7 +312,8 @@ Everything is optional; defaults shown below:
 The tool also manages per-branch metadata: `branch.<name>.stkParent` (the stack parent),
 `branch.<name>.stkBase` (the recorded fork point), `branch.<name>.stkFloor` (marking a branch as a
 stack's base - see below), and - for branches made with `new --worktree` - `branch.<name>.stkWorktree`,
-recording that git-stk created that worktree and so may remove it. These are written by `new`, `adopt`,
+recording that git-stk created that worktree and so may remove it, and `branch.<name>.stkLanded`, marking a
+landed branch that `sync` or `cleanup` had to keep until `cleanup` can delete it. These are written by `new`, `adopt`,
 `rename`, `sync`, `restack`, `cleanup`, and `repair`; you normally never touch them by hand.
 
 A stack does not have to sit on the trunk. Root one on any branch - a release line, say - and git-stk

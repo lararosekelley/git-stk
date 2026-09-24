@@ -16,6 +16,11 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   the command that finishes it, `git stk cleanup <branch>`. A bare `cleanup`
   only walks the current line, so run from anywhere else it never reached the
   kept branch (#343).
+- **list, status:** a merged branch that `sync` or `cleanup` had to keep is no
+  longer told to `restack` once the trunk moves past it, nor to `sync` or
+  `submit` by `status`. It is marked locally (`branch.<name>.stkLanded`, holding
+  the tip that landed, so a later commit retires it), and the hint names
+  `git stk cleanup <branch>` (#344).
 
 ## 0.12.6
 
