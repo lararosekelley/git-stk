@@ -4,6 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.12.7
+
+### Fixed
+
+- **restack:** a finished restack - and so `sync` and `absorb` - now ends on
+  the branch it started from rather than the last one it rebased. Run from the
+  trunk, `sync` stays on the trunk, so a bare `cleanup` that follows sees every
+  line again (#342).
+
 ## 0.12.6
 
 ### Fixed

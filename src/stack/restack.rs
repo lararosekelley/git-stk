@@ -89,7 +89,15 @@ pub fn restack_except(
     reconcile_diverged_remotes(&branches, &frozen, push, false)?;
     clear_state()?;
     let all = branches.clone();
-    restack_branches(branches, &parents, &frozen, update_refs, push, &all)
+    restack_branches(
+        branches,
+        &parents,
+        &frozen,
+        update_refs,
+        push,
+        &all,
+        &current,
+    )
 }
 
 /// Branches in the restack set whose review is itself locked by a merge queue /
@@ -568,6 +576,7 @@ pub fn continue_restack() -> Result<()> {
     let frozen: BTreeSet<String> = state.frozen.iter().cloned().collect();
     if state.remaining.is_empty() {
         clear_state()?;
+        return_home(&state.home);
         finish_restack(&state.all, &frozen, state.push)?;
         return Ok(());
     }
@@ -580,6 +589,7 @@ pub fn continue_restack() -> Result<()> {
         state.update_refs,
         state.push,
         &state.all,
+        &state.home,
     )
 }
 
@@ -621,6 +631,7 @@ fn restack_branches(
     update_refs: bool,
     push: bool,
     all: &[String],
+    home: &str,
 ) -> Result<()> {
     for (index, branch) in branches.iter().enumerate() {
         if frozen.contains(branch) {
@@ -685,6 +696,7 @@ fn restack_branches(
                 push,
                 all: all.to_vec(),
                 frozen: frozen.iter().cloned().collect(),
+                home: home.to_owned(),
             }
             .write()?;
 
@@ -701,7 +713,29 @@ fn restack_branches(
     }
 
     clear_state()?;
+    return_home(home);
     finish_restack(all, frozen, push)
+}
+
+/// Each rebase checks its branch out, so a finished restack would otherwise
+/// leave HEAD on the last branch it moved. Go back to where it started, unless
+/// that branch is gone or another worktree has it. Best effort: the rebases are
+/// done, and failing here would skip the push.
+fn return_home(home: &str) {
+    if home.is_empty() || git::current_branch().is_ok_and(|current| current == home) {
+        return;
+    }
+    let free = git::local_branches().is_ok_and(|branches| branches.iter().any(|b| b == home))
+        && git::worktree_holding(home).is_ok_and(|held| held.is_none());
+    if !free {
+        return;
+    }
+    if let Err(error) = git::checkout_silently(home) {
+        anstream::eprintln!(
+            "{}",
+            style::warn(&format!("could not return to {home}: {error:#}"))
+        );
+    }
 }
 
 /// After every branch has been rebased: push the rewritten branches, or print
@@ -787,6 +821,9 @@ struct RestackState {
     /// Branches frozen by a merge queue / merge train, so the resumed restack
     /// keeps skipping them and the final push keeps holding them back.
     frozen: Vec<String>,
+    /// The branch the restack started from, checked out again once it
+    /// finishes. Empty when unknown.
+    home: String,
 }
 
 impl RestackState {
@@ -805,6 +842,7 @@ impl RestackState {
         let mut push = false;
         let mut all = Vec::new();
         let mut frozen = Vec::new();
+        let mut home = String::new();
 
         for line in contents.lines() {
             if let Some(value) = line.strip_prefix("branch=") {
@@ -827,6 +865,8 @@ impl RestackState {
                     .filter(|branch| !branch.is_empty())
                     .map(str::to_owned)
                     .collect();
+            } else if let Some(value) = line.strip_prefix("home=") {
+                home = value.to_owned();
             } else if let Some(value) = line.strip_prefix("frozen=") {
                 frozen = value
                     .split('\t')
@@ -851,20 +891,22 @@ impl RestackState {
             push,
             all,
             frozen,
+            home,
         }))
     }
 
     fn write(&self) -> Result<()> {
         let path = state_path()?;
         let contents = format!(
-            "branch={}\nparent={}\nupdateRefs={}\npush={}\nremaining={}\nall={}\nfrozen={}\n",
+            "branch={}\nparent={}\nupdateRefs={}\npush={}\nremaining={}\nall={}\nfrozen={}\nhome={}\n",
             self.branch,
             self.parent,
             self.update_refs,
             self.push,
             self.remaining.join("\t"),
             self.all.join("\t"),
-            self.frozen.join("\t")
+            self.frozen.join("\t"),
+            self.home
         );
         fs::write(&path, contents).with_context(|| format!("failed to write {}", path.display()))
     }
