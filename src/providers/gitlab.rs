@@ -307,6 +307,13 @@ impl ReviewProvider for GitLabProvider {
         command_output("glab", &["mr", "view", review.id_value(), "--web"])
     }
 
+    fn comment_on_review(&self, review: &ReviewRequest, body: &str) -> Result<String> {
+        command_output(
+            "glab",
+            &["mr", "note", review.id_value(), "--message", body],
+        )
+    }
+
     fn enqueued_branches(&self, branches: &[String]) -> Result<BTreeSet<String>> {
         Ok(gitlab_enqueued_branches(branches))
     }

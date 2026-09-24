@@ -261,6 +261,15 @@ impl ReviewProvider for GiteaProvider {
     fn open_review(&self, review: &ReviewRequest) -> Result<String> {
         command_output("tea", &["open", &format!("pulls/{}", review.id_value())])
     }
+
+    fn comment_on_review(&self, review: &ReviewRequest, body: &str) -> Result<String> {
+        // Pull requests share the issue index space, so tea's issue comment
+        // reaches them. `--` keeps a flag-shaped body such as `--- done` from
+        // reading as a flag. tea prints the comment back rendered rather than a
+        // link to it, so there is nothing worth echoing.
+        command_output("tea", &["comment", review.id_value(), "--", body])?;
+        Ok(String::new())
+    }
 }
 
 /// The length of the draft marker a title opens with, if any. Gitea compares

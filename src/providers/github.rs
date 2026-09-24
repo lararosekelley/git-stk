@@ -482,6 +482,10 @@ impl ReviewProvider for GitHubProvider {
         command_output("gh", &["pr", "view", review.id_value(), "--web"])
     }
 
+    fn comment_on_review(&self, review: &ReviewRequest, body: &str) -> Result<String> {
+        command_output("gh", &["pr", "comment", review.id_value(), "--body", body])
+    }
+
     fn enqueued_branches(&self, branches: &[String]) -> Result<BTreeSet<String>> {
         Ok(github_enqueued_branches(branches))
     }

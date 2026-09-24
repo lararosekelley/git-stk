@@ -13,6 +13,7 @@ pub mod adopt;
 pub mod bottom;
 pub mod children;
 pub mod cleanup;
+pub mod comment;
 pub mod completions;
 pub mod config;
 pub mod credits;

@@ -177,6 +177,18 @@ impl ReviewProvider for DemoProvider {
         // The demo has no web page to open.
         Ok("demo reviews have no web page".to_owned())
     }
+
+    fn comment_on_review(&self, review: &ReviewRequest, body: &str) -> Result<String> {
+        let mut state = load()?;
+        with_review(&mut state, review, |entry| {
+            match entry["comments"].as_array_mut() {
+                Some(comments) => comments.push(json!(body)),
+                None => entry["comments"] = json!([body]),
+            }
+        })?;
+        save(&state)?;
+        Ok(String::new())
+    }
 }
 
 fn state_path() -> Result<PathBuf> {

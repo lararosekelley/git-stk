@@ -225,6 +225,7 @@ git stk repair               # rebuild stack metadata from reviews and ancestry
 git stk submit [--stack]     # open or update a review per branch, parent-first
 git stk review [branch]      # print a branch's review
 git stk view [branch]        # open it in your browser
+git stk comment <message>    # comment on the current branch's review
 git stk sync                 # refresh metadata, clean up landed branches, restack
 git stk merge [--all]        # land the bottom review (or the whole stack), then sync
 git stk cleanup [branch]     # delete landed branches and their worktrees on demand
