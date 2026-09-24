@@ -1103,6 +1103,48 @@ fn cleanup_leaves_a_hand_made_worktree_alone() {
     assert!(worktree.exists(), "a hand-made worktree must be left alone");
 }
 
+#[test]
+fn sync_restacks_the_rest_around_a_landed_branch_a_worktree_keeps() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("by-hand");
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "feature/x"]).assert().success();
+    repo.commit_file("x.txt", "x\n", "x work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+    let held_tip = repo.git(["rev-parse", "feature/b"]);
+
+    let fake = merged_both(&repo);
+
+    // feature/b is retargeted onto the moved trunk, then kept because the
+    // worktree holds it. Rebasing a landed branch is pointless, and trying
+    // would refuse the restack feature/x still needs.
+    repo.stack_faked(&fake)
+        .args(["sync", "--no-push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/b: checked out in the worktree at",
+        ))
+        .stdout(predicates::str::contains("rebasing feature/x onto main"))
+        .stdout(predicates::str::contains("rebasing feature/b").not());
+
+    assert_eq!(repo.git(["rev-parse", "feature/b"]), held_tip);
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "main"
+    );
+    assert!(is_clean(&repo, &worktree));
+}
+
 /// A repo with a real `origin` and a linked worktree, viewed from that
 /// worktree - the layout where the trunk is checked out somewhere else.
 fn worktree_with_trunk_held_in_main(repo: &TestRepo, at: &Path) {
