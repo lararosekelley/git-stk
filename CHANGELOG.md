@@ -11,8 +11,9 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 - **sync:** a landed branch kept because a worktree you made still has it
   checked out no longer fails the whole sync. The restack that follows tried to
   rebase it onto the moved trunk, the worktree check refused, and every other
-  stack went unrestacked and unpushed. Kept branches are now left out of that
-  restack; they stay in the stack for a later `cleanup` (#341).
+  stack went unrestacked and unpushed. Such a branch is now left out of that
+  restack and its children move onto its parent, so they still reach the
+  trunk; the branch stays in the stack for a later `cleanup` (#341).
 
 ## 0.12.5
 

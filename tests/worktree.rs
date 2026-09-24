@@ -1145,6 +1145,99 @@ fn sync_restacks_the_rest_around_a_landed_branch_a_worktree_keeps() {
     assert!(is_clean(&repo, &worktree));
 }
 
+fn merged_a_only(repo: &TestRepo) -> common::FakeProviderEnv {
+    FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .on("pr edit", "updated child review")
+        .fallback("[]")
+        .install(repo)
+}
+
+fn is_ancestor(repo: &TestRepo, ancestor: &str, branch: &str) -> bool {
+    repo.git_status(["merge-base", "--is-ancestor", ancestor, branch])
+        .status
+        .success()
+}
+
+#[test]
+fn sync_moves_the_children_of_a_landed_branch_a_worktree_keeps() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("by-hand");
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/a"]);
+    let held_tip = repo.git(["rev-parse", "feature/a"]);
+
+    let fake = merged_a_only(&repo);
+
+    // Left on the kept branch, which never moves, feature/b would read as up
+    // to date and silently stay on the old trunk.
+    repo.stack_faked(&fake)
+        .args(["sync", "--no-push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: checked out in the worktree at",
+        ))
+        .stdout(predicates::str::contains("retarget feature/b -> main"))
+        .stdout(predicates::str::contains("rebasing feature/b onto main"));
+
+    assert_eq!(repo.git(["rev-parse", "feature/a"]), held_tip);
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/b.stkParent"]),
+        "main"
+    );
+    assert!(is_ancestor(&repo, "main", "feature/b"));
+    // Still stacked, so a cleanup once the worktree lets go finishes it.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
+    );
+}
+
+#[test]
+fn sync_from_a_landed_branchs_own_worktree_still_carries_the_line_forward() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("wt-a");
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["switch", "-c", "parked"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/a"]);
+
+    let fake = merged_a_only(&repo);
+
+    // Kept because it is checked out right here, not held elsewhere - so git
+    // can rebase it, and feature/b follows it onto the moved trunk.
+    let mut command = repo.stack_faked(&fake);
+    command.current_dir(&worktree);
+    command
+        .args(["sync", "--no-push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: cannot delete the checked out branch",
+        ))
+        .stdout(predicates::str::contains(
+            "rebasing feature/b onto feature/a",
+        ));
+
+    assert!(is_ancestor(&repo, "main", "feature/b"));
+}
+
 /// A repo with a real `origin` and a linked worktree, viewed from that
 /// worktree - the layout where the trunk is checked out somewhere else.
 fn worktree_with_trunk_held_in_main(repo: &TestRepo, at: &Path) {
