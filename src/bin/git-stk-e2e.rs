@@ -323,6 +323,12 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
         return Err(format!("list showed no review ids:\n{listed}"));
     }
 
+    // `comment` posts through each host's own CLI. A flag-shaped body checks
+    // it reaches the host verbatim rather than being parsed as a flag.
+    let body = "--- e2e comment";
+    stk(work, &["comment", "--branch", "feat/a", body])?;
+    wait_for_review_comment(provider, slug, "feat/a", body)?;
+
     // --title retitles an existing review through each host's own CLI flag,
     // which only a live run exercises.
     stk(work, &["submit", "feat/a", "--title", "e2e retitled"])?;
@@ -637,6 +643,87 @@ fn wait_for_review_title(
 
 /// The title of `branch`'s open review, or an empty string when it has none.
 fn review_title(provider: Provider, slug: &str, branch: &str) -> Result<String, String> {
+    Ok(open_review(provider, slug, branch)?
+        .and_then(|review| review["title"].as_str().map(str::to_owned))
+        .unwrap_or_default())
+}
+
+/// Poll until `branch`'s open review carries a comment reading `want`.
+fn wait_for_review_comment(
+    provider: Provider,
+    slug: &str,
+    branch: &str,
+    want: &str,
+) -> Result<(), String> {
+    let mut last = Vec::new();
+    for attempt in 0..6 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(2));
+        }
+        last = review_comments(provider, slug, branch)?;
+        if last.iter().any(|body| body.trim() == want) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "expected a comment {want:?} on the review for {branch}, saw {last:?}"
+    ))
+}
+
+/// The comment bodies on `branch`'s open review.
+fn review_comments(provider: Provider, slug: &str, branch: &str) -> Result<Vec<String>, String> {
+    let Some(review) = open_review(provider, slug, branch)? else {
+        return Err(format!("no open review for {branch}"));
+    };
+    let number = match provider {
+        Provider::Gitlab => review["iid"].as_u64(),
+        _ => review["number"].as_u64(),
+    }
+    .ok_or_else(|| format!("review for {branch} has no number: {review}"))?;
+    let output = match provider {
+        Provider::Github => sh(
+            "gh",
+            &["api", &format!("repos/{slug}/issues/{number}/comments")],
+            None,
+        )?,
+        Provider::Gitlab => sh(
+            "glab",
+            &[
+                "api",
+                &format!(
+                    "projects/{}/merge_requests/{number}/notes",
+                    slug.replace('/', "%2F")
+                ),
+            ],
+            None,
+        )?,
+        Provider::Gitea => sh(
+            "tea",
+            &[
+                "api",
+                "--login",
+                &gitea_login(),
+                &format!("repos/{slug}/issues/{number}/comments"),
+            ],
+            None,
+        )?,
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&output).map_err(|e| format!("parse comments: {e}: {output}"))?;
+    Ok(value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|comment| comment["body"].as_str().map(str::to_owned))
+        .collect())
+}
+
+/// `branch`'s open review as the provider's list JSON has it.
+fn open_review(
+    provider: Provider,
+    slug: &str,
+    branch: &str,
+) -> Result<Option<serde_json::Value>, String> {
     let (output, branch_field) = match provider {
         Provider::Github => (
             sh(
@@ -649,7 +736,7 @@ fn review_title(provider: Provider, slug: &str, branch: &str) -> Result<String, 
                     "--state",
                     "open",
                     "--json",
-                    "title,headRefName",
+                    "number,title,headRefName",
                 ],
                 None,
             )?,
@@ -694,9 +781,7 @@ fn review_title(provider: Provider, slug: &str, branch: &str) -> Result<String, 
         .into_iter()
         .flatten()
         .find(|review| head(review) == branch)
-        .and_then(|review| review["title"].as_str())
-        .unwrap_or_default()
-        .to_owned())
+        .cloned())
 }
 
 /// Number of open reviews on the repo, parsed from the provider's list JSON.

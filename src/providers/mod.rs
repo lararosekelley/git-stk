@@ -589,6 +589,9 @@ pub trait ReviewProvider {
     /// Open the review in the user's browser.
     fn open_review(&self, review: &ReviewRequest) -> Result<String>;
 
+    /// Post `body` as a comment on the review's conversation.
+    fn comment_on_review(&self, review: &ReviewRequest, body: &str) -> Result<String>;
+
     /// Of `branches`, those whose review is locked by a merge queue (GitHub)
     /// or merge train (GitLab): they must be neither rebased nor force-pushed.
     /// Rebasing would diverge from the frozen remote tip; a push is rejected

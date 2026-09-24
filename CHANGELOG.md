@@ -4,6 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.13.0
+
+### Added
+
+- **cli:** `git stk comment <message>` posts a comment on the current branch's
+  review, or another branch's with `--branch`, through `gh`, `glab`, or `tea` -
+  for instance `git stk comment "@claude review"` to ask a review bot for
+  another pass. `--dry-run` shows where it would go.
+
 ## 0.12.7
 
 ### Fixed
