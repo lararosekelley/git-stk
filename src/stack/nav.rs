@@ -389,11 +389,17 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, ReviewAnnotation>, commits: b
 }
 
 /// A restack nudge when `branch` is missing commits from its parent's tip.
-/// Local-only; a missing parent yields nothing.
+/// Local-only; a missing parent yields nothing. A landed branch has nothing to
+/// rebase, so it is pointed at `cleanup` instead.
 pub fn behind_parent_hint(branch: &str, parent: &str) -> Option<String> {
     let behind = git::commits_behind(branch, parent)
         .ok()
         .filter(|count| *count > 0)?;
+    if super::is_landed(branch) {
+        return Some(format!(
+            "{branch} has landed - `git stk cleanup {branch}` finishes it once its ref is free"
+        ));
+    }
     Some(format!(
         "{branch} is {behind} commit{} behind {parent} - run `git stk restack`",
         if behind == 1 { "" } else { "s" }

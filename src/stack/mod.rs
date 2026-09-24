@@ -42,6 +42,10 @@ const FLOOR_KEY: &str = "stkFloor";
 /// Records that git-stk created this branch's worktree, and where. Only these
 /// are ours to remove; a worktree the user made by hand stays theirs.
 const WORKTREE_KEY: &str = "stkWorktree";
+/// Marks a branch whose review landed but whose ref had to stay, so readers
+/// point at `cleanup` rather than `restack`. Holds the tip that landed; deleting
+/// the branch drops it.
+const LANDED_KEY: &str = "stkLanded";
 
 pub fn create_branch(branch: &str, dry_run: bool) -> Result<()> {
     let parent = git::current_branch()?;
@@ -168,6 +172,35 @@ pub fn set_owned_worktree(branch: &str, path: &std::path::Path) -> Result<()> {
 /// Forget that git-stk owns a worktree for `branch`.
 pub fn unset_owned_worktree(branch: &str) -> Result<()> {
     git::config_unset(&format!("branch.{branch}.{WORKTREE_KEY}"))
+}
+
+/// Whether `branch` landed and is only waiting on `cleanup`. A commit added
+/// since retires the marker: the branch has work of its own again.
+pub fn is_landed(branch: &str) -> bool {
+    git::config_get(&format!("branch.{branch}.{LANDED_KEY}"))
+        .ok()
+        .flatten()
+        .is_some_and(|sha| git::branch_sha(branch).is_some_and(|tip| tip == sha))
+}
+
+/// Whether `branch` carries a marker for a tip it has since moved past: work
+/// the landing did not cover, so it must not be marked again.
+pub fn landed_marker_retired(branch: &str) -> bool {
+    git::config_get(&format!("branch.{branch}.{LANDED_KEY}"))
+        .ok()
+        .flatten()
+        .is_some_and(|sha| git::branch_sha(branch).is_none_or(|tip| tip != sha))
+}
+
+pub fn set_landed(branch: &str) -> Result<()> {
+    let Some(sha) = git::branch_sha(branch) else {
+        return Ok(());
+    };
+    git::config_set(&format!("branch.{branch}.{LANDED_KEY}"), &sha)
+}
+
+pub fn unset_landed(branch: &str) -> Result<()> {
+    git::config_unset(&format!("branch.{branch}.{LANDED_KEY}"))
 }
 
 /// Insert a new empty branch directly above the current one, moving the

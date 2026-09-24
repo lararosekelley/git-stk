@@ -110,8 +110,10 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                     // platform's stack can still close the gap is a chain
                     // part-way through unwinding, not a fault - and `submit`,
                     // which the warning names, refuses a review in a stack.
+                    // A merged review's base is final, so there is no gap.
                     if let Some(parent) = parent.as_deref()
                         && parent != review.base
+                        && review.state != ReviewState::Merged
                     {
                         // Asked only on a disagreement, which is rare: the
                         // lookup costs a call, and the annotation cannot
@@ -181,6 +183,13 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
                  finish; `git stk detach {branch}` first if it should be managed",
                 review.id,
                 style::state(&review.state)
+            ));
+        }
+        // `sync` already ran and had to keep the branch.
+        Some(review) if review.state == ReviewState::Merged && stack::is_landed(&branch) => {
+            hints.push(format!(
+                "review {} is merged - `git stk cleanup {branch}` finishes it once its ref is free",
+                review.id
             ));
         }
         Some(review) if review.state == ReviewState::Merged => {

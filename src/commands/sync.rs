@@ -280,6 +280,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     //    whose ref cannot go yet keeps its metadata, so it stays in the stack
     //    for a later cleanup instead of quietly dropping out of it.
     let mut held_elsewhere = BTreeSet::new();
+    let mut landed = Vec::new();
     for branch in &finished {
         let landing = if closed.contains(branch) {
             Landing::Closed
@@ -288,6 +289,11 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         };
         if let Some(reason) = deletion_blocker(branch, &position)? {
             report_kept(branch, &reason);
+            // Decided before the restack, which may still move a branch
+            // checked out here; the marker is written at the final tip below.
+            if landing == Landing::Merged && !stack::landed_marker_retired(branch) {
+                landed.push(branch);
+            }
             // Git will not rebase a branch another worktree holds, and a landed
             // one has nothing to gain from it: leave it out of the restack, and
             // hand its children to its parent so they still move.
@@ -313,6 +319,11 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             false,
             &held_elsewhere,
         )?;
+    }
+    if !dry_run {
+        for branch in landed {
+            stack::set_landed(branch)?;
+        }
     }
 
     // 8. Where to look next: the lowest surviving layer. The base is not one -

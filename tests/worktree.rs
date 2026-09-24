@@ -11,6 +11,7 @@ use common::{FakeProvider, TestRepo};
 use predicates::prelude::PredicateBooleanExt;
 
 const MERGED_A: &str = r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12"}]"##;
+const CLOSED_A: &str = r##"[{"number":12,"state":"CLOSED","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12"}]"##;
 const MERGED_B: &str = r##"[{"number":13,"state":"MERGED","baseRefName":"feature/a","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/13"}]"##;
 
 /// Somewhere outside the repo to put a linked worktree. Adding one *inside*
@@ -1142,6 +1143,150 @@ fn sync_restacks_the_rest_around_a_landed_branch_a_worktree_keeps() {
     assert!(is_clean(&repo, &worktree));
 }
 
+#[test]
+fn a_kept_landed_branch_is_pointed_at_cleanup_not_restack() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("by-hand");
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/b"]);
+
+    let fake = merged_both(&repo);
+    repo.stack_faked(&fake)
+        .args(["sync", "--no-push"])
+        .assert()
+        .success();
+
+    // Behind the trunk it was retargeted onto, but there is nothing to rebase:
+    // the step left is cleanup.
+    repo.stack_faked(&fake)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "feature/b has landed - `git stk cleanup feature/b` finishes it once its ref is free",
+        ))
+        .stdout(predicates::str::contains("git stk restack").not());
+    repo.stack_faked(&fake)
+        .args(["status", "feature/b"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "review #13 is merged - `git stk cleanup feature/b` finishes it once its ref is free",
+        ))
+        .stdout(predicates::str::contains("git stk restack").not())
+        .stdout(predicates::str::contains("git stk submit").not())
+        .stdout(predicates::str::contains("git stk sync").not());
+
+    repo.git(["worktree", "remove", worktree.to_str().unwrap()]);
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/b"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("will delete branch feature/b"));
+    assert!(
+        repo.git_status(["config", "--get", "branch.feature/b.stkLanded"])
+            .stdout
+            .is_empty(),
+        "the marker goes with the branch"
+    );
+}
+
+#[test]
+fn a_commit_on_a_kept_landed_branch_brings_the_restack_hint_back() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("by-hand");
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/a"]);
+
+    let fake = merged_a_only(&repo);
+    repo.stack_faked(&fake)
+        .args(["sync", "--no-push"])
+        .assert()
+        .success();
+    repo.stack_faked(&fake)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("feature/a has landed"));
+
+    // Work added after the landing is upstream nowhere: it needs a restack,
+    // and a cleanup would delete it.
+    let wt = worktree.to_str().unwrap();
+    std::fs::write(worktree.join("late.txt"), "late\n").expect("write");
+    repo.git(["-C", wt, "add", "late.txt"]);
+    repo.git(["-C", wt, "commit", "-q", "-m", "late work"]);
+
+    // A later sync still sees the merged review and keeps the branch, but must
+    // not re-mark the new tip as landed.
+    for sync_again in [false, true] {
+        if sync_again {
+            repo.stack_faked(&fake)
+                .args(["sync", "--no-push"])
+                .assert()
+                .success();
+        }
+        repo.stack_faked(&fake)
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("has landed").not())
+            .stdout(predicates::str::contains(
+                "feature/a is 1 commit behind main - run `git stk restack`",
+            ));
+    }
+}
+
+#[test]
+fn a_kept_closed_branch_is_not_called_landed() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    let worktree = parent.path().join("by-hand");
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.cleanClosed", "true"]);
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/a"]);
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state closed", CLOSED_A)
+        .fallback("[]")
+        .install(&repo);
+    repo.stack_faked(&fake)
+        .args(["sync", "--no-push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: checked out in the worktree at",
+        ));
+
+    // Its commits are on no other branch, so it has not landed anywhere.
+    repo.stack_faked(&fake)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("has landed").not())
+        .stdout(predicates::str::contains(
+            "feature/a is 1 commit behind main - run `git stk restack`",
+        ));
+}
+
 fn merged_a_only(repo: &TestRepo) -> common::FakeProviderEnv {
     FakeProvider::new()
         .on("feature/a --state merged", MERGED_A)
@@ -1233,6 +1378,26 @@ fn sync_from_a_landed_branchs_own_worktree_still_carries_the_line_forward() {
         ));
 
     assert!(is_ancestor(&repo, "main", "feature/b"));
+    // Written after the restack moved it, so the marker matches the tip.
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkLanded"]),
+        repo.git(["rev-parse", "feature/a"])
+    );
+
+    // The next sync moves it again. That is sync's own rebase, not new work,
+    // so the marker follows it rather than retiring.
+    repo.git(["switch", "main"]);
+    repo.commit_file("m2.txt", "m2\n", "trunk moves again");
+    repo.git(["switch", "parked"]);
+    let before = repo.git(["rev-parse", "feature/a"]);
+    let mut command = repo.stack_faked(&fake);
+    command.current_dir(&worktree);
+    command.args(["sync", "--no-push"]).assert().success();
+    assert_ne!(repo.git(["rev-parse", "feature/a"]), before);
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkLanded"]),
+        repo.git(["rev-parse", "feature/a"])
+    );
 }
 
 /// A repo with a real `origin` and a linked worktree, viewed from that
