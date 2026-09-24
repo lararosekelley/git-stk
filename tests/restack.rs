@@ -29,7 +29,70 @@ fn restack_rebases_descendants_onto_updated_parent() {
     let parent_head = repo.git(["rev-parse", "feature/a"]);
     let merge_base = repo.git(["merge-base", "feature/a", "feature/b"]);
     assert_eq!(merge_base, parent_head);
-    assert_eq!(repo.git(["branch", "--show-current"]), "feature/b");
+    // Back where the restack started, not on the last branch it rebased.
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
+}
+
+#[test]
+fn restack_from_the_trunk_ends_back_on_the_trunk() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["switch", "main"]);
+    repo.stack().args(["new", "feature/x"]).assert().success();
+    repo.commit_file("x.txt", "x\n", "x work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+
+    repo.stack()
+        .args(["restack", "--no-push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("rebasing feature/a onto main"))
+        .stdout(predicates::str::contains("rebasing feature/x onto main"));
+
+    assert_eq!(repo.git(["branch", "--show-current"]), "main");
+}
+
+/// Returning is a convenience: the rebases are done by then, so a failed switch
+/// must not cost the push that follows.
+#[cfg(unix)]
+#[test]
+fn a_failed_return_warns_and_still_finishes_the_restack() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TestRepo::new();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "feature/a"]);
+    repo.commit_file("a2.txt", "a2\n", "a moves on");
+    repo.git(["switch", "main"]);
+
+    // post-checkout's exit status becomes the switch's. No rebase here checks
+    // out main's commit, so only the return trips it.
+    let hook = repo.path().join(".git/hooks/post-checkout");
+    fs::write(
+        &hook,
+        "#!/bin/sh\n[ \"$2\" = \"$(git rev-parse refs/heads/main)\" ] && exit 1\nexit 0\n",
+    )
+    .expect("write hook");
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod hook");
+
+    repo.stack()
+        .args(["restack", "--no-push"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("could not return to main"))
+        .stdout(predicates::str::contains("restack complete"))
+        .stdout(predicates::str::contains("git push --force-with-lease"));
+
+    assert_eq!(
+        repo.git(["merge-base", "feature/a", "feature/b"]),
+        repo.git(["rev-parse", "feature/a"])
+    );
 }
 
 #[test]
@@ -300,10 +363,12 @@ fn continue_resumes_restack_after_conflict_resolution() {
     let parent_head = repo.git(["rev-parse", "feature/a"]);
     let merge_base = repo.git(["merge-base", "feature/a", "feature/b"]);
     assert_eq!(merge_base, parent_head);
-    assert_eq!(repo.git(["branch", "--show-current"]), "feature/b");
+    assert_eq!(repo.git(["branch", "--show-current"]), "feature/a");
 
-    let conflict_file = fs::read_to_string(repo.path().join("conflict.txt")).expect("read file");
-    assert_eq!(conflict_file, "updated parent\nchild\n");
+    assert_eq!(
+        repo.git(["show", "feature/b:conflict.txt"]),
+        "updated parent\nchild"
+    );
 
     // continue must refresh the recorded fork point to the new parent tip
     assert_eq!(

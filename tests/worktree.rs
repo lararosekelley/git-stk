@@ -34,9 +34,6 @@ fn stack_with_worktree_on_b(repo: &TestRepo, at: &Path) -> String {
     repo.git(["switch", "feature/a"]);
     repo.stack().arg("restack").assert().success();
 
-    // Restack leaves HEAD on the last branch; step off it so the worktree can
-    // take it.
-    repo.git(["switch", "feature/a"]);
     repo.git(["worktree", "add", at.to_str().unwrap(), "feature/b"]);
 
     repo.git(["rev-parse", "feature/b"])
@@ -118,7 +115,7 @@ fn undo_refuses_when_only_the_head_it_would_return_to_is_held() {
     repo.git(["switch", "feature/a"]);
     repo.commit_file("a2.txt", "more a\n", "a moves on");
     repo.stack().arg("restack").assert().success();
-    assert_eq!(repo.git(["branch", "--show-current"]), "feature/b");
+    repo.git(["switch", "feature/b"]);
 
     repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/a"]);
     let b_before = repo.git(["rev-parse", "feature/b"]);
