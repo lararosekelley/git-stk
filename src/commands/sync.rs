@@ -279,6 +279,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     // 6. Clean up the finished branches: retarget children, then delete. One
     //    whose ref cannot go yet keeps its metadata, so it stays in the stack
     //    for a later cleanup instead of quietly dropping out of it.
+    let mut kept = BTreeSet::new();
     for branch in &finished {
         let landing = if closed.contains(branch) {
             Landing::Closed
@@ -287,6 +288,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         };
         if let Some(reason) = deletion_blocker(branch, &position)? {
             report_kept(branch, &reason);
+            kept.insert(branch.clone());
             continue;
         }
         cleanup_finished_branch(review_provider.as_ref(), branch, landing, dry_run)?;
@@ -298,11 +300,12 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         anstream::println!("would restack the remaining stack");
     } else if !survivors.is_empty() {
         // sync already fetched the trunk in step 1, so the restack must not.
-        stack::restack(
+        stack::restack_except(
             FetchMode::Disabled,
             UpdateRefsMode::Config,
             push_mode,
             false,
+            &kept,
         )?;
     }
 

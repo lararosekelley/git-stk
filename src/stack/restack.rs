@@ -25,6 +25,25 @@ pub fn restack(
     push_mode: PushMode,
     dry_run: bool,
 ) -> Result<()> {
+    restack_except(
+        fetch_mode,
+        update_refs_mode,
+        push_mode,
+        dry_run,
+        &BTreeSet::new(),
+    )
+}
+
+/// [`restack`], leaving `excluded` where it is: not rebased, pushed, or checked
+/// against other worktrees. For landed branches whose deletion had to wait -
+/// they are finished, so moving them only risks conflicts and worktree refusals.
+pub fn restack_except(
+    fetch_mode: FetchMode,
+    update_refs_mode: UpdateRefsMode,
+    push_mode: PushMode,
+    dry_run: bool,
+    excluded: &BTreeSet<String>,
+) -> Result<()> {
     let current = git::current_branch()?;
     let parents = parent_map()?;
     // Restack the stack containing the current branch, from anywhere in it:
@@ -33,7 +52,8 @@ pub fn restack(
     // sibling stacks that merely share the trunk alone - rebasing and
     // force-pushing those would touch work this restack was never asked about.
     let base = line_base(&current)?;
-    let branches = restack_order(&base, &parents);
+    let mut branches = restack_order(&base, &parents);
+    branches.retain(|branch| !excluded.contains(branch));
 
     if branches.is_empty() {
         anstream::println!("{}", style::dim("nothing to restack"));
