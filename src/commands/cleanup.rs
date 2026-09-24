@@ -248,6 +248,28 @@ pub(crate) fn cleanup_finished_branch(
     landing: Landing,
     dry_run: bool,
 ) -> Result<()> {
+    retarget_children(review_provider, branch, landing, dry_run)?;
+    anstream::println!(
+        "{} detach {}",
+        if dry_run { "would" } else { "will" },
+        style::branch(branch)
+    );
+    if !dry_run {
+        stack::unset_parent(branch)?;
+        stack::unset_base(branch)?;
+    }
+
+    Ok(())
+}
+
+/// Move a finished branch's children onto its parent, leaving the branch
+/// itself stacked.
+pub(crate) fn retarget_children(
+    review_provider: &dyn ReviewProvider,
+    branch: &str,
+    landing: Landing,
+    dry_run: bool,
+) -> Result<()> {
     let parent = stack::parent_of(branch)?;
     let descendants = stack::branch_and_descendants(branch)?;
     let direct_children: Vec<_> = descendants
@@ -302,15 +324,6 @@ pub(crate) fn cleanup_finished_branch(
                 }
             }
         }
-    }
-    anstream::println!(
-        "{} detach {}",
-        if dry_run { "would" } else { "will" },
-        style::branch(branch)
-    );
-    if !dry_run {
-        stack::unset_parent(branch)?;
-        stack::unset_base(branch)?;
     }
 
     Ok(())

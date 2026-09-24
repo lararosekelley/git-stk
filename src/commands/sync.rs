@@ -7,7 +7,7 @@ use crate::cli::{FetchMode, PushMode, UpdateRefsMode};
 use crate::commands::Run;
 use crate::commands::cleanup::{
     Landing, cleanup_branch_deletion, cleanup_finished_branch, deletion_blocker, landing_for,
-    report_kept,
+    report_kept, retarget_children,
 };
 use crate::providers::{ReviewState, detect_review_provider};
 use crate::settings;
@@ -279,7 +279,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
     // 6. Clean up the finished branches: retarget children, then delete. One
     //    whose ref cannot go yet keeps its metadata, so it stays in the stack
     //    for a later cleanup instead of quietly dropping out of it.
-    let mut kept = BTreeSet::new();
+    let mut held_elsewhere = BTreeSet::new();
     for branch in &finished {
         let landing = if closed.contains(branch) {
             Landing::Closed
@@ -288,7 +288,13 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         };
         if let Some(reason) = deletion_blocker(branch, &position)? {
             report_kept(branch, &reason);
-            kept.insert(branch.clone());
+            // Git will not rebase a branch another worktree holds, and a landed
+            // one has nothing to gain from it: leave it out of the restack, and
+            // hand its children to its parent so they still move.
+            if git::worktree_holding(branch)?.is_some() {
+                retarget_children(review_provider.as_ref(), branch, landing, dry_run)?;
+                held_elsewhere.insert(branch.clone());
+            }
             continue;
         }
         cleanup_finished_branch(review_provider.as_ref(), branch, landing, dry_run)?;
@@ -305,7 +311,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             UpdateRefsMode::Config,
             push_mode,
             false,
-            &kept,
+            &held_elsewhere,
         )?;
     }
 
