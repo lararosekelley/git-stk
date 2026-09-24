@@ -365,12 +365,13 @@ pub(crate) fn deletion_blocker(branch: &str, current_branch: &str) -> Result<Opt
     Ok(None)
 }
 
-/// Report a finished branch whose ref stays for now, and why.
+/// Report a finished branch whose ref stays for now, and why. Names the branch
+/// in the follow-up command: a bare `cleanup` only walks the current line.
 pub(crate) fn report_kept(branch: &str, reason: &str) {
     anstream::println!(
         "{}",
         style::dim(&format!(
-            "kept {branch}: {reason} - still stacked, so a later cleanup can finish it"
+            "kept {branch}: {reason} - still stacked; `git stk cleanup {branch}` finishes it once it is free"
         ))
     );
 }
