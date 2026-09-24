@@ -12,6 +12,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   the branch it started from rather than the last one it rebased. Run from the
   trunk, `sync` stays on the trunk, so a bare `cleanup` that follows sees every
   line again (#342).
+- **cleanup:** a landed branch that `sync` or `cleanup` has to keep now names
+  the command that finishes it, `git stk cleanup <branch>`. A bare `cleanup`
+  only walks the current line, so run from anywhere else it never reached the
+  kept branch (#343).
 
 ## 0.12.6
 

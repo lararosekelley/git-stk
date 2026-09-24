@@ -406,7 +406,7 @@ fn cleanup_keeps_the_checked_out_branch() {
         .success()
         .stdout(predicates::str::contains(
             "kept feature/a: cannot delete the checked out branch \
-             - still stacked, so a later cleanup can finish it",
+             - still stacked; `git stk cleanup feature/a` finishes it once it is free",
         ))
         .stdout(predicates::str::contains(
             "cleanup complete: 0 cleaned, 0 skipped, 1 kept",
