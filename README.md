@@ -376,6 +376,10 @@ just lint
 just check
 ```
 
+See [Verification](docs/VERIFICATION.md) for focused test selection, fixture usage,
+and the boundary between local tests and live-provider E2E. The project-local
+`/verify-git-stk` skill uses that guide in Claude Code and OpenCode.
+
 ## License
 
 Copyright (c) 2026 [Lara Kelley](https://larakelley.com). MIT License. See [LICENSE](./LICENSE).
