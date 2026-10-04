@@ -4,6 +4,13 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.13.1
+
+### Fixed
+
+- **cli:** `--help` names every supported provider - GitHub, GitLab, Gitea, and
+  Forgejo - rather than only GitHub and GitLab.
+
 ## 0.13.0
 
 ### Added
