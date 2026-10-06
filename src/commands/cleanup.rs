@@ -347,9 +347,19 @@ pub(crate) fn deletion_blocker(branch: &str, current_branch: &str) -> Result<Opt
     // Nor can a branch another worktree holds - but a worktree git-stk created
     // for this branch is ours to remove.
     let Some(path) = git::worktree_holding(branch)? else {
-        return Ok(detached_owned_worktree(branch)?
-            .filter(|path| git::worktree_has_changes(path))
-            .map(|path| uncommitted_work(&path)));
+        let Some(path) = detached_owned_worktree(branch)? else {
+            return Ok(None);
+        };
+        if git::worktree_has_changes(&path) {
+            return Ok(Some(uncommitted_work(&path)));
+        }
+        if git::worktree_has_unreferenced_commits(&path) {
+            return Ok(Some(format!(
+                "its worktree at {} has commits on no branch",
+                git::display_path(&path)
+            )));
+        }
+        return Ok(None);
     };
     if !stack::owned_worktree(branch).is_some_and(|owned| git::same_path(&owned, &path)) {
         // The user's own worktree. Naming where it lives keeps the rest of the
