@@ -13,6 +13,11 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   another worktree held a branch above it. The next `sync` overwrote the
   recorded fork point with one off the trunk; it now keeps it while the
   parent is unchanged (#352).
+- **cleanup:** a worktree made by `git stk new --worktree` is removed once its
+  branch lands, even if it was detached in the meantime. Deleting the branch
+  also dropped git-stk's record of the worktree, so it was left behind for
+  `git worktree remove --force`. A detached worktree with uncommitted changes,
+  or with commits on no branch, is kept along with its branch (#353).
 
 ## 0.13.1
 

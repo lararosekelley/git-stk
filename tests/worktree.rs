@@ -903,6 +903,71 @@ fn cleanup_keeps_an_owned_worktree_that_has_uncommitted_work() {
 }
 
 #[test]
+fn cleanup_removes_an_owned_worktree_that_was_detached() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let created = parent.path().join("feature").join("a");
+    repo.git(["-C", created.to_str().unwrap(), "switch", "--detach"]);
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    // Deleting the branch drops its worktree marker, so this is the last chance
+    // to remove the worktree.
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("remove worktree"))
+        .stdout(predicates::str::contains("delete branch feature/a"));
+
+    assert!(
+        !created.exists(),
+        "the detached owned worktree should be gone"
+    );
+}
+
+#[test]
+fn cleanup_keeps_a_detached_owned_worktree_and_its_branch_with_uncommitted_work() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let created = parent.path().join("feature").join("a");
+    repo.git(["-C", created.to_str().unwrap(), "switch", "--detach"]);
+    std::fs::write(created.join("scratch.txt"), "unsaved\n").expect("write");
+    repo.git(["-C", created.to_str().unwrap(), "add", "scratch.txt"]);
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("has uncommitted changes"));
+
+    assert!(created.exists(), "a dirty owned worktree must survive");
+    repo.git(["rev-parse", "--verify", "feature/a"]);
+}
+
+#[test]
 fn repair_clears_a_marker_whose_worktree_is_gone() {
     let repo = TestRepo::new();
     let parent = worktree_dir();

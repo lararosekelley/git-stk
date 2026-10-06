@@ -245,6 +245,41 @@ fn parse_worktree_branches(
     held
 }
 
+/// Whether a linked worktree other than this one sits at `path` with a detached
+/// HEAD.
+pub fn is_detached_worktree(path: &std::path::Path) -> Result<bool> {
+    let porcelain = output(&["worktree", "list", "--porcelain"])?;
+    Ok(
+        parse_detached_worktrees(&porcelain, repo_root().ok().as_deref())
+            .iter()
+            .any(|detached| same_path(detached, path)),
+    )
+}
+
+/// Paths of the detached worktrees in `git worktree list --porcelain`, leaving
+/// out `current`.
+fn parse_detached_worktrees(
+    porcelain: &str,
+    current: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let current = current.map(canonical);
+    let mut detached = Vec::new();
+    let mut path: Option<std::path::PathBuf> = None;
+
+    for line in porcelain.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            path = Some(std::path::PathBuf::from(rest));
+        } else if line == "detached"
+            && let Some(path) = path.take()
+            && current.as_deref() != Some(canonical(&path).as_path())
+        {
+            detached.push(path);
+        }
+    }
+
+    detached
+}
+
 /// Resolve a worktree path for comparison. Symlinked or `/tmp`-style paths
 /// otherwise read as a different worktree than the one we are standing in.
 fn canonical(path: &std::path::Path) -> std::path::PathBuf {
@@ -1204,6 +1239,21 @@ worktree /repo/../wt-detached
 HEAD 25fb6254b4b1cd5cbe2b0d4b1f5b1cf6e7d8a9b0
 detached
 ";
+
+    #[test]
+    fn detached_worktree_parsing_keeps_only_detached_ones() {
+        assert_eq!(
+            parse_detached_worktrees(PORCELAIN, None),
+            vec![std::path::PathBuf::from("/repo/../wt-detached")]
+        );
+        assert!(
+            parse_detached_worktrees(
+                PORCELAIN,
+                Some(std::path::Path::new("/repo/../wt-detached"))
+            )
+            .is_empty()
+        );
+    }
 
     #[test]
     fn worktree_parsing_keeps_branches_and_drops_detached_ones() {

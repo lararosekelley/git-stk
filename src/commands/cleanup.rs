@@ -347,7 +347,9 @@ pub(crate) fn deletion_blocker(branch: &str, current_branch: &str) -> Result<Opt
     // Nor can a branch another worktree holds - but a worktree git-stk created
     // for this branch is ours to remove.
     let Some(path) = git::worktree_holding(branch)? else {
-        return Ok(None);
+        return Ok(detached_owned_worktree(branch)?
+            .filter(|path| git::worktree_has_changes(path))
+            .map(|path| uncommitted_work(&path)));
     };
     if !stack::owned_worktree(branch).is_some_and(|owned| git::same_path(&owned, &path)) {
         // The user's own worktree. Naming where it lives keeps the rest of the
@@ -361,12 +363,38 @@ pub(crate) fn deletion_blocker(branch: &str, current_branch: &str) -> Result<Opt
     // Ours, but not ours to throw away: uncommitted work in it is not covered
     // by any snapshot.
     if git::worktree_has_changes(&path) {
-        return Ok(Some(format!(
-            "its worktree at {} has uncommitted changes",
-            git::display_path(&path)
-        )));
+        return Ok(Some(uncommitted_work(&path)));
     }
     Ok(None)
+}
+
+fn uncommitted_work(path: &std::path::Path) -> String {
+    format!(
+        "its worktree at {} has uncommitted changes",
+        git::display_path(path)
+    )
+}
+
+/// The worktree git-stk created for `branch` once the user has detached it. It
+/// goes with the branch: deleting the ref also drops the marker that would let
+/// a later cleanup remove it.
+fn detached_owned_worktree(branch: &str) -> Result<Option<std::path::PathBuf>> {
+    match stack::owned_worktree(branch) {
+        Some(path) if git::is_detached_worktree(&path)? => Ok(Some(path)),
+        _ => Ok(None),
+    }
+}
+
+/// The worktree git-stk created for `branch`, if it still holds the branch or
+/// has been detached from it.
+fn removable_owned_worktree(branch: &str) -> Result<Option<std::path::PathBuf>> {
+    let Some(owned) = stack::owned_worktree(branch) else {
+        return Ok(None);
+    };
+    if git::worktree_holding(branch)?.is_some_and(|held| git::same_path(&owned, &held)) {
+        return Ok(Some(owned));
+    }
+    detached_owned_worktree(branch)
 }
 
 /// Report a finished branch whose ref stays for now, and why. Names the branch
@@ -384,12 +412,7 @@ pub(crate) fn report_kept(branch: &str, reason: &str) {
 /// to delete a branch a worktree still holds. Call [`deletion_blocker`] first -
 /// this assumes the ref is free to go.
 pub(crate) fn cleanup_branch_deletion(branch: &str, landing: Landing, dry_run: bool) -> Result<()> {
-    if let Some(path) = stack::owned_worktree(branch).filter(|owned| {
-        git::worktree_holding(branch)
-            .ok()
-            .flatten()
-            .is_some_and(|held| git::same_path(owned, &held))
-    }) {
+    if let Some(path) = removable_owned_worktree(branch)? {
         anstream::println!(
             "{} remove worktree {}",
             if dry_run { "would" } else { "will" },
