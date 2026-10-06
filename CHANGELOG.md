@@ -4,6 +4,16 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.13.2
+
+### Fixed
+
+- **sync:** a branch whose parent landed no longer replays the parent's
+  commits when the restack after the merge failed, for instance because
+  another worktree held a branch above it. The next `sync` overwrote the
+  recorded fork point with one off the trunk; it now keeps it while the
+  parent is unchanged (#352).
+
 ## 0.13.1
 
 ### Fixed
