@@ -18,6 +18,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   also dropped git-stk's record of the worktree, so it was left behind for
   `git worktree remove --force`. A detached worktree with uncommitted changes,
   or with commits on no branch, is kept along with its branch (#353).
+- **submit:** a number in a branch name only becomes `Closes #N` when the
+  provider confirms `#N` is an open issue. A year or other incidental number
+  (`fix/1995-dark-mode`) is skipped with a note instead of closing an
+  unrelated issue or pointing at a pull request (#351).
 
 ## 0.13.1
 

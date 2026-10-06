@@ -6,13 +6,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::git;
 
 use super::json::{
-    all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_state,
-    required_string,
+    all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_issue_state,
+    parse_state, required_string,
 };
 use super::{
-    CheckStatus, MergeBlocker, NativeStack, NativeStackLayer, ReviewAnnotation, ReviewProvider,
-    ReviewRequest, ReviewState, ReviewSummary, StackPosition, WaitOutcome, command_output,
-    generic_annotate, merge_with_retry,
+    CheckStatus, IssueState, MergeBlocker, NativeStack, NativeStackLayer, ReviewAnnotation,
+    ReviewProvider, ReviewRequest, ReviewState, ReviewSummary, StackPosition, WaitOutcome,
+    command_output, generic_annotate, merge_with_retry,
 };
 use crate::settings;
 
@@ -114,6 +114,11 @@ impl ReviewProvider for GitHubProvider {
     fn review_body(&self, review: &ReviewRequest) -> Result<String> {
         let output = command_output("gh", &["pr", "view", review.id_value(), "--json", "body"])?;
         parse_body_field(&output, "body")
+    }
+
+    fn issue_state(&self, number: u64) -> Result<IssueState> {
+        let path = format!("repos/{{owner}}/{{repo}}/issues/{number}");
+        parse_issue_state(&command_output("gh", &["api", &path])?)
     }
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {

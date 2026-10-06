@@ -615,6 +615,7 @@ fn submit_links_issue_referenced_by_branch_name() {
     repo.git(["switch", "-c", "5-fix-thing"]);
     repo.git(["config", "branch.5-fix-thing.stkParent", "main"]);
     let fake = FakeProvider::new()
+        .on("issues/5", r#"{"number":5,"state":"open"}"#)
         .on("pr view 12", r##"{"body":"Description."}"##)
         .record("pr edit 12 --body", "edit-body-12.txt", "")
         .on(
@@ -641,6 +642,65 @@ fn submit_links_issue_referenced_by_branch_name() {
     let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("edited body");
     assert!(body.contains("Description."));
     assert!(body.contains("<!-- git-stk:closes -->\nCloses #5\n<!-- /git-stk:closes -->"));
+}
+
+#[test]
+fn submit_skips_an_issue_link_the_provider_does_not_confirm() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["switch", "-c", "fix/1995-dark-mode"]);
+    repo.git(["config", "branch.fix/1995-dark-mode.stkParent", "main"]);
+    repo.git(["switch", "-c", "fix/7-closed"]);
+    repo.git([
+        "config",
+        "branch.fix/7-closed.stkParent",
+        "fix/1995-dark-mode",
+    ]);
+    repo.git(["switch", "-c", "fix/12-pr"]);
+    repo.git(["config", "branch.fix/12-pr.stkParent", "fix/7-closed"]);
+    let fake = FakeProvider::new()
+        .fail("issues/1995", "gh: Not Found (HTTP 404)")
+        .on("issues/7", r#"{"number":7,"state":"closed"}"#)
+        .on(
+            "issues/12",
+            r#"{"number":12,"state":"open","pull_request":{"url":"x"}}"#,
+        )
+        .record_append("--body", "edits.log", "")
+        .on("pr view", r##"{"body":"Description."}"##)
+        .on(
+            "fix/1995-dark-mode",
+            r##"[{"number":20,"state":"OPEN","baseRefName":"main","headRefName":"fix/1995-dark-mode","url":"https://github.com/owner/repo/pull/20","title":"Dark mode"}]"##,
+        )
+        .on(
+            "fix/7-closed",
+            r##"[{"number":21,"state":"OPEN","baseRefName":"fix/1995-dark-mode","headRefName":"fix/7-closed","url":"https://github.com/owner/repo/pull/21","title":"Closed"}]"##,
+        )
+        .on(
+            "fix/12-pr",
+            r##"[{"number":22,"state":"OPEN","baseRefName":"fix/7-closed","headRefName":"fix/12-pr","url":"https://github.com/owner/repo/pull/22","title":"Pr"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--stack"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "skipped issue link for fix/1995-dark-mode: could not find issue #1995",
+        ))
+        .stdout(predicates::str::contains(
+            "skipped issue link for fix/7-closed: issue #7 is closed",
+        ))
+        .stdout(predicates::str::contains(
+            "skipped issue link for fix/12-pr: #12 is not an issue",
+        ));
+
+    let edits = fs::read_to_string(repo.path().join("edits.log")).unwrap_or_default();
+    assert!(
+        !edits.contains("Closes #"),
+        "no closing keyword was written: {edits}"
+    );
 }
 
 #[test]

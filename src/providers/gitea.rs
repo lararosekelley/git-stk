@@ -3,10 +3,12 @@ use serde_json::Value;
 
 use crate::git;
 
-use super::json::{all_reviews, optional_bool, optional_string, parse_state, required_string};
+use super::json::{
+    all_reviews, optional_bool, optional_string, parse_issue_state, parse_state, required_string,
+};
 use super::{
-    CHECK_GRACE_POLLS, CheckStatus, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState,
-    ReviewSummary, WaitOutcome, check_poll_interval, checks_timed_out, command_output,
+    CHECK_GRACE_POLLS, CheckStatus, IssueState, MergeBlocker, ReviewProvider, ReviewRequest,
+    ReviewState, ReviewSummary, WaitOutcome, check_poll_interval, checks_timed_out, command_output,
     merge_with_resettle, review_merged_out_of_band,
 };
 
@@ -103,6 +105,11 @@ impl ReviewProvider for GiteaProvider {
 
     fn review_body(&self, review: &ReviewRequest) -> Result<String> {
         Ok(optional_string(&api_pull(review.id_value())?, "body"))
+    }
+
+    fn issue_state(&self, number: u64) -> Result<IssueState> {
+        let endpoint = format!("repos/{}/issues/{number}", repo_slug()?);
+        parse_issue_state(&command_output("tea", &["api", &endpoint])?)
     }
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {
