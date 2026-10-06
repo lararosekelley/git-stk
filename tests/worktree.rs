@@ -1568,3 +1568,62 @@ fn undo_ignores_a_worktree_holding_a_branch_it_would_not_move() {
     repo.stack().arg("undo").assert().success();
     assert!(is_clean(&repo, &worktree));
 }
+
+#[test]
+fn sync_keeps_the_merged_parents_fork_point_after_a_worktree_blocked_restack() {
+    // Regression (#352): merge retargets feature/b onto main past squash-merged
+    // feature/a, then its restack is refused because feature/c is held by a
+    // worktree. Once the worktree is detached, the next sync must still replay
+    // only feature/b's own commit, not feature/a's.
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    let worktree_parent = worktree_dir();
+    let worktree = worktree_parent.path().join("c");
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.stack().args(["new", "feature/c"]).assert().success();
+    repo.commit_file("c.txt", "c\n", "c work");
+    let _bare = repo.add_bare_origin(&["main", "feature/a", "feature/b", "feature/c"]);
+
+    // Squash-merge feature/a by hand, so replaying its commit add/add-conflicts.
+    repo.git(["switch", "main"]);
+    repo.write("a.txt", "a-squashed\n");
+    repo.git(["add", "a.txt"]);
+    repo.git(["commit", "-m", "squash merge feature/a"]);
+    repo.git(["push", "origin", "main"]);
+    repo.git(["switch", "feature/a"]);
+    repo.git(["worktree", "add", worktree.to_str().unwrap(), "feature/c"]);
+
+    let fake = FakeProvider::new()
+        .record("pr merge 12", "merge-args.txt", "")
+        .on_after("feature/a --state merged", "merge-args.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##)
+        .on("feature/a --state merged", "[]")
+        .on_after("feature/a", "merge-args.txt", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##)
+        .on("feature/b", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/13","title":"B work"}]"##)
+        .on("feature/c", r##"[{"number":14,"state":"OPEN","baseRefName":"feature/b","headRefName":"feature/c","url":"https://github.com/owner/repo/pull/14","title":"C work"}]"##)
+        .on("pr edit", "updated review")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure();
+
+    repo.git(["-C", worktree.to_str().unwrap(), "switch", "--detach"]);
+    repo.stack_faked(&fake).arg("sync").assert().success();
+
+    assert_eq!(
+        repo.git(["rev-parse", "feature/b~1"]),
+        repo.git(["rev-parse", "main"])
+    );
+    assert_eq!(repo.git(["show", "feature/b:a.txt"]), "a-squashed");
+    assert_eq!(
+        repo.git(["rev-parse", "feature/c~1"]),
+        repo.git(["rev-parse", "feature/b"])
+    );
+}

@@ -198,7 +198,9 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
             bail!("refusing to set {branch} as its own stack parent");
         }
 
-        if !dry_run {
+        // An unchanged parent keeps its recorded fork point: it may be pinned
+        // past a landed parent whose restack has not run yet.
+        if !dry_run && stack::parent_of(branch)?.as_deref() != Some(review.base.as_str()) {
             stack::set_parent(branch, &review.base)?;
             stack::record_base(branch, &review.base);
         }
