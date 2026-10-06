@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use super::{ReviewRequest, ReviewState};
+use super::{IssueState, ReviewRequest, ReviewState};
 
 pub(super) fn parse_body_field(output: &str, field: &str) -> Result<String> {
     let value: serde_json::Value =
@@ -13,6 +13,20 @@ pub(super) fn parse_body_field(output: &str, field: &str) -> Result<String> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_owned())
+}
+
+/// An issue from a REST issues endpoint. GitHub and Gitea serve pull requests
+/// there too, marked by a non-null `pull_request`; GitLab says `opened`.
+pub(super) fn parse_issue_state(output: &str) -> Result<IssueState> {
+    let value: Value = serde_json::from_str(output).context("failed to parse issue JSON")?;
+    if value.get("pull_request").is_some_and(|pr| !pr.is_null()) {
+        return Ok(IssueState::NotAnIssue);
+    }
+    match value.get("state").and_then(Value::as_str) {
+        Some("open" | "opened") => Ok(IssueState::Open),
+        Some("closed") => Ok(IssueState::Closed),
+        _ => bail!("issue JSON has no recognized state"),
+    }
 }
 
 pub(super) fn optional_bool(value: &Value, key: &str) -> bool {
@@ -97,6 +111,27 @@ pub(super) fn parse_state(state: &str) -> ReviewState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_issue_state_tells_issues_from_pull_requests() {
+        assert_eq!(
+            parse_issue_state(r#"{"state":"open","pull_request":null}"#).unwrap(),
+            IssueState::Open
+        );
+        assert_eq!(
+            parse_issue_state(r#"{"state":"opened"}"#).unwrap(),
+            IssueState::Open
+        );
+        assert_eq!(
+            parse_issue_state(r#"{"state":"closed"}"#).unwrap(),
+            IssueState::Closed
+        );
+        assert_eq!(
+            parse_issue_state(r#"{"state":"open","pull_request":{"url":"x"}}"#).unwrap(),
+            IssueState::NotAnIssue
+        );
+        assert!(parse_issue_state("[]").is_err());
+    }
 
     #[test]
     fn parse_body_field_reads_field_and_defaults_empty() {

@@ -5,12 +5,12 @@ use anyhow::{Context, Result};
 use crate::git;
 
 use super::json::{
-    all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_state,
-    required_string,
+    all_reviews, first_review, optional_bool, optional_string, parse_body_field, parse_issue_state,
+    parse_state, required_string,
 };
 use super::{
-    CheckStatus, MergeBlocker, ReviewProvider, ReviewRequest, ReviewSummary, WaitOutcome,
-    command_output, merge_with_resettle, merge_with_retry,
+    CheckStatus, IssueState, MergeBlocker, ReviewProvider, ReviewRequest, ReviewSummary,
+    WaitOutcome, command_output, merge_with_resettle, merge_with_retry,
 };
 
 /// GitLab keeps draft state in the MR title rather than a flag. `Draft:` is the
@@ -124,6 +124,14 @@ impl ReviewProvider for GitLabProvider {
             &["mr", "view", review.id_value(), "--output", "json"],
         )?;
         parse_body_field(&output, "description")
+    }
+
+    fn issue_state(&self, number: u64) -> Result<IssueState> {
+        // Merge requests are numbered apart from issues, so `#N` is never one.
+        parse_issue_state(&command_output(
+            "glab",
+            &["api", &format!("projects/:id/issues/{number}")],
+        )?)
     }
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {

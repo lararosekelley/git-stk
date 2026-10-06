@@ -107,6 +107,16 @@ impl fmt::Display for ProviderSource {
     }
 }
 
+/// What `#N` names on the platform, for deciding whether a review may close it.
+#[derive(Debug, Eq, PartialEq)]
+pub enum IssueState {
+    Open,
+    Closed,
+    /// Not an issue: a pull request, which shares the issue numbering on
+    /// GitHub and Gitea.
+    NotAnIssue,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum ReviewState {
     Open,
@@ -431,6 +441,14 @@ pub trait ReviewProvider {
     fn review_body(&self, review: &ReviewRequest) -> Result<String>;
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String>;
+
+    /// What issue `number` is on the platform. An error, including a missing
+    /// issue, means it could not be confirmed. Default `Open`: a provider that
+    /// cannot look issues up links them unchecked.
+    fn issue_state(&self, number: u64) -> Result<IssueState> {
+        let _ = number;
+        Ok(IssueState::Open)
+    }
 
     /// A carried-forward ledger row's current state, re-fetched by id after its
     /// branch has left the local stack. Nothing else re-queries such a row, so

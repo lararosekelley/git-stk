@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use crate::providers::{ProviderKind, ReviewProvider, ReviewState};
+use crate::providers::{IssueState, ProviderKind, ReviewProvider, ReviewState};
 use crate::settings;
 
 mod ledger;
@@ -22,7 +22,8 @@ const DESCRIPTION_SECTION: &str = "description";
 /// Add a `Closes #N` line to each branch's review when the branch name
 /// references an issue (e.g. `123-fix-thing`, `fix/issue-123`), so the
 /// platform closes the issue when the review merges. Branches without an
-/// issue reference are passed over silently.
+/// issue reference are passed over silently; a number the provider does not
+/// confirm as an open issue is reported and left unlinked.
 pub fn update_closes_notes(
     review_provider: &dyn ReviewProvider,
     branches: &[String],
@@ -45,6 +46,17 @@ pub fn update_closes_notes(
         };
 
         if review.branch != *branch || review.state == ReviewState::Merged {
+            continue;
+        }
+
+        let skipped = match review_provider.issue_state(issue) {
+            Ok(IssueState::Open) => None,
+            Ok(IssueState::Closed) => Some(format!("issue #{issue} is closed")),
+            Ok(IssueState::NotAnIssue) => Some(format!("#{issue} is not an issue")),
+            Err(error) => Some(format!("could not find issue #{issue} ({error:#})")),
+        };
+        if let Some(reason) = skipped {
+            anstream::println!("skipped issue link for {branch}: {reason}");
             continue;
         }
 
