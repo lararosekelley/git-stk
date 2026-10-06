@@ -108,6 +108,28 @@ pub fn worktree_has_changes(path: &std::path::Path) -> bool {
     output(&["-C", &dir, "status", "--porcelain"]).map_or(true, |out| !out.is_empty())
 }
 
+/// Whether a worktree's HEAD has commits no branch, tag or remote-tracking ref
+/// contains, which removing it would strand. Fails safe, like
+/// [`worktree_has_changes`].
+pub fn worktree_has_unreferenced_commits(path: &std::path::Path) -> bool {
+    let dir = path.to_string_lossy().into_owned();
+    let Ok(head) = output(&["-C", &dir, "rev-parse", "HEAD"]) else {
+        return true;
+    };
+    // Not `--all`: it counts every worktree's HEAD, this one included.
+    output(&[
+        "rev-list",
+        "-n",
+        "1",
+        &head,
+        "--not",
+        "--branches",
+        "--tags",
+        "--remotes",
+    ])
+    .map_or(true, |out| !out.is_empty())
+}
+
 /// Remove a worktree, discarding anything in it. Only for worktrees git-stk
 /// created and owns.
 pub fn worktree_remove(path: &std::path::Path) -> Result<()> {

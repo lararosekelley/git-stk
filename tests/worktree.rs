@@ -968,6 +968,43 @@ fn cleanup_keeps_a_detached_owned_worktree_and_its_branch_with_uncommitted_work(
 }
 
 #[test]
+fn cleanup_keeps_a_detached_owned_worktree_with_commits_on_no_branch() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    let created = parent.path().join("feature").join("a");
+    let dir = created.to_str().unwrap();
+    repo.git(["-C", dir, "switch", "--detach"]);
+    std::fs::write(created.join("detached.txt"), "work\n").expect("write");
+    repo.git(["-C", dir, "add", "detached.txt"]);
+    repo.git(["-C", dir, "commit", "-m", "work on a detached HEAD"]);
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    // The tree is clean, but removing it would strand the commit.
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("has commits on no branch"));
+
+    assert!(
+        created.exists(),
+        "the worktree holding the commit must survive"
+    );
+    repo.git(["rev-parse", "--verify", "feature/a"]);
+}
+
+#[test]
 fn repair_clears_a_marker_whose_worktree_is_gone() {
     let repo = TestRepo::new();
     let parent = worktree_dir();
