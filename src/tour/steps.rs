@@ -180,6 +180,8 @@ fn classify(path: &str) -> StepKind {
     }
     if CONFIG_FILES.contains(&name)
         || CONFIG_EXTENSIONS.contains(&extension.as_str())
+        // vite.config.ts, commitlint.config.cjs, jest.config.js
+        || stem.ends_with(".config")
         || name.starts_with('.')
         || dirs.iter().any(|dir| dir.starts_with('.'))
         || (extension == "json" && dirs.is_empty())
@@ -213,6 +215,8 @@ mod tests {
             (".github/workflows/ci.yml", StepKind::Config),
             ("tsconfig.json", StepKind::Config),
             ("config/app.yaml", StepKind::Config),
+            ("commitlint.config.cjs", StepKind::Config),
+            ("web/vite.config.ts", StepKind::Config),
             ("db/migrations/001_init.sql", StepKind::Schema),
             ("api/user.proto", StepKind::Schema),
             ("src/types.ts", StepKind::Schema),
@@ -244,6 +248,8 @@ mod tests {
             status: FileStatus::Modified,
             binary: false,
             hunks: Vec::new(),
+            old_text: None,
+            new_text: None,
         }
     }
 

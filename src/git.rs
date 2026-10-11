@@ -702,6 +702,124 @@ pub fn generated_paths(paths: &[&str], commit: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The text of each `<commit>:<path>` in `specs`, in order. None stands for a
+/// missing path, a non-blob, a blob over `max_each` bytes or past `max_total`
+/// bytes in all, or one that is not UTF-8 text.
+pub fn blob_texts(specs: &[String], max_each: u64, max_total: u64) -> Result<Vec<Option<String>>> {
+    // A newline would split the spec in two on cat-file's line-based input;
+    // an empty line is answered as missing, keeping the answers aligned.
+    let readable: Vec<&str> = specs
+        .iter()
+        .map(|spec| {
+            if spec.contains('\n') {
+                ""
+            } else {
+                spec.as_str()
+            }
+        })
+        .collect();
+    let sizes = cat_file(
+        &["cat-file", "--batch-check=%(objecttype) %(objectsize)"],
+        &readable,
+    )?;
+    let wanted = blobs_to_read(&String::from_utf8_lossy(&sizes), max_each, max_total);
+    if wanted.len() != readable.len() {
+        bail!(
+            "git cat-file answered {} of {} paths",
+            wanted.len(),
+            readable.len()
+        );
+    }
+
+    let fetch: Vec<&str> = readable
+        .iter()
+        .zip(&wanted)
+        .filter(|(_, wanted)| **wanted)
+        .map(|(spec, _)| *spec)
+        .collect();
+    split_blobs(
+        &cat_file(&["cat-file", "--batch=%(objectsize)"], &fetch)?,
+        &wanted,
+    )
+}
+
+/// Which `--batch-check` answers name blobs to read: within `max_each`
+/// bytes, and in order until `max_total` bytes are spent.
+fn blobs_to_read(answers: &str, max_each: u64, max_total: u64) -> Vec<bool> {
+    let mut spent = 0u64;
+    answers
+        .lines()
+        .map(|line| {
+            // A missing object reads `<spec> missing`, which never parses as a size.
+            let Some(("blob", size)) = line.rsplit_once(' ') else {
+                return false;
+            };
+            let Ok(size) = size.parse::<u64>() else {
+                return false;
+            };
+            if size > max_each || spent + size > max_total {
+                return false;
+            }
+            spent += size;
+            true
+        })
+        .collect()
+}
+
+/// The `--batch=%(objectsize)` output for the blobs `wanted` marks, spread
+/// back over every position: None where nothing was read or the blob is not
+/// UTF-8.
+fn split_blobs(mut output: &[u8], wanted: &[bool]) -> Result<Vec<Option<String>>> {
+    let mut texts = Vec::with_capacity(wanted.len());
+    for wanted in wanted {
+        if !wanted {
+            texts.push(None);
+            continue;
+        }
+        let newline = output
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .context("truncated git cat-file output")?;
+        let size: usize = std::str::from_utf8(&output[..newline])
+            .ok()
+            .and_then(|size| size.parse().ok())
+            .context("unexpected git cat-file header")?;
+        let start = newline + 1;
+        let content = output
+            .get(start..start + size)
+            .context("truncated git cat-file output")?;
+        texts.push(String::from_utf8(content.to_vec()).ok());
+        // Each object is followed by a newline.
+        output = output.get(start + size + 1..).unwrap_or_default();
+    }
+    Ok(texts)
+}
+
+/// Run a `git cat-file` batch mode over `specs`, one per line, returning its
+/// raw output. Input is written from another thread so a large answer cannot
+/// fill the output pipe while git still waits for input.
+fn cat_file(args: &[&str], specs: &[&str]) -> Result<Vec<u8>> {
+    let mut child = Command::new("git")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to run git")?;
+    let mut stdin = child.stdin.take().context("git has no stdin")?;
+    let input: String = specs.iter().map(|spec| format!("{spec}\n")).collect();
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let output = child.wait_with_output().context("failed to run git")?;
+    writer
+        .join()
+        .map_err(|_| anyhow!("git cat-file input thread panicked"))?
+        .context("failed to write to git")?;
+    if !output.status.success() {
+        return Err(command_error("git cat-file", &output.stderr));
+    }
+    Ok(output.stdout)
+}
+
 /// The contents of `file` in the commit `reference` points at, or None when
 /// the ref or file is absent.
 pub fn read_ref_file(reference: &str, file: &str) -> Result<Option<String>> {
@@ -1305,6 +1423,41 @@ fn command_error(command: &str, stderr: &[u8]) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blobs_to_read_skips_non_blobs_oversized_and_over_budget() {
+        let answers = "blob 10\n missing\nabc:my file missing\ncommit 291\nblob 50\nblob 30\nblob 70\nblob 5\nblob 20\n";
+        assert_eq!(
+            blobs_to_read(answers, 60, 100),
+            // 70 is over the per-blob limit; 10 + 50 + 30 + 5 fit the budget
+            // and leave no room for 20.
+            [true, false, false, false, true, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn split_blobs_keeps_texts_aligned_with_their_specs() {
+        let mut output = b"5\nhello\n4\n".to_vec();
+        output.extend_from_slice(&[0xff, 0xfe, 0x00, 0x01]);
+        output.extend_from_slice(b"\n0\n\n3\nend\n");
+        let texts = split_blobs(&output, &[true, false, true, true, false, true]).unwrap();
+        assert_eq!(
+            texts,
+            [
+                Some("hello".to_owned()),
+                None,
+                None, // not UTF-8
+                Some(String::new()),
+                None,
+                Some("end".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_blobs_reports_truncated_output() {
+        assert!(split_blobs(b"9\nshort\n", &[true]).is_err());
+    }
 
     /// The shape `git worktree list --porcelain` prints for a main worktree, a
     /// linked one, a detached one, and a bare repo.

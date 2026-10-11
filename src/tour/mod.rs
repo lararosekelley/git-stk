@@ -12,12 +12,26 @@ use crate::settings;
 mod diff;
 mod steps;
 
-use diff::{FileDiff, LineKind};
+use diff::{FileDiff, FileStatus, LineKind};
 use steps::Step;
 
 const TEMPLATE: &str = include_str!("template.html");
-const DATA_PLACEHOLDER: &str = "/*TOUR_DATA*/null";
+const HIGHLIGHT_JS: &str = include_str!("vendor/highlight.min.js");
+const HIGHLIGHT_LICENSE: &str = include_str!("vendor/highlight.js-LICENSE");
+
+/// The template's placeholders, in the order they appear in it.
 const TITLE_PLACEHOLDER: &str = "<!--TOUR_TITLE-->";
+const LICENSE_PLACEHOLDER: &str = "@@HIGHLIGHT_LICENSE@@";
+const HIGHLIGHT_PLACEHOLDER: &str = "/*HIGHLIGHT_JS*/";
+const DATA_PLACEHOLDER: &str = "/*TOUR_DATA*/null";
+
+/// Files larger than this are shown without their full text, so without
+/// whole-file highlighting or context expansion.
+const MAX_EMBEDDED_BYTES: u64 = 1024 * 1024;
+
+/// Once a tour has embedded this much text, later files go without, keeping
+/// the page quick to open on a large review.
+const MAX_TOTAL_EMBEDDED_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A review's commits and changes, read from git.
 pub struct Tour {
@@ -60,7 +74,8 @@ impl Tour {
 
         let paths: Vec<&str> = files.iter().map(FileDiff::path).collect();
         let generated = git::generated_paths(&paths, &head_sha)?;
-        let steps = steps::group(files, |path| generated.iter().any(|g| g == path));
+        let mut steps = steps::group(files, |path| generated.iter().any(|g| g == path));
+        embed_texts(&mut steps, &base_sha, &head_sha)?;
 
         let mut commits = git::log_oneline(&format!("{base_sha}..{head_sha}"))?;
         commits.reverse();
@@ -91,10 +106,15 @@ impl Tour {
 
     pub fn render(&self) -> String {
         let title = format!("Tour of {}", self.review.label());
-        // Data first: its JSON escapes `<`, so it cannot carry the title marker.
-        TEMPLATE
-            .replacen(DATA_PLACEHOLDER, &script_json(&self.data()), 1)
-            .replacen(TITLE_PLACEHOLDER, &escape_html(&title), 1)
+        fill(
+            TEMPLATE,
+            &[
+                (TITLE_PLACEHOLDER, &escape_html(&title)),
+                (LICENSE_PLACEHOLDER, HIGHLIGHT_LICENSE),
+                (HIGHLIGHT_PLACEHOLDER, HIGHLIGHT_JS),
+                (DATA_PLACEHOLDER, &script_json(&self.data())),
+            ],
+        )
     }
 
     fn data(&self) -> Value {
@@ -133,12 +153,126 @@ fn head_ref(kind: ProviderKind, number: &str) -> Option<String> {
     }
 }
 
+/// Read the whole text of both sides of every modified, renamed, or copied
+/// file with hunks, for whole-file highlighting and context expansion. An added or
+/// deleted file's hunk already holds every line, and generated and binary
+/// files are not worth the space.
+fn embed_texts(steps: &mut [Step], base_sha: &str, head_sha: &str) -> Result<()> {
+    fn embeddable(step: &Step) -> impl Iterator<Item = &FileDiff> {
+        step.files
+            .iter()
+            .filter(move |file| wants_text(step.kind, file))
+    }
+    let specs: Vec<String> = steps
+        .iter()
+        .flat_map(embeddable)
+        .flat_map(|file| {
+            [
+                format!("{base_sha}:{}", file.old_path),
+                format!("{head_sha}:{}", file.new_path),
+            ]
+        })
+        .collect();
+    let mut texts =
+        git::blob_texts(&specs, MAX_EMBEDDED_BYTES, MAX_TOTAL_EMBEDDED_BYTES)?.into_iter();
+    for step in steps.iter_mut() {
+        let kind = step.kind;
+        for file in step.files.iter_mut() {
+            if wants_text(kind, file) {
+                file.old_text = texts.next().flatten();
+                file.new_text = texts.next().flatten();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn wants_text(kind: steps::StepKind, file: &FileDiff) -> bool {
+    kind != steps::StepKind::Generated
+        && !file.binary
+        // A pure rename or mode change has no hunk to expand around.
+        && !file.hunks.is_empty()
+        && !matches!(file.status, FileStatus::Added | FileStatus::Deleted)
+}
+
+/// Substitute each placeholder in turn, searching only the template text
+/// after the previous one, so a value that happens to contain a later
+/// placeholder - a diff of this template, say - is never substituted into.
+fn fill(template: &str, values: &[(&str, &str)]) -> String {
+    let mut output = String::with_capacity(template.len());
+    let mut rest = template;
+    for (placeholder, value) in values {
+        match rest.split_once(placeholder) {
+            Some((before, after)) => {
+                output.push_str(before);
+                output.push_str(value);
+                rest = after;
+            }
+            None => debug_assert!(false, "template has no {placeholder}"),
+        }
+    }
+    output.push_str(rest);
+    output
+}
+
+/// The highlight.js language for a path, or "" for plain text. Only names
+/// in the bundled common build are useful; the page checks before using one.
+fn language(path: &str) -> &'static str {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name {
+        "Makefile" | "makefile" | "GNUmakefile" | "justfile" | "Justfile" => return "makefile",
+        "Dockerfile" | "Containerfile" => return "bash",
+        _ => {}
+    }
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "rs" => "rust",
+        "py" | "pyi" => "python",
+        "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "ts" | "mts" | "cts" | "tsx" => "typescript",
+        "go" => "go",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
+        "m" | "mm" => "objectivec",
+        "cs" => "csharp",
+        "vb" => "vbnet",
+        "rb" => "ruby",
+        "php" => "php",
+        "pl" | "pm" => "perl",
+        "lua" => "lua",
+        "r" => "r",
+        "sh" | "bash" | "zsh" => "bash",
+        "sql" => "sql",
+        "graphql" | "gql" => "graphql",
+        "css" => "css",
+        "scss" => "scss",
+        "less" => "less",
+        "html" | "htm" | "xml" | "svg" | "vue" | "svelte" => "xml",
+        "json" | "jsonc" => "json",
+        "yaml" | "yml" => "yaml",
+        "toml" | "ini" | "cfg" | "conf" => "ini",
+        "md" | "markdown" | "mdx" => "markdown",
+        "diff" | "patch" => "diff",
+        "wat" | "wast" => "wasm",
+        _ => "",
+    }
+}
+
 fn file_data(file: &FileDiff) -> Value {
     json!({
         "path": file.path(),
         "oldPath": file.old_path,
         "status": file.status.as_str(),
         "binary": file.binary,
+        "language": language(file.path()),
+        "oldText": file.old_text,
+        "newText": file.new_text,
         "additions": file.additions(),
         "deletions": file.deletions(),
         "hunks": file.hunks.iter().map(|hunk| json!({
@@ -192,8 +326,42 @@ mod tests {
     }
 
     #[test]
-    fn template_carries_both_placeholders() {
-        assert!(TEMPLATE.contains(DATA_PLACEHOLDER));
-        assert!(TEMPLATE.contains(TITLE_PLACEHOLDER));
+    fn template_carries_the_placeholders_in_fill_order() {
+        let positions: Vec<usize> = [
+            TITLE_PLACEHOLDER,
+            LICENSE_PLACEHOLDER,
+            HIGHLIGHT_PLACEHOLDER,
+            DATA_PLACEHOLDER,
+        ]
+        .iter()
+        .map(|placeholder| TEMPLATE.find(placeholder).expect(placeholder))
+        .collect();
+        assert!(positions.is_sorted(), "{positions:?}");
+    }
+
+    #[test]
+    fn fill_never_substitutes_into_an_earlier_value() {
+        let filled = fill(
+            "<a>[1]</a><b>[2]</b>",
+            &[("[1]", "has [2]"), ("[2]", "two")],
+        );
+        assert_eq!(filled, "<a>has [2]</a><b>two</b>");
+    }
+
+    #[test]
+    fn vendored_highlighter_is_safe_to_inline() {
+        // Either sequence would end the surrounding element early.
+        assert!(!HIGHLIGHT_JS.to_ascii_lowercase().contains("</script"));
+        assert!(!HIGHLIGHT_LICENSE.contains("--"));
+    }
+
+    #[test]
+    fn language_maps_extensions_and_names() {
+        assert_eq!(language("src/main.rs"), "rust");
+        assert_eq!(language("web/App.TSX"), "typescript");
+        assert_eq!(language("Makefile"), "makefile");
+        assert_eq!(language("config/app.yml"), "yaml");
+        assert_eq!(language("LICENSE"), "");
+        assert_eq!(language("archive.tar.gz"), "");
     }
 }

@@ -98,8 +98,32 @@ fn tour_walks_a_github_pr_in_role_order() {
     let renamed = &data["steps"][3]["files"][0];
     assert_eq!(renamed["status"], "renamed");
     assert_eq!(renamed["oldPath"], "old name.txt");
+    assert_eq!(
+        renamed["newText"],
+        Value::Null,
+        "a pure rename has no hunk to expand around"
+    );
 
     let lib = &data["steps"][1]["files"][0];
+    assert_eq!(lib["language"], "rust");
+    assert_eq!(lib["oldText"], "fn one() {}\n");
+    assert_eq!(lib["newText"], "fn one() {}\nfn two() {}\n");
+    let added = &data["steps"][2]["files"][0];
+    assert_eq!(added["status"], "added");
+    assert_eq!(added["oldText"], Value::Null);
+    assert_eq!(
+        added["newText"],
+        Value::Null,
+        "an added file's hunk already holds its text"
+    );
+    let lockfile = &data["steps"][4]["files"][0];
+    assert_eq!(
+        lockfile["newText"],
+        Value::Null,
+        "generated files go unembedded"
+    );
+    assert!(html.contains("Highlight.js v11.11.1"));
+    assert!(html.contains("BSD 3-Clause License"));
     assert_eq!(lib["additions"], 1);
     assert_eq!(
         lib["hunks"][0]["lines"],
