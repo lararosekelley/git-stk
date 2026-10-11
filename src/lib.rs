@@ -5,6 +5,7 @@ pub mod completions;
 pub mod git;
 pub mod lock;
 pub mod notes;
+pub mod progress;
 pub mod prompt;
 pub mod providers;
 pub mod settings;

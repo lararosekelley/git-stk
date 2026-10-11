@@ -1,17 +1,24 @@
 //! A review's changes as a self-contained HTML page that walks through them
 //! step by step, for `git stk tour`.
 
+use std::cell::RefCell;
+use std::thread;
+
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::git;
 use crate::notes;
+use crate::progress::Progress;
 use crate::providers::{ProviderKind, ReviewProvider, ReviewRequest};
 use crate::settings;
 
 mod diff;
 mod markdown;
+pub mod stack;
 mod steps;
+
+use stack::Stack;
 
 use diff::{FileDiff, FileStatus, LineKind};
 use steps::Step;
@@ -31,12 +38,22 @@ const DATA_PLACEHOLDER: &str = "/*TOUR_DATA*/null";
 const MAX_EMBEDDED_BYTES: u64 = 1024 * 1024;
 
 /// Once a tour has embedded this much text, later files go without, keeping
-/// the page quick to open on a large review.
+/// the page quick to open on a large review or stack.
 const MAX_TOTAL_EMBEDDED_BYTES: u64 = 16 * 1024 * 1024;
 
-/// A review's commits and changes, read from git.
+/// A review, or the stack of reviews it belongs to, read from git; each
+/// review is a chapter of the tour.
 pub struct Tour {
+    chapters: Vec<Chapter>,
+    current: usize,
+    warnings: Vec<String>,
+}
+
+/// One review's commits and changes.
+struct Chapter {
     review: ReviewRequest,
+    /// The chapter this review is stacked on, if it is in the tour.
+    parent: Option<usize>,
     body: String,
     base_sha: String,
     head_sha: String,
@@ -45,68 +62,157 @@ pub struct Tour {
 }
 
 impl Tour {
-    /// Fetch the review's head and base and read the change between them.
+    /// Read `stack`. A review that cannot be fetched or read, or that
+    /// matched its parent only by branch name, is left out with the reviews
+    /// stacked on it; one with no changes of its own is not shown.
     pub fn load(
         kind: ProviderKind,
         provider: &dyn ReviewProvider,
-        review: ReviewRequest,
+        stack: Stack,
+        progress: &Progress,
     ) -> Result<Self> {
-        let (base_tip, head_sha) = match head_ref(kind, review.id_value()) {
-            Some(head_ref) => {
-                let remote = settings::remote()?;
-                let base = git::fetch_commit(&remote, &format!("refs/heads/{}", review.base))?;
-                (base, git::fetch_commit(&remote, &head_ref)?)
+        let Stack {
+            reviews,
+            parents,
+            current,
+        } = stack;
+        progress.set(match reviews.len() {
+            1 => format!("fetching {}", reviews[0].id),
+            count => format!("fetching {count} reviews"),
+        });
+        let mut warnings = Vec::new();
+        // The descriptions come from the provider while git fetches.
+        let (tips, bodies) = thread::scope(|scope| {
+            let bodies: Vec<_> = reviews
+                .iter()
+                .map(|review| scope.spawn(move || provider.review_body(review)))
+                .collect();
+            let tips = stack_tips(kind, &reviews, current, &mut warnings);
+            let bodies: Vec<_> = bodies
+                .into_iter()
+                .map(|body| {
+                    body.join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect();
+            (tips, bodies)
+        });
+        let tips = tips?;
+        let linked: Vec<bool> = parents
+            .iter()
+            .zip(&tips)
+            .map(|(parent, tip)| match (parent, tip) {
+                (Some(parent), Some((base_tip, _))) => tips[*parent]
+                    .as_ref()
+                    .is_some_and(|(_, head)| head == base_tip),
+                _ => false,
+            })
+            .collect();
+        let reachable = reachable_from_root(
+            &parents,
+            current,
+            |index| tips[index].is_some(),
+            |index| linked[index],
+        );
+
+        progress.set("reading changes");
+        let mut budget = MAX_TOTAL_EMBEDDED_BYTES;
+        let mut reviews: Vec<Option<ReviewRequest>> = reviews.into_iter().map(Some).collect();
+        let mut tips = tips;
+        let mut bodies: Vec<Option<Result<String>>> = bodies.into_iter().map(Some).collect();
+        let mut read: Vec<Option<Option<Chapter>>> = (0..reviews.len()).map(|_| None).collect();
+        // The asked-for review first, so the text budget goes to it.
+        let order = std::iter::once(current).chain((0..reviews.len()).filter(|&i| i != current));
+        for index in order.filter(|&index| reachable[index]) {
+            let (Some(review), Some((base_tip, head_sha)), Some(body)) = (
+                reviews[index].take(),
+                tips[index].take(),
+                bodies[index].take(),
+            ) else {
+                continue;
+            };
+            let id = review.id.clone();
+            let base = review.base.clone();
+            let chapter = body
+                .with_context(|| format!("failed to read the description of {id}"))
+                .and_then(|body| Chapter::read(review, &body, &base_tip, head_sha, &mut budget));
+            match chapter {
+                Ok(None) if index == current => bail!(
+                    "{id} has no changes against {base}; a merged review's changes are already in its base"
+                ),
+                Ok(chapter) => read[index] = Some(chapter),
+                Err(error) if index != current => warnings.push(format!(
+                    "could not read {id}, so it is left out with the reviews stacked on it: {error:#}"
+                )),
+                Err(error) => return Err(error),
             }
-            // The demo provider's reviews live only in this repository.
-            None => (
-                git::rev_parse(&review.base)?,
-                git::rev_parse(&review.branch)?,
-            ),
-        };
-        let base_sha = git::merge_base(&base_tip, &head_sha)?;
-        let files = diff::parse(&git::tour_diff(&base_sha, &head_sha)?);
-        if files.is_empty() {
-            bail!(
-                "{} has no changes against {}; a merged review's changes are already in its base",
-                review.id,
-                review.base
-            );
         }
 
-        let paths: Vec<&str> = files.iter().map(FileDiff::path).collect();
-        let generated = git::generated_paths(&paths, &head_sha)?;
-        let mut steps = steps::group(files, |path| generated.iter().any(|g| g == path));
-        embed_texts(&mut steps, &base_sha, &head_sha)?;
-
-        let mut commits = git::log_oneline(&format!("{base_sha}..{head_sha}"))?;
-        commits.reverse();
-        let body = provider
-            .review_body(&review)
-            .with_context(|| format!("failed to read the description of {}", review.id))?;
-        let body = notes::readable_body(&body);
-
+        let included = reachable_from_root(
+            &parents,
+            current,
+            |index| read[index].is_some(),
+            |index| linked[index],
+        );
+        let mut chapters: Vec<Chapter> = Vec::new();
+        let mut chapter_of: Vec<Option<usize>> = vec![None; parents.len()];
+        let mut current_chapter = 0;
+        for index in 0..parents.len() {
+            if !included[index] {
+                continue;
+            }
+            // A review with no changes of its own is skipped, and the ones
+            // stacked on it hang from its parent.
+            let Some(Some(mut chapter)) = read[index].take() else {
+                chapter_of[index] = parents[index].and_then(|parent| chapter_of[parent]);
+                continue;
+            };
+            chapter.parent = parents[index].and_then(|parent| chapter_of[parent]);
+            if index == current {
+                current_chapter = chapters.len();
+            }
+            chapter_of[index] = Some(chapters.len());
+            chapters.push(chapter);
+        }
         Ok(Self {
-            review,
-            body,
-            base_sha,
-            head_sha,
-            commits,
-            steps,
+            chapters,
+            current: current_chapter,
+            warnings,
         })
+    }
+
+    /// What was left out of the tour and why.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    fn current(&self) -> &Chapter {
+        &self.chapters[self.current]
     }
 
     /// The file name a tour of this review at its current head is saved as.
     pub fn file_name(&self) -> String {
-        let short = self.head_sha.get(..12).unwrap_or(&self.head_sha);
-        format!("{}-{short}.html", self.review.id_value())
+        let chapter = self.current();
+        let short = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
+        format!("{}-{short}.html", chapter.review.id_value())
     }
 
+    /// How many reviews the tour covers.
+    pub fn review_count(&self) -> usize {
+        self.chapters.len()
+    }
+
+    /// How many files the review asked for changes.
     pub fn file_count(&self) -> usize {
-        self.steps.iter().map(|step| step.files.len()).sum()
+        self.current()
+            .steps
+            .iter()
+            .map(|step| step.files.len())
+            .sum()
     }
 
     pub fn render(&self) -> String {
-        let title = format!("Tour of {}", self.review.label());
+        let title = format!("Tour of {}", self.current().review.label());
         fill(
             TEMPLATE,
             &[
@@ -120,6 +226,52 @@ impl Tour {
 
     fn data(&self) -> Value {
         json!({
+            "current": self.current,
+            "chapters": self.chapters.iter().map(Chapter::data).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl Chapter {
+    /// Read the change from the merge base of `base_tip` and `head_sha` to
+    /// `head_sha`, embedding file texts from what is left of `budget`. None
+    /// when the review has no changes.
+    fn read(
+        review: ReviewRequest,
+        body: &str,
+        base_tip: &str,
+        head_sha: String,
+        budget: &mut u64,
+    ) -> Result<Option<Self>> {
+        let base_sha = git::merge_base(base_tip, &head_sha)?;
+        let files = diff::parse(&git::tour_diff(&base_sha, &head_sha)?);
+        if files.is_empty() {
+            return Ok(None);
+        }
+
+        let paths: Vec<&str> = files.iter().map(FileDiff::path).collect();
+        let generated = git::generated_paths(&paths, &head_sha)?;
+        let mut steps = steps::group(files, |path| generated.iter().any(|g| g == path));
+        let embedded = embed_texts(&mut steps, &base_sha, &head_sha, *budget)?;
+        *budget = budget.saturating_sub(embedded);
+
+        let mut commits = git::log_oneline(&format!("{base_sha}..{head_sha}"))?;
+        commits.reverse();
+
+        Ok(Some(Self {
+            review,
+            parent: None,
+            body: notes::readable_body(body),
+            base_sha,
+            head_sha,
+            commits,
+            steps,
+        }))
+    }
+
+    fn data(&self) -> Value {
+        json!({
+            "parent": self.parent,
             "review": {
                 "id": self.review.id,
                 "title": self.review.title,
@@ -144,6 +296,134 @@ impl Tour {
     }
 }
 
+/// Each review's base tip and head, or None for a review that could not be
+/// fetched. When the stack cannot be fetched at once, each review is fetched
+/// on its own, so one missing ref costs only that review.
+fn stack_tips(
+    kind: ProviderKind,
+    stack: &[ReviewRequest],
+    current: usize,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Option<(String, String)>>> {
+    match review_tips(kind, stack) {
+        Ok(tips) => Ok(tips.into_iter().map(Some).collect()),
+        Err(_) if stack.len() > 1 => {
+            let mut tips = Vec::with_capacity(stack.len());
+            for (index, review) in stack.iter().enumerate() {
+                match review_tips(kind, std::slice::from_ref(review)) {
+                    Ok(mut tip) => tips.push(tip.pop()),
+                    // The asked-for review's own failure is the one to report.
+                    Err(own) if index == current => return Err(own),
+                    Err(error) => {
+                        warnings.push(format!(
+                            "could not fetch {}, so it is left out with the reviews stacked on it: {error:#}",
+                            review.id
+                        ));
+                        tips.push(None);
+                    }
+                }
+            }
+            Ok(tips)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Which reviews of a tree in depth-first order stay in the tour: from the
+/// lowest review reachable below `current` through usable, linked reviews,
+/// everything above it reachable the same way. `linked` says whether a
+/// review really builds on its parent.
+fn reachable_from_root(
+    parents: &[Option<usize>],
+    current: usize,
+    usable: impl Fn(usize) -> bool,
+    linked: impl Fn(usize) -> bool,
+) -> Vec<bool> {
+    let mut root = current;
+    while let Some(parent) = parents[root].filter(|&parent| linked(root) && usable(parent)) {
+        root = parent;
+    }
+    let mut reachable = vec![false; parents.len()];
+    reachable[root] = true;
+    for index in root + 1..parents.len() {
+        reachable[index] = usable(index)
+            && linked(index)
+            && parents[index].is_some_and(|parent| reachable[parent]);
+    }
+    reachable
+}
+
+/// Which of `candidates`, reviews sharing the branch name `branch`, really is
+/// that branch on the remote: the one whose head is the branch's tip. None
+/// when none is, or when the remote cannot be asked, which is warned about;
+/// either ends the stack there.
+pub fn same_named_parent(
+    kind: ProviderKind,
+    branch: &str,
+    candidates: &[&ReviewRequest],
+    warnings: &RefCell<Vec<String>>,
+) -> Option<usize> {
+    settle_same_named(kind, branch, candidates, warnings, |references| {
+        git::remote_commits(&settings::remote()?, references)
+    })
+}
+
+fn settle_same_named(
+    kind: ProviderKind,
+    branch: &str,
+    candidates: &[&ReviewRequest],
+    warnings: &RefCell<Vec<String>>,
+    remote_commits: impl FnOnce(&[String]) -> Result<Vec<Option<String>>>,
+) -> Option<usize> {
+    let mut references = vec![format!("refs/heads/{branch}")];
+    for candidate in candidates {
+        // The demo provider has no remote, and no forks to tell apart.
+        references.push(head_ref(kind, candidate.id_value())?);
+    }
+    let commits = match remote_commits(&references) {
+        Ok(commits) => commits,
+        Err(error) => {
+            warnings.borrow_mut().push(format!(
+                "could not tell which review is {branch}, so the stack ends there: {error:#}"
+            ));
+            return None;
+        }
+    };
+    let (Some(tip), heads) = commits.split_first()? else {
+        return None;
+    };
+    heads.iter().position(|head| head.as_ref() == Some(tip))
+}
+
+/// The tip of each review's base branch and its head commit, fetched from the
+/// remote in one round trip.
+fn review_tips(kind: ProviderKind, stack: &[ReviewRequest]) -> Result<Vec<(String, String)>> {
+    let mut references = Vec::with_capacity(stack.len() * 2);
+    for review in stack {
+        let Some(head_ref) = head_ref(kind, review.id_value()) else {
+            // The demo provider's reviews live only in this repository.
+            return stack
+                .iter()
+                .map(|review| {
+                    Ok((
+                        git::rev_parse(&review.base)?,
+                        git::rev_parse(&review.branch)?,
+                    ))
+                })
+                .collect();
+        };
+        references.push(format!("refs/heads/{}", review.base));
+        references.push(head_ref);
+    }
+    let commits = git::fetch_commits(&settings::remote()?, &references)?;
+    Ok(commits
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[base, head]| (base.clone(), head.clone()))
+        .collect())
+}
+
 /// The ref a review's head is published under on the remote, or None for a
 /// provider with no remote.
 fn head_ref(kind: ProviderKind, number: &str) -> Option<String> {
@@ -157,8 +437,9 @@ fn head_ref(kind: ProviderKind, number: &str) -> Option<String> {
 /// Read the whole text of both sides of every modified, renamed, or copied
 /// file with hunks, for whole-file highlighting and context expansion. An added or
 /// deleted file's hunk already holds every line, and generated and binary
-/// files are not worth the space.
-fn embed_texts(steps: &mut [Step], base_sha: &str, head_sha: &str) -> Result<()> {
+/// files are not worth the space. Returns the bytes embedded, at most
+/// `budget`.
+fn embed_texts(steps: &mut [Step], base_sha: &str, head_sha: &str, budget: u64) -> Result<u64> {
     fn embeddable(step: &Step) -> impl Iterator<Item = &FileDiff> {
         step.files
             .iter()
@@ -174,18 +455,23 @@ fn embed_texts(steps: &mut [Step], base_sha: &str, head_sha: &str) -> Result<()>
             ]
         })
         .collect();
-    let mut texts =
-        git::blob_texts(&specs, MAX_EMBEDDED_BYTES, MAX_TOTAL_EMBEDDED_BYTES)?.into_iter();
+    let mut texts = git::blob_texts(&specs, MAX_EMBEDDED_BYTES, budget)?.into_iter();
+    let mut embedded = 0;
     for step in steps.iter_mut() {
         let kind = step.kind;
         for file in step.files.iter_mut() {
             if wants_text(kind, file) {
                 file.old_text = texts.next().flatten();
                 file.new_text = texts.next().flatten();
+                embedded += [&file.old_text, &file.new_text]
+                    .into_iter()
+                    .flatten()
+                    .map(|text| text.len() as u64)
+                    .sum::<u64>();
             }
         }
     }
-    Ok(())
+    Ok(embedded)
 }
 
 fn wants_text(kind: steps::StepKind, file: &FileDiff) -> bool {
@@ -315,6 +601,85 @@ fn escape_html(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reachable_from_root_drops_what_hangs_from_a_broken_review() {
+        //    0
+        //   / \
+        //  1   3
+        //  |   |
+        //  2   4
+        let parents = [None, Some(0), Some(1), Some(0), Some(3)];
+        let all = reachable_from_root(&parents, 2, |_| true, |_| true);
+        assert_eq!(all, [true; 5]);
+        // A broken branch takes the reviews above it with it.
+        let broken = reachable_from_root(&parents, 2, |index| index != 3, |_| true);
+        assert_eq!(broken, [true, true, true, false, false]);
+        // A broken review below the current one ends the stack there.
+        let below = reachable_from_root(&parents, 2, |index| index != 0, |_| true);
+        assert_eq!(below, [false, true, true, false, false]);
+        // A current review that only shares its base's name stands alone
+        // with what is above it, as does one whose parent is unlinked.
+        let alone = reachable_from_root(&parents, 3, |_| true, |index| index != 3);
+        assert_eq!(alone, [false, false, false, true, true]);
+        let cut = reachable_from_root(&parents, 2, |_| true, |index| index != 1);
+        assert_eq!(cut, [false, true, true, false, false]);
+    }
+
+    fn github_review(id: u32, branch: &str) -> ReviewRequest {
+        ReviewRequest {
+            id: format!("#{id}"),
+            branch: branch.to_owned(),
+            base: "main".to_owned(),
+            state: crate::providers::ReviewState::Open,
+            url: String::new(),
+            title: String::new(),
+            draft: false,
+        }
+    }
+
+    #[test]
+    fn same_named_reviews_are_settled_by_the_remote_tip() {
+        let (fork, real) = (github_review(30, "a"), github_review(1, "a"));
+        let warnings = RefCell::new(Vec::new());
+        let chosen = settle_same_named(
+            ProviderKind::GitHub,
+            "a",
+            &[&fork, &real],
+            &warnings,
+            |refs| {
+                assert_eq!(
+                    refs,
+                    ["refs/heads/a", "refs/pull/30/head", "refs/pull/1/head"]
+                );
+                Ok(vec![
+                    Some("tip".into()),
+                    Some("other".into()),
+                    Some("tip".into()),
+                ])
+            },
+        );
+        assert_eq!(chosen, Some(1));
+        assert!(warnings.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_unreachable_remote_ends_the_stack_with_a_warning() {
+        let (fork, real) = (github_review(30, "a"), github_review(1, "a"));
+        let warnings = RefCell::new(Vec::new());
+        let chosen = settle_same_named(
+            ProviderKind::GitHub,
+            "a",
+            &[&fork, &real],
+            &warnings,
+            |_| bail!("connection refused"),
+        );
+        assert_eq!(chosen, None);
+        assert_eq!(
+            *warnings.borrow(),
+            ["could not tell which review is a, so the stack ends there: connection refused"]
+        );
+    }
 
     #[test]
     fn script_json_cannot_close_the_script_element() {
