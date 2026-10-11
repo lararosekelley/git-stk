@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title><!--TOUR_TITLE--></title>
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f6f8fa;
+  --fg: #1f2328;
+  --fg-muted: #656d76;
+  --border: #d0d7de;
+  --accent: #0969da;
+  --add-bg: #e6ffec;
+  --add-num: #ccffd8;
+  --del-bg: #ffebe9;
+  --del-num: #ffd7d5;
+  --hunk-bg: #ddf4ff;
+  --done: #1a7f37;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --bg-soft: #161b22;
+    --fg: #e6edf3;
+    --fg-muted: #8d96a0;
+    --border: #30363d;
+    --accent: #4493f8;
+    --add-bg: #12261e;
+    --add-num: #1b4721;
+    --del-bg: #25171c;
+    --del-num: #542426;
+    --hunk-bg: #121d2f;
+    --done: #3fb950;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-padding-top: 16px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+a { color: var(--accent); }
+code, pre, .diff { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
+nav {
+  position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
+  border-right: 1px solid var(--border); background: var(--bg-soft); padding: 16px;
+}
+nav h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); margin: 0 0 8px; }
+nav ol { list-style: none; margin: 0; padding: 0; }
+nav li.step { margin-bottom: 12px; }
+nav .step-link { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--fg); text-decoration: none; }
+nav .step-link.done { color: var(--done); }
+nav .step-files { margin: 4px 0 0 20px; }
+nav .step-files a { display: block; color: var(--fg-muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+nav .step-files a:hover, nav .step-link:hover { text-decoration: underline; }
+nav .progress { margin-bottom: 16px; color: var(--fg-muted); }
+main { padding: 24px 32px 64px; min-width: 0; }
+header h1 { font-size: 24px; margin: 0 0 4px; overflow-wrap: anywhere; }
+.meta { color: var(--fg-muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.state { border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; font-size: 12px; }
+.intro { margin: 16px 0 32px; display: grid; gap: 16px; }
+.panel { border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; background: var(--bg-soft); }
+.panel h2 { font-size: 14px; margin: 0 0 8px; }
+.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 13px; }
+.commits { list-style: none; margin: 0; padding: 0; }
+.commits code { color: var(--fg-muted); margin-right: 8px; }
+section.step { margin-bottom: 40px; }
+.step-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 16px; }
+.step-head h2 { font-size: 18px; margin: 0; }
+.step-head label { color: var(--fg-muted); white-space: nowrap; cursor: pointer; }
+.file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
+.file > summary {
+  list-style: none; cursor: pointer; display: flex; gap: 8px; align-items: center;
+  padding: 8px 12px; background: var(--bg-soft); position: sticky; top: 0; z-index: 1;
+}
+.file > summary::-webkit-details-marker { display: none; }
+.file > summary::before { content: ">"; color: var(--fg-muted); font-family: ui-monospace, monospace; transition: transform .1s; }
+.file[open] > summary::before { transform: rotate(90deg); }
+.file[open] > summary { border-bottom: 1px solid var(--border); }
+.file-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; flex: 1; }
+.file-status { font-size: 12px; color: var(--fg-muted); }
+.count-add { color: var(--done); font-size: 12px; }
+.count-del { color: #cf222e; font-size: 12px; }
+.diff-scroll { overflow-x: auto; }
+table.diff { border-collapse: collapse; width: 100%; }
+.diff td { padding: 0 8px; vertical-align: top; white-space: pre; line-height: 20px; }
+.diff td.num { width: 1%; min-width: 48px; text-align: right; color: var(--fg-muted); user-select: none; }
+.diff tr.add td { background: var(--add-bg); }
+.diff tr.add td.num { background: var(--add-num); }
+.diff tr.del td { background: var(--del-bg); }
+.diff tr.del td.num { background: var(--del-num); }
+.diff tr.hunk td { background: var(--hunk-bg); color: var(--fg-muted); padding: 4px 8px; }
+.diff td.sign { width: 1%; padding: 0 0 0 8px; user-select: none; }
+.note { padding: 12px; color: var(--fg-muted); }
+.next { display: inline-block; margin-top: 4px; }
+@media (max-width: 800px) {
+  .layout { display: block; }
+  nav { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--border); }
+  main { padding: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav id="nav" aria-label="Tour steps"></nav>
+  <main id="main"></main>
+</div>
+<script id="tour-data" type="application/json">/*TOUR_DATA*/null</script>
+<script>
+(function () {
+  "use strict";
+  var data = JSON.parse(document.getElementById("tour-data").textContent);
+  var storageKey = "git-stk-tour:" + data.headSha;
+  var reviewed = loadReviewed();
+
+  function loadReviewed() {
+    try {
+      return JSON.parse(localStorage.getItem(storageKey)) || {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function saveReviewed() {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(reviewed));
+    } catch (error) {
+      // Storage can be unavailable for file:// pages; progress just isn't kept.
+    }
+  }
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (key) {
+      if (key === "text") node.textContent = attrs[key];
+      else if (key === "class") node.className = attrs[key];
+      else node.setAttribute(key, attrs[key]);
+    });
+    (children || []).forEach(function (child) {
+      if (child) node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    });
+    return node;
+  }
+
+  function fileAnchor(stepIndex, fileIndex) {
+    return "step-" + stepIndex + "-file-" + fileIndex;
+  }
+
+  function renderHeader() {
+    var review = data.review;
+    var link = el("a", { href: review.url, text: review.id });
+    var meta = el("div", { class: "meta" }, [
+      link,
+      el("span", { class: "state", text: review.state }),
+      el("span", {}, [el("code", { text: review.branch }), " into ", el("code", { text: review.base })]),
+      el("span", { text: data.commits.length + (data.commits.length === 1 ? " commit" : " commits") }),
+    ]);
+    return el("header", {}, [el("h1", { text: review.title || review.id }), meta]);
+  }
+
+  function renderIntro() {
+    var panels = [];
+    if (data.review.body && data.review.body.trim()) {
+      panels.push(el("div", { class: "panel" }, [
+        el("h2", { text: "Description" }),
+        el("pre", { class: "body", text: data.review.body.trim() }),
+      ]));
+    }
+    if (data.commits.length) {
+      panels.push(el("div", { class: "panel" }, [
+        el("h2", { text: "Commits" }),
+        el("ol", { class: "commits" }, data.commits.map(function (commit) {
+          return el("li", {}, [el("code", { text: commit.sha }), commit.subject]);
+        })),
+      ]));
+    }
+    return el("div", { class: "intro" }, panels);
+  }
+
+  function renderNav() {
+    var nav = document.getElementById("nav");
+    nav.textContent = "";
+    var done = data.steps.filter(function (step) { return reviewed[step.id]; }).length;
+    nav.appendChild(el("h2", { text: "Tour" }));
+    nav.appendChild(el("div", { class: "progress", text: done + " of " + data.steps.length + " steps reviewed" }));
+    nav.appendChild(el("ol", {}, data.steps.map(function (step, stepIndex) {
+      var link = el("a", {
+        class: "step-link" + (reviewed[step.id] ? " done" : ""),
+        href: "#step-" + stepIndex,
+      }, [(reviewed[step.id] ? "[x] " : "[ ] ") + (stepIndex + 1) + ". " + step.title]);
+      var files = el("div", { class: "step-files" }, step.files.map(function (file, fileIndex) {
+        return el("a", { href: "#" + fileAnchor(stepIndex, fileIndex), title: file.path, text: file.path });
+      }));
+      return el("li", { class: "step" }, [link, files]);
+    })));
+  }
+
+  function renderDiff(file) {
+    if (file.binary) return el("div", { class: "note", text: "Binary file not shown." });
+    if (!file.hunks.length) {
+      return el("div", { class: "note", text: file.status === "renamed" ? "Renamed without changes." : "No content changes." });
+    }
+    var body = el("tbody");
+    file.hunks.forEach(function (hunk) {
+      var header = "@@ -" + hunk.oldStart + "," + hunk.oldLines + " +" + hunk.newStart + "," + hunk.newLines + " @@" +
+        (hunk.section ? " " + hunk.section : "");
+      body.appendChild(el("tr", { class: "hunk" }, [el("td", { colspan: "4", text: header })]));
+      var oldLine = hunk.oldStart;
+      var newLine = hunk.newStart;
+      hunk.lines.forEach(function (line) {
+        var kind = line[0];
+        var oldNum = kind === "+" ? "" : String(oldLine++);
+        var newNum = kind === "-" ? "" : String(newLine++);
+        body.appendChild(el("tr", { class: kind === "+" ? "add" : kind === "-" ? "del" : "" }, [
+          el("td", { class: "num", text: oldNum }),
+          el("td", { class: "num", text: newNum }),
+          el("td", { class: "sign", text: kind === " " ? " " : kind }),
+          el("td", { text: line[1] }),
+        ]));
+      });
+    });
+    return el("div", { class: "diff-scroll" }, [el("table", { class: "diff" }, [body])]);
+  }
+
+  function renderFile(file, stepIndex, fileIndex, collapsed) {
+    var label = file.status === "renamed" || file.status === "copied"
+      ? file.oldPath + " -> " + file.path
+      : file.path;
+    var summary = el("summary", {}, [
+      el("span", { class: "file-path", text: label }),
+      file.status !== "modified" ? el("span", { class: "file-status", text: file.status }) : null,
+      el("span", { class: "count-add", text: "+" + file.additions }),
+      el("span", { class: "count-del", text: "-" + file.deletions }),
+    ]);
+    var details = el("details", { class: "file", id: fileAnchor(stepIndex, fileIndex) }, [summary, renderDiff(file)]);
+    details.open = !collapsed;
+    return details;
+  }
+
+  function renderStep(step, stepIndex) {
+    var box = el("input", { type: "checkbox" });
+    box.checked = !!reviewed[step.id];
+    box.addEventListener("change", function () {
+      if (box.checked) reviewed[step.id] = true;
+      else delete reviewed[step.id];
+      saveReviewed();
+      renderNav();
+    });
+    var head = el("div", { class: "step-head" }, [
+      el("h2", { text: (stepIndex + 1) + ". " + step.title }),
+      el("label", {}, [box, " Reviewed"]),
+    ]);
+    var files = step.files.map(function (file, fileIndex) {
+      return renderFile(file, stepIndex, fileIndex, step.collapsed);
+    });
+    var next = stepIndex + 1 < data.steps.length
+      ? el("a", { class: "next", href: "#step-" + (stepIndex + 1), text: "Next: " + data.steps[stepIndex + 1].title })
+      : null;
+    return el("section", { class: "step", id: "step-" + stepIndex }, [head].concat(files, [next]));
+  }
+
+  // Opening a link to a file inside a collapsed step should show it.
+  window.addEventListener("hashchange", function () {
+    var target = document.getElementById(location.hash.slice(1));
+    if (target && target.tagName === "DETAILS") target.open = true;
+  });
+
+  var main = document.getElementById("main");
+  main.appendChild(renderHeader());
+  main.appendChild(renderIntro());
+  data.steps.forEach(function (step, stepIndex) {
+    main.appendChild(renderStep(step, stepIndex));
+  });
+  renderNav();
+})();
+</script>
+</body>
+</html>

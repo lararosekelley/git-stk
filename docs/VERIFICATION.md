@@ -18,6 +18,7 @@ Choose the affected integration targets, then expand if shared behavior changed:
 | Restack and recovery | `restack`, `worktree`, `repair`, `lock` |
 | Stack edits | `insert`, `split`, `absorb`, `rename` |
 | Provider operations | `provider`, `gitea`, `submit`, `merge`, `reviews`, `comment` |
+| Review tours | `tour`, `reviews` |
 | CLI presentation | `list_status`, `list_markdown`, `completions`, `credits`, `demo` |
 | Shell setup and lifecycle | `setup`, `upgrade`, `run` |
 

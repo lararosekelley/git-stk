@@ -8,6 +8,12 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ### Added
 
+- **tour:** `git stk tour [target]` (experimental) opens a step-by-step walk
+  through a review's changes in the browser, as one self-contained HTML file.
+  It takes a branch, review number, or URL, fetches the review's head from the
+  remote so the branch need not be checked out, and groups files by role:
+  configuration, schemas and types, implementation, tests, documentation, and
+  collapsed generated files. Reviewed steps are remembered per head commit.
 - **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
   URL as well as a branch, so `git stk view 12` opens a review whose branch is
   not checked out. A URL for another repository's review is refused rather

@@ -54,6 +54,7 @@ pub enum Command {
     Submit(commands::submit::Submit),
     Review(commands::review::Review),
     View(commands::view::View),
+    Tour(commands::tour::Tour),
     Comment(commands::comment::Comment),
     Sync(commands::sync::Sync),
     Merge(commands::merge::Merge),

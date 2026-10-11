@@ -648,6 +648,60 @@ pub fn fetch_ref(remote: &str, reference: &str) -> Result<()> {
         .with_context(|| format!("failed to fetch {reference} from {remote}"))
 }
 
+/// Fetch `reference` from `remote` without updating any branch or tracking
+/// ref, returning the commit it names.
+pub fn fetch_commit(remote: &str, reference: &str) -> Result<String> {
+    status(&["fetch", "--no-tags", remote, reference])
+        .with_context(|| format!("failed to fetch {reference} from {remote}"))?;
+    rev_parse("FETCH_HEAD")
+}
+
+/// The patch from `base` to `head`, with rename detection, in the fixed shape
+/// [`crate::tour`] parses whatever the user's diff config says.
+pub fn tour_diff(base: &str, head: &str) -> Result<String> {
+    output_untrimmed(&[
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-relative",
+        "--find-renames",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        base,
+        head,
+    ])
+    .with_context(|| format!("failed to diff {base}..{head}"))
+}
+
+/// The subset of `paths` marked `linguist-generated` by the `.gitattributes`
+/// in `commit`. Git before 2.40 cannot read attributes from a commit, so there
+/// the working tree's attributes answer instead.
+pub fn generated_paths(paths: &[&str], commit: &str) -> Result<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input = paths.join("\0");
+    let source = format!("--source={commit}");
+    let base = ["check-attr", "-z", "--stdin", "linguist-generated"];
+    let output = output_with_stdin(
+        &[&base[..1], &[source.as_str()], &base[1..]].concat(),
+        &input,
+    )
+    .or_else(|_| output_with_stdin(&base, &input))
+    .context("failed to read linguist-generated attributes")?;
+    // NUL-separated triples: path, attribute, value.
+    let fields: Vec<&str> = output.split('\0').collect();
+    let (triples, _) = fields.as_chunks::<3>();
+    Ok(triples
+        .iter()
+        .filter(|[_, _, value]| matches!(*value, "set" | "true"))
+        .map(|[path, _, _]| (*path).to_owned())
+        .collect())
+}
+
 /// The contents of `file` in the commit `reference` points at, or None when
 /// the ref or file is absent.
 pub fn read_ref_file(reference: &str, file: &str) -> Result<Option<String>> {
@@ -1158,6 +1212,12 @@ fn output_codes(args: &[&str], ok_empty: &[i32], label: &str) -> Result<Option<S
 }
 
 fn output(args: &[&str]) -> Result<String> {
+    Ok(output_untrimmed(args)?.trim().to_owned())
+}
+
+/// Like [`output`], keeping leading and trailing whitespace - for content
+/// where it is significant, such as a patch.
+fn output_untrimmed(args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .args(args)
         .stdout(Stdio::piped())
@@ -1166,7 +1226,7 @@ fn output(args: &[&str]) -> Result<String> {
         .context("failed to run git")?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         Err(command_error("git", &output.stderr))
     }

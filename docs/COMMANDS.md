@@ -201,6 +201,7 @@ git stk config
 git stk status [branch]
 git stk review [branch | number | url]
 git stk view [branch | number | url]
+git stk tour [branch | number | url] [--no-open] [-o <path>]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
@@ -216,6 +217,15 @@ merged and closed reviews, and report clearly when none exists yet.
 Either command also takes a review by number (`12`, `#12`, `!12`) or by its web URL, so you can reach a
 review whose branch you have not checked out. A bare number names a branch only when a local branch has
 exactly that name. A URL must point at this repository's reviews.
+
+`tour` (experimental) writes a self-contained HTML page that walks through a review's changes and opens it
+in your browser. It fetches the review's head from the remote (`refs/pull/N/head`, or
+`refs/merge-requests/N/head` on GitLab), so it works on reviews whose branch you have never checked out,
+and diffs it against the merge base with the review's base branch. Files are grouped into steps by role:
+configuration and build, schemas and types, implementation, tests, documentation, and generated files
+(lockfiles, minified files, and paths marked `linguist-generated` in `.gitattributes`), which start
+collapsed. Tick a step as reviewed to track progress; it is kept per head commit. The page is saved under
+`.git/stk/tours/` unless `--output` names a file, and `--no-open` skips the browser.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider
 CLI - handy for a review bot that answers a mention: `git stk comment "@claude review"`.

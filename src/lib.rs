@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod cli;
 pub mod commands;
 pub mod completions;
@@ -10,4 +11,5 @@ pub mod settings;
 pub mod setup;
 pub mod stack;
 pub mod style;
+pub mod tour;
 pub mod upgrade;

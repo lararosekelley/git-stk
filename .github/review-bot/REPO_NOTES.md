@@ -36,9 +36,9 @@ from the release, so a failing live run blocks a release rather than a merge.
 
 ## Seams
 
-- **Shelling out:** only `src/git.rs` runs `git`, and only `src/providers/` runs `gh` / `glab` /
-  `tea`. A new `std::process::Command` anywhere else is a violation - route it through the existing
-  helper, or add one there.
+- **Shelling out:** only `src/git.rs` runs `git`, only `src/providers/` runs `gh` / `glab` /
+  `tea`, and only `src/browser.rs` launches the system opener. A new `std::process::Command`
+  anywhere else is a violation - route it through the existing helper, or add one there.
 - **Config:** user-facing knobs are `stk.*` git-config keys declared in the `SETTINGS` table in
   `src/settings.rs`. Never read behavior off a bespoke environment variable.
 - **Command layout:** subcommands live in `src/commands/<name>.rs` and implement `Run`; stack
