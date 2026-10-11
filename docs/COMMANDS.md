@@ -227,7 +227,9 @@ configuration and build, schemas and types, implementation, tests, documentation
 collapsed. Diffs are syntax highlighted (with a bundled copy of highlight.js) and switch between unified and
 split views. Changed files up to 1 MB embed their full text (up to 16 MB per tour), so unchanged lines
 around each hunk can be expanded.
-Tick a step as reviewed to track progress; it is kept per head commit. The page is saved under
+The review's description is rendered as Markdown, without its raw HTML, and images appear as links so
+opening a tour loads nothing from the network. Tick a step as reviewed to track progress; it is kept per
+head commit. The page is saved under
 `.git/stk/tours/` unless `--output` names a file, and `--no-open` skips the browser.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider

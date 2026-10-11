@@ -65,7 +65,7 @@ fn tour_walks_a_github_pr_in_role_order() {
     let html = fs::read_to_string(repo.path().join("tour.html")).expect("tour written");
     assert!(html.contains("<title>Tour of Add two (#12)</title>"));
     let data = tour_data(&html);
-    assert_eq!(data["review"]["body"], "Why it matters.");
+    assert_eq!(data["review"]["bodyHtml"], "<p>Why it matters.</p>\n");
     assert_eq!(data["commits"][0]["subject"], "add two");
 
     let steps: Vec<(&str, Vec<&str>)> = data["steps"]
@@ -173,7 +173,7 @@ fn tour_fetches_a_gitlab_mr_head() {
 
     let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
     assert_eq!(data["review"]["id"], "!34");
-    assert_eq!(data["review"]["body"], "From GitLab.");
+    assert_eq!(data["review"]["bodyHtml"], "<p>From GitLab.</p>\n");
 }
 
 #[test]

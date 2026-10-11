@@ -94,7 +94,23 @@ header h1 { font-size: 24px; margin: 0 0 4px; overflow-wrap: anywhere; }
 .intro { margin: 16px 0 32px; display: grid; gap: 16px; }
 .panel { border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; background: var(--bg-soft); }
 .panel h2 { font-size: 14px; margin: 0 0 8px; }
-.body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 13px; }
+.markdown { overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 { margin: 16px 0 8px; line-height: 1.25; }
+.markdown h1 { font-size: 20px; }
+.markdown h2 { font-size: 17px; }
+.markdown h3, .markdown h4 { font-size: 15px; }
+.markdown p, .markdown ul, .markdown ol, .markdown blockquote, .markdown pre, .markdown table { margin: 0 0 12px; }
+.markdown ul, .markdown ol { padding-left: 24px; }
+.markdown li:has(> input[type="checkbox"]) { list-style: none; margin-left: -20px; }
+.markdown code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.markdown pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; overflow-x: auto; }
+.markdown pre code { border: 0; padding: 0; background: none; }
+.markdown blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--fg-muted); }
+.markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 10px; }
+.markdown hr { border: 0; border-top: 1px solid var(--border); }
 .commits { list-style: none; margin: 0; padding: 0; }
 .commits code { color: var(--fg-muted); margin-right: 8px; }
 section.step { margin-bottom: 40px; }
@@ -553,11 +569,11 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 
   function renderIntro() {
     var panels = [];
-    if (data.review.body && data.review.body.trim()) {
-      panels.push(el("div", { class: "panel" }, [
-        el("h2", { text: "Description" }),
-        el("pre", { class: "body", text: data.review.body.trim() }),
-      ]));
+    if (data.review.bodyHtml) {
+      // Rendered from Markdown by git-stk with raw HTML and script links removed.
+      var body = el("div", { class: "markdown" });
+      body.innerHTML = data.review.bodyHtml;
+      panels.push(el("div", { class: "panel" }, [el("h2", { text: "Description" }), body]));
     }
     if (data.commits.length) {
       panels.push(el("div", { class: "panel" }, [

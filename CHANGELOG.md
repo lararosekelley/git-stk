@@ -15,7 +15,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   configuration, schemas and types, implementation, tests, documentation, and
   collapsed generated files. Diffs are syntax highlighted, switch between
   unified and split views, and can expand the unchanged lines around each
-  hunk. Reviewed steps are remembered per head commit.
+  hunk. The description is rendered as Markdown. Reviewed steps are
+  remembered per head commit.
 - **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
   URL as well as a branch, so `git stk view 12` opens a review whose branch is
   not checked out. A URL for another repository's review is refused rather

@@ -10,6 +10,7 @@ use crate::providers::{ProviderKind, ReviewProvider, ReviewRequest};
 use crate::settings;
 
 mod diff;
+mod markdown;
 mod steps;
 
 use diff::{FileDiff, FileStatus, LineKind};
@@ -126,7 +127,7 @@ impl Tour {
                 "state": self.review.state.to_string(),
                 "branch": self.review.branch,
                 "base": self.review.base,
-                "body": self.body,
+                "bodyHtml": markdown::to_html(&self.body),
             },
             "baseSha": self.base_sha,
             "headSha": self.head_sha,
