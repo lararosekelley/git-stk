@@ -119,6 +119,18 @@ nav .step-files { margin: 4px 0 0 20px; }
 nav .step-files a { display: block; color: var(--fg-muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 nav .step-files a:hover, nav .step-link:hover { text-decoration: underline; }
 nav .progress { margin-bottom: 16px; color: var(--fg-muted); }
+nav .chapters { margin-bottom: 4px; }
+nav .chapter { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+nav .chapter-link {
+  flex: 1; min-width: 0; color: var(--fg); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-left: 2px solid var(--border); padding: 2px 0 2px 8px;
+}
+nav .chapter-link:hover { text-decoration: underline; }
+nav .chapter-link[aria-current="page"] { border-left-color: var(--accent); font-weight: 600; }
+nav .chapter-id { color: var(--fg-muted); }
+nav .chapter-progress { color: var(--fg-muted); font-size: 12px; }
+nav .chapter-progress.done { color: var(--done); }
+nav .chapters-base { color: var(--fg-muted); font-size: 12px; margin: 0 0 20px 10px; }
 main { padding: 24px 32px 64px; min-width: 0; }
 .header-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 4px; }
 header h1 { font-size: 24px; margin: 0; overflow-wrap: anywhere; flex: 1; }
@@ -184,6 +196,10 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .diff tr.hunk span { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note { padding: 12px; color: var(--fg-muted); }
 .next { display: inline-block; margin-top: 4px; }
+.chapter-nav { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding-top: 16px; }
+.chapter-nav a { color: var(--accent); text-decoration: none; }
+.chapter-nav a:last-child { text-align: right; }
+.chapter-nav a:hover { text-decoration: underline; }
 .hljs-keyword, .hljs-meta .hljs-keyword, .hljs-template-tag, .hljs-type.hljs-keyword, .hljs-variable.language_ { color: var(--hl-keyword); }
 .hljs-string, .hljs-regexp, .hljs-meta .hljs-string, .hljs-char.escape_ { color: var(--hl-string); }
 .hljs-comment, .hljs-code, .hljs-formula, .hljs-quote { color: var(--hl-comment); }
@@ -217,7 +233,6 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
   "use strict";
   var data = JSON.parse(document.getElementById("tour-data").textContent);
   var EXPAND_STEP = 20;
-  var reviewedKey = "git-stk-tour:" + data.headSha;
   var layoutKey = "git-stk-tour:layout";
   var themeKey = "git-stk-tour:theme";
   var navKey = "git-stk-tour:nav-hidden";
@@ -227,9 +242,14 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
     moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
   };
-  var reviewed = readStorage(reviewedKey, {});
   var layout = readStorage(layoutKey, "unified") === "split" ? "split" : "unified";
+  // One review of the stack is shown at a time.
+  var chapterIndex = 0;
+  var chapter = null;
+  var reviewedKey = "";
+  var reviewed = {};
   var views = [];
+  var observer = null;
 
   function readStorage(key, fallback) {
     try {
@@ -344,7 +364,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 
   function FileView(file, stepIndex, fileIndex, collapsed) {
     this.file = file;
-    this.anchor = "step-" + stepIndex + "-file-" + fileIndex;
+    this.anchor = stepAnchor(stepIndex) + "-file-" + fileIndex;
     this.sides = null;
     this.gaps = null;
     this.rendered = false;
@@ -567,23 +587,35 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     return el("table", { class: "diff split" }, [cols, body]);
   };
 
+  function stepAnchor(stepIndex) {
+    return "c" + chapterIndex + "-step-" + stepIndex;
+  }
+
+  function reviewedKeyFor(other) {
+    return "git-stk-tour:" + other.headSha;
+  }
+
   function renderHeader() {
-    var review = data.review;
+    var review = chapter.review;
     var additions = 0;
     var deletions = 0;
     var files = 0;
-    data.steps.forEach(function (step) {
+    chapter.steps.forEach(function (step) {
       step.files.forEach(function (file) {
         files++;
         additions += file.additions;
         deletions += file.deletions;
       });
     });
+    var stacked = data.chapters.length > 1
+      ? el("span", { text: "review " + (chapterIndex + 1) + " of " + data.chapters.length + " in the stack" })
+      : null;
     var meta = el("div", { class: "meta" }, [
       el("a", { href: review.url, text: review.id }),
       el("span", { class: "state", text: review.state }),
       el("span", {}, [el("code", { text: review.branch }), " into ", el("code", { text: review.base })]),
-      el("span", { text: data.commits.length + (data.commits.length === 1 ? " commit" : " commits") }),
+      stacked,
+      el("span", { text: chapter.commits.length + (chapter.commits.length === 1 ? " commit" : " commits") }),
       el("span", {}, [
         files + (files === 1 ? " file " : " files "),
         el("span", { class: "count-add", text: "+" + additions }),
@@ -602,7 +634,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       el("h1", { text: review.title || review.id }),
       themeButton(),
     ]);
-    return el("header", {}, [top, meta, toolbar]);
+    return el("header", { id: "c" + chapterIndex }, [top, meta, toolbar]);
   }
 
   function iconButton(icon, onClick) {
@@ -643,15 +675,18 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       writeStorage(themeKey, theme);
       showTheme();
     });
-    function showTheme() {
-      var dark = currentTheme() === "dark";
-      setIcon(button, dark ? "sun" : "moon");
-      button.title = dark ? "Switch to light theme" : "Switch to dark theme";
-      button.setAttribute("aria-label", button.title);
-    }
-    if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener("change", showTheme);
-    showTheme();
+    button.id = "theme-button";
+    showTheme(button);
     return button;
+  }
+
+  function showTheme(button) {
+    button = button || document.getElementById("theme-button");
+    if (!button) return;
+    var dark = currentTheme() === "dark";
+    setIcon(button, dark ? "sun" : "moon");
+    button.title = dark ? "Switch to light theme" : "Switch to dark theme";
+    button.setAttribute("aria-label", button.title);
   }
 
   function setLayout(name) {
@@ -667,16 +702,16 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 
   function renderIntro() {
     var panels = [];
-    if (data.review.bodyHtml) {
+    if (chapter.review.bodyHtml) {
       // Rendered from Markdown by git-stk with raw HTML and script links removed.
       var body = el("div", { class: "markdown" });
-      body.innerHTML = data.review.bodyHtml;
+      body.innerHTML = chapter.review.bodyHtml;
       panels.push(el("div", { class: "panel" }, [el("h2", { text: "Description" }), body]));
     }
-    if (data.commits.length) {
+    if (chapter.commits.length) {
       panels.push(el("div", { class: "panel" }, [
         el("h2", { text: "Commits" }),
-        el("ol", { class: "commits" }, data.commits.map(function (commit) {
+        el("ol", { class: "commits" }, chapter.commits.map(function (commit) {
           return el("li", {}, [el("code", { text: commit.sha }), commit.subject]);
         })),
       ]));
@@ -687,28 +722,54 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
   function renderNav() {
     var nav = document.getElementById("nav");
     nav.textContent = "";
+    if (data.chapters.length > 1) renderStackNav(nav);
     nav.appendChild(el("h2", { text: "Tour" }));
     nav.appendChild(el("div", { class: "progress", id: "progress" }));
-    nav.appendChild(el("ol", {}, data.steps.map(function (step, stepIndex) {
+    nav.appendChild(el("ol", {}, chapter.steps.map(function (step, stepIndex) {
       var title = (stepIndex + 1) + ". " + step.title;
       var row = el("div", { class: "step-row" }, [
         reviewedBox(step, "Mark " + title + " reviewed"),
-        el("a", { class: "step-link", "data-step-link": step.id, href: "#step-" + stepIndex, text: title }),
+        el("a", { class: "step-link", "data-step-link": step.id, href: "#" + stepAnchor(stepIndex), text: title }),
       ]);
       var files = el("div", { class: "step-files" }, step.files.map(function (file, fileIndex) {
-        return el("a", { href: "#step-" + stepIndex + "-file-" + fileIndex, title: file.path, text: file.path });
+        return el("a", { href: "#" + stepAnchor(stepIndex) + "-file-" + fileIndex, title: file.path, text: file.path });
       }));
       return el("li", { class: "step" }, [row, files]);
     })));
     showProgress();
   }
 
+  // The stack as `git stk list` shows it: the top review first, down to the
+  // branch the stack lands on.
+  function renderStackNav(nav) {
+    nav.appendChild(el("h2", { text: "Stack" }));
+    var items = data.chapters.map(function (other, index) {
+      var link = el("a", { class: "chapter-link", href: "#c" + index, title: other.review.title || other.review.id }, [
+        el("span", { class: "chapter-id", text: other.review.id }),
+        " ",
+        other.review.title || other.review.branch,
+      ]);
+      if (index === chapterIndex) link.setAttribute("aria-current", "page");
+      return el("li", { class: "chapter" }, [link, el("span", { class: "chapter-progress", "data-chapter": index })]);
+    }).reverse();
+    nav.appendChild(el("ol", { class: "chapters" }, items));
+    nav.appendChild(el("div", { class: "chapters-base" }, [el("code", { text: data.chapters[0].review.base })]));
+  }
+
   function showProgress() {
-    var done = data.steps.filter(function (step) { return reviewed[step.id]; }).length;
-    document.getElementById("progress").textContent = done + " of " + data.steps.length + " steps reviewed";
-    data.steps.forEach(function (step) {
+    var done = chapter.steps.filter(function (step) { return reviewed[step.id]; }).length;
+    document.getElementById("progress").textContent = done + " of " + chapter.steps.length + " steps reviewed";
+    chapter.steps.forEach(function (step) {
       var link = document.querySelector('[data-step-link="' + step.id + '"]');
       if (link) link.classList.toggle("done", !!reviewed[step.id]);
+    });
+    data.chapters.forEach(function (other, index) {
+      var progress = document.querySelector('[data-chapter="' + index + '"]');
+      if (!progress) return;
+      var marks = index === chapterIndex ? reviewed : readStorage(reviewedKeyFor(other), {});
+      var count = other.steps.filter(function (step) { return marks[step.id]; }).length;
+      progress.textContent = count + "/" + other.steps.length;
+      progress.classList.toggle("done", count === other.steps.length);
     });
   }
 
@@ -741,10 +802,23 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       views.push(view);
       return view.details;
     });
-    var next = stepIndex + 1 < data.steps.length
-      ? el("a", { class: "next", href: "#step-" + (stepIndex + 1), text: "Next: " + data.steps[stepIndex + 1].title })
+    var next = stepIndex + 1 < chapter.steps.length
+      ? el("a", { class: "next", href: "#" + stepAnchor(stepIndex + 1), text: "Next: " + chapter.steps[stepIndex + 1].title })
       : null;
-    return el("section", { class: "step", id: "step-" + stepIndex }, [head].concat(files, [next]));
+    return el("section", { class: "step", id: stepAnchor(stepIndex) }, [head].concat(files, [next]));
+  }
+
+  function renderChapterNav() {
+    function link(index, label) {
+      var other = data.chapters[index];
+      if (!other) return el("span");
+      return el("a", { href: "#c" + index }, [label + ": ", el("strong", { text: other.review.id }), " " + (other.review.title || other.review.branch)]);
+    }
+    if (data.chapters.length < 2) return null;
+    return el("div", { class: "chapter-nav", role: "navigation", "aria-label": "Stack" }, [
+      link(chapterIndex - 1, "Previous review"),
+      link(chapterIndex + 1, "Next review"),
+    ]);
   }
 
   // A file's diff is built the first time it is open and near the viewport,
@@ -755,7 +829,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       return;
     }
     var byElement = new Map(views.map(function (view) { return [view.details, view]; }));
-    var observer = new IntersectionObserver(function (entries) {
+    observer = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
         var view = byElement.get(entry.target);
         view.visible = entry.isIntersecting;
@@ -765,20 +839,61 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     views.forEach(function (view) { observer.observe(view.details); });
   }
 
-  // Following a link to a file inside a collapsed step should show it.
-  window.addEventListener("hashchange", function () {
-    var target = document.getElementById(location.hash.slice(1));
-    if (target && target.tagName === "DETAILS") target.open = true;
-  });
-
   var main = document.getElementById("main");
-  main.appendChild(renderHeader());
-  main.appendChild(renderIntro());
-  data.steps.forEach(function (step, stepIndex) {
-    main.appendChild(renderStep(step, stepIndex));
-  });
-  renderNav();
-  renderLazily();
+
+  function renderChapter(index) {
+    chapterIndex = index;
+    chapter = data.chapters[index];
+    reviewedKey = reviewedKeyFor(chapter);
+    reviewed = readStorage(reviewedKey, {});
+    if (observer) observer.disconnect();
+    views = [];
+    main.textContent = "";
+    main.appendChild(renderHeader());
+    main.appendChild(renderIntro());
+    chapter.steps.forEach(function (step, stepIndex) {
+      main.appendChild(renderStep(step, stepIndex));
+    });
+    var chapterNav = renderChapterNav();
+    if (chapterNav) main.appendChild(chapterNav);
+    renderNav();
+    renderLazily();
+    var review = chapter.review;
+    document.title = "Tour of " + (review.title ? review.title + " (" + review.id + ")" : review.id);
+  }
+
+  // The review a link points into: "#c2" or "#c2-step-0-file-1".
+  function chapterOf(hash) {
+    var match = /^#c(\d+)(-|$)/.exec(hash);
+    var index = match ? Number(match[1]) : -1;
+    return index < data.chapters.length ? index : -1;
+  }
+
+  // Show the target of the current link, switching reviews first if it is in
+  // another one, and opening the file it names if that file is collapsed.
+  function follow() {
+    var index = chapterOf(location.hash);
+    var switched = index >= 0 && index !== chapterIndex;
+    if (switched) renderChapter(index);
+    var target = location.hash ? document.getElementById(location.hash.slice(1)) : null;
+    if (target && target.tagName === "DETAILS") target.open = true;
+    if (switched) {
+      if (target) target.scrollIntoView();
+      else window.scrollTo(0, 0);
+    }
+  }
+
+  if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener("change", function () { showTheme(); });
+  window.addEventListener("hashchange", follow);
+  var start = chapterOf(location.hash);
+  renderChapter(start >= 0 ? start : data.current);
+  if (location.hash) {
+    var initial = document.getElementById(location.hash.slice(1));
+    if (initial) {
+      if (initial.tagName === "DETAILS") initial.open = true;
+      initial.scrollIntoView();
+    }
+  }
 })();
 </script>
 </body>

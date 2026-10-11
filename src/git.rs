@@ -648,12 +648,57 @@ pub fn fetch_ref(remote: &str, reference: &str) -> Result<()> {
         .with_context(|| format!("failed to fetch {reference} from {remote}"))
 }
 
-/// Fetch `reference` from `remote` without updating any branch or tracking
-/// ref, returning the commit it names.
-pub fn fetch_commit(remote: &str, reference: &str) -> Result<String> {
-    status(&["fetch", "--no-tags", remote, reference])
-        .with_context(|| format!("failed to fetch {reference} from {remote}"))?;
-    rev_parse("FETCH_HEAD")
+/// Fetch `references` from `remote` in one round trip, without updating any
+/// branch or tracking ref, returning the commit each names, in order.
+pub fn fetch_commits(remote: &str, references: &[String]) -> Result<Vec<String>> {
+    let mut args = vec!["fetch", "--no-tags", remote];
+    args.extend(references.iter().map(String::as_str));
+    // Captured rather than printed, so git cannot write through a status line
+    // on the terminal; a failure carries git's message.
+    output(&args)
+        .with_context(|| format!("failed to fetch {} from {remote}", references.join(" ")))?;
+    let fetch_head =
+        std::fs::read_to_string(git_path("FETCH_HEAD")?).context("failed to read FETCH_HEAD")?;
+    fetch_head_commits(&fetch_head, references.len())
+}
+
+/// The commit each of `references` names on `remote`, or None for one it
+/// lacks, learned in one `ls-remote` without fetching.
+pub fn remote_commits(remote: &str, references: &[String]) -> Result<Vec<Option<String>>> {
+    let mut args = vec!["ls-remote", remote];
+    args.extend(references.iter().map(String::as_str));
+    let listing = output(&args).with_context(|| format!("failed to query {remote}"))?;
+    let listed: Vec<(&str, &str)> = listing
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .collect();
+    Ok(references
+        .iter()
+        .map(|reference| {
+            listed
+                .iter()
+                .find(|(_, name)| name == reference)
+                .map(|(sha, _)| (*sha).to_owned())
+        })
+        .collect())
+}
+
+/// The commits FETCH_HEAD records, one line per fetched reference in the
+/// order they were asked for.
+fn fetch_head_commits(fetch_head: &str, expected: usize) -> Result<Vec<String>> {
+    let commits: Vec<String> = fetch_head
+        .lines()
+        .filter_map(|line| line.split('\t').next())
+        .filter(|sha| !sha.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if commits.len() != expected {
+        bail!(
+            "FETCH_HEAD lists {} commits for {expected} references",
+            commits.len()
+        );
+    }
+    Ok(commits)
 }
 
 /// The patch from `base` to `head`, with rename detection, in the fixed shape
@@ -1423,6 +1468,14 @@ fn command_error(command: &str, stderr: &[u8]) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_head_commits_keep_reference_order() {
+        let fetch_head =
+            "aaa\t\t'refs/pull/2/head' of host:repo\nbbb\t\tbranch 'main' of host:repo\n";
+        assert_eq!(fetch_head_commits(fetch_head, 2).unwrap(), ["aaa", "bbb"]);
+        assert!(fetch_head_commits(fetch_head, 3).is_err());
+    }
 
     #[test]
     fn blobs_to_read_skips_non_blobs_oversized_and_over_budget() {

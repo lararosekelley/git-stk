@@ -201,7 +201,7 @@ git stk config
 git stk status [branch]
 git stk review [branch | number | url]
 git stk view [branch | number | url]
-git stk tour [branch | number | url] [--no-open] [-o <path>]
+git stk tour [branch | number | url] [--no-stack] [--no-open] [-o <path>]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
@@ -229,7 +229,18 @@ split views. Changed files up to 1 MB embed their full text (up to 16 MB per tou
 around each hunk can be expanded.
 The review's description is rendered as Markdown, without its raw HTML, and images appear as links so
 opening a tour loads nothing from the network. Tick a step as reviewed to track progress; it is kept per
-head commit. The step sidebar can be hidden, and the sun/moon button switches between light and dark themes
+head commit.
+
+When the review is part of a stack, the tour covers the whole stack, one review at a time: the sidebar lists it
+top review first, as `git stk list` does, with each review's progress, and each review shows only its own
+changes. The stack is read from review bases alone (a review whose base is another open review's branch sits
+on top of it), so it works for stacks opened by any tool or by hand. Each link is checked against the fetched
+commits, so a fork's review that only shares a branch name is left out, and a review of a long-lived branch
+(the default branch, `develop`, `release/*` and the like) is never a stack parent. If the stack cannot be
+listed or a review in it cannot be fetched or read, the tour says so and covers the rest of the stack it could
+reach. `--no-stack` tours just the one review.
+
+The step sidebar can be hidden, and the sun/moon button switches between light and dark themes
 (the page follows the system theme until one is chosen). The page is saved under
 `.git/stk/tours/` unless `--output` names a file, and `--no-open` skips the browser.
 

@@ -392,7 +392,8 @@ pub enum WaitOutcome {
     Landed,
 }
 
-pub trait ReviewProvider {
+/// `Sync` so independent lookups can run on threads at once.
+pub trait ReviewProvider: Sync {
     fn review_for_branch(&self, branch: &str) -> Result<Option<ReviewRequest>>;
 
     /// Like review_for_branch, but also finds closed reviews. Kept separate

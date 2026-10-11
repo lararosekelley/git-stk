@@ -16,8 +16,12 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   collapsed generated files. Diffs are syntax highlighted, switch between
   unified and split views, and can expand the unchanged lines around each
   hunk. The description is rendered as Markdown. Reviewed steps are
-  remembered per head commit. The step sidebar can be hidden, and the page
-  follows the system theme or a light/dark choice from its toggle.
+  remembered per head commit. A review in a stack is toured with the rest of
+  its stack, branches included, one review at a time; the stack is found from
+  review bases, so stacks not made with git-stk work too (`--no-stack` tours
+  one review). The
+  step sidebar can be hidden, and the page follows the system theme or a
+  light/dark choice from its toggle.
 - **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
   URL as well as a branch, so `git stk view 12` opens a review whose branch is
   not checked out. A URL for another repository's review is refused rather
