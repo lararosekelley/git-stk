@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title><!--TOUR_TITLE--></title>
+<script>
+try {
+  var theme = JSON.parse(localStorage.getItem("git-stk-tour:theme"));
+  if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+} catch (error) {}
+</script>
 <style>
 :root {
   --bg: #ffffff;
@@ -30,7 +36,7 @@
   --hl-tag: #116329;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0d1117;
     --bg-soft: #161b22;
     --fg: #e6edf3;
@@ -54,6 +60,31 @@
     --hl-tag: #7ee787;
   }
 }
+:root[data-theme="dark"] {
+  --bg: #0d1117;
+  --bg-soft: #161b22;
+  --fg: #e6edf3;
+  --fg-muted: #8d96a0;
+  --border: #30363d;
+  --accent: #4493f8;
+  --add-bg: #12261e;
+  --add-num: #1b4721;
+  --del-bg: #25171c;
+  --del-num: #542426;
+  --hunk-bg: #121d2f;
+  --empty-bg: #161b22;
+  --done: #3fb950;
+  --removed: #f85149;
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-comment: #8b949e;
+  --hl-title: #d2a8ff;
+  --hl-constant: #79c0ff;
+  --hl-type: #ffa657;
+  --hl-tag: #7ee787;
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 html { scroll-padding-top: 16px; }
 body {
@@ -71,8 +102,10 @@ button {
 button:hover { border-color: var(--accent); }
 button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
+.layout.nav-hidden { grid-template-columns: minmax(0, 1fr); }
+.layout.nav-hidden nav { display: none; }
 nav {
-  position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
+  position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
   border-right: 1px solid var(--border); background: var(--bg-soft); padding: 16px;
 }
 nav h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); margin: 0 0 8px; }
@@ -87,7 +120,10 @@ nav .step-files a { display: block; color: var(--fg-muted); text-decoration: non
 nav .step-files a:hover, nav .step-link:hover { text-decoration: underline; }
 nav .progress { margin-bottom: 16px; color: var(--fg-muted); }
 main { padding: 24px 32px 64px; min-width: 0; }
-header h1 { font-size: 24px; margin: 0 0 4px; overflow-wrap: anywhere; }
+.header-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 4px; }
+header h1 { font-size: 24px; margin: 0; overflow-wrap: anywhere; flex: 1; }
+.icon-button { padding: 5px; line-height: 0; color: var(--fg-muted); }
+.icon-button:hover { color: var(--fg); }
 .meta { color: var(--fg-muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
 .state { border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; font-size: 12px; }
 .toolbar { display: flex; gap: 6px; align-items: center; margin-top: 12px; color: var(--fg-muted); }
@@ -160,14 +196,14 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .hljs-link { text-decoration: underline; }
 @media (max-width: 800px) {
   .layout { display: block; }
-  nav { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--border); }
+  nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
   main { padding: 16px; }
   .diff col.num { width: 40px; }
 }
 </style>
 </head>
 <body>
-<div class="layout">
+<div class="layout" id="layout">
   <nav id="nav" aria-label="Tour steps"></nav>
   <main id="main"></main>
 </div>
@@ -183,6 +219,14 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
   var EXPAND_STEP = 20;
   var reviewedKey = "git-stk-tour:" + data.headSha;
   var layoutKey = "git-stk-tour:layout";
+  var themeKey = "git-stk-tour:theme";
+  var navKey = "git-stk-tour:nav-hidden";
+  var darkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  var ICONS = {
+    sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
+    moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+  };
   var reviewed = readStorage(reviewedKey, {});
   var layout = readStorage(layoutKey, "unified") === "split" ? "split" : "unified";
   var views = [];
@@ -553,7 +597,61 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       return button;
     });
     var toolbar = el("div", { class: "toolbar", id: "toolbar" }, ["View:"].concat(buttons));
-    return el("header", {}, [el("h1", { text: review.title || review.id }), meta, toolbar]);
+    var top = el("div", { class: "header-top" }, [
+      navButton(),
+      el("h1", { text: review.title || review.id }),
+      themeButton(),
+    ]);
+    return el("header", {}, [top, meta, toolbar]);
+  }
+
+  function iconButton(icon, onClick) {
+    var button = el("button", { type: "button", class: "icon-button" });
+    setIcon(button, icon);
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function setIcon(button, icon) {
+    button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"'
+      + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[icon] + "</svg>";
+  }
+
+  function navButton() {
+    var layoutElement = document.getElementById("layout");
+    var button = iconButton("sidebar", function () { showNav(layoutElement.classList.contains("nav-hidden")); });
+    button.setAttribute("aria-controls", "nav");
+    function showNav(shown) {
+      layoutElement.classList.toggle("nav-hidden", !shown);
+      button.setAttribute("aria-expanded", String(shown));
+      button.title = shown ? "Hide steps" : "Show steps";
+      writeStorage(navKey, !shown);
+    }
+    showNav(readStorage(navKey, false) !== true);
+    return button;
+  }
+
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme")
+      || (darkQuery && darkQuery.matches ? "dark" : "light");
+  }
+
+  function themeButton() {
+    var button = iconButton("moon", function () {
+      var theme = currentTheme() === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", theme);
+      writeStorage(themeKey, theme);
+      showTheme();
+    });
+    function showTheme() {
+      var dark = currentTheme() === "dark";
+      setIcon(button, dark ? "sun" : "moon");
+      button.title = dark ? "Switch to light theme" : "Switch to dark theme";
+      button.setAttribute("aria-label", button.title);
+    }
+    if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener("change", showTheme);
+    showTheme();
+    return button;
   }
 
   function setLayout(name) {
