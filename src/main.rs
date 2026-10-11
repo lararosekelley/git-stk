@@ -82,6 +82,7 @@ fn main() -> ExitCode {
         Command::Provider(command) => command.run(),
         Command::Review(command) => command.run(),
         Command::View(command) => command.run(),
+        Command::Tour(command) => command.run(),
         Command::Comment(command) => command.run(),
         Command::Sync(command) => command.run(),
         Command::Merge(command) => command.run(),
@@ -177,6 +178,7 @@ fn lock_name(command: &Command) -> Option<&'static str> {
         | Command::Provider(_)
         | Command::Review(_)
         | Command::View(_)
+        | Command::Tour(_)
         | Command::Comment(_)
         | Command::Config(_)
         | Command::Completions(_)

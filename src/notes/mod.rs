@@ -283,9 +283,38 @@ fn body_with_description_note(body: &str, description: &str) -> String {
     )
 }
 
+/// A review body as a reader sees it rendered: the stack overview and
+/// HTML comments, which only the platform's renderer hides, are dropped.
+pub fn readable_body(body: &str) -> String {
+    let mut text = strip_sections(body, STACK_SECTION);
+    while let Some(start) = text.find("<!--") {
+        match text[start..].find("-->") {
+            Some(end) => text.replace_range(start..start + end + 3, ""),
+            None => text.truncate(start),
+        }
+    }
+    // Removed markers leave runs of blank lines; keep at most one.
+    let mut readable = String::new();
+    for line in text.trim().lines() {
+        if line.trim().is_empty() && readable.ends_with("\n\n") {
+            continue;
+        }
+        readable.push_str(line.trim_end());
+        readable.push('\n');
+    }
+    readable.trim_end().to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readable_body_drops_the_stack_overview_and_comments() {
+        let body = "<!-- git-stk:description -->\nWhat it does.\n<!-- /git-stk:description -->\n\n\
+                    <!-- template hint -->\nCloses #4\n\n<!-- git-stk:stack -->\n- [a](x)\n<!-- /git-stk:stack -->";
+        assert_eq!(readable_body(body), "What it does.\n\nCloses #4");
+    }
 
     #[test]
     fn issue_number_from_branch_reads_supported_shapes() {

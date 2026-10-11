@@ -37,6 +37,7 @@ pub mod status;
 pub mod submit;
 pub mod sync;
 pub mod top;
+pub mod tour;
 pub mod undo;
 pub mod uninstall;
 pub mod unstack;

@@ -39,6 +39,7 @@ module.exports = {
         "unstack",
         "run",
         "absorb",
+        "tour",
         "security",
         "list",
         "linux",
