@@ -224,7 +224,10 @@ in your browser. It fetches the review's head from the remote (`refs/pull/N/head
 and diffs it against the merge base with the review's base branch. Files are grouped into steps by role:
 configuration and build, schemas and types, implementation, tests, documentation, and generated files
 (lockfiles, minified files, and paths marked `linguist-generated` in `.gitattributes`), which start
-collapsed. Tick a step as reviewed to track progress; it is kept per head commit. The page is saved under
+collapsed. Diffs are syntax highlighted (with a bundled copy of highlight.js) and switch between unified and
+split views. Changed files up to 1 MB embed their full text (up to 16 MB per tour), so unchanged lines
+around each hunk can be expanded.
+Tick a step as reviewed to track progress; it is kept per head commit. The page is saved under
 `.git/stk/tours/` unless `--output` names a file, and `--no-open` skips the browser.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider

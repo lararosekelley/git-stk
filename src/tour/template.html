@@ -18,7 +18,16 @@
   --del-bg: #ffebe9;
   --del-num: #ffd7d5;
   --hunk-bg: #ddf4ff;
+  --empty-bg: #f6f8fa;
   --done: #1a7f37;
+  --removed: #cf222e;
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-comment: #6e7781;
+  --hl-title: #8250df;
+  --hl-constant: #0550ae;
+  --hl-type: #953800;
+  --hl-tag: #116329;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -33,7 +42,16 @@
     --del-bg: #25171c;
     --del-num: #542426;
     --hunk-bg: #121d2f;
+    --empty-bg: #161b22;
     --done: #3fb950;
+    --removed: #f85149;
+    --hl-keyword: #ff7b72;
+    --hl-string: #a5d6ff;
+    --hl-comment: #8b949e;
+    --hl-title: #d2a8ff;
+    --hl-constant: #79c0ff;
+    --hl-type: #ffa657;
+    --hl-tag: #7ee787;
   }
 }
 * { box-sizing: border-box; }
@@ -46,6 +64,12 @@ body {
 }
 a { color: var(--accent); }
 code, pre, .diff { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+button {
+  font: inherit; font-size: 12px; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
 nav {
   position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
@@ -54,7 +78,9 @@ nav {
 nav h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); margin: 0 0 8px; }
 nav ol { list-style: none; margin: 0; padding: 0; }
 nav li.step { margin-bottom: 12px; }
-nav .step-link { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--fg); text-decoration: none; }
+nav .step-row { display: flex; align-items: center; gap: 6px; }
+nav .step-row input { margin: 0; }
+nav .step-link { font-weight: 600; color: var(--fg); text-decoration: none; }
 nav .step-link.done { color: var(--done); }
 nav .step-files { margin: 4px 0 0 20px; }
 nav .step-files a { display: block; color: var(--fg-muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
@@ -64,6 +90,7 @@ main { padding: 24px 32px 64px; min-width: 0; }
 header h1 { font-size: 24px; margin: 0 0 4px; overflow-wrap: anywhere; }
 .meta { color: var(--fg-muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
 .state { border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; font-size: 12px; }
+.toolbar { display: flex; gap: 6px; align-items: center; margin-top: 12px; color: var(--fg-muted); }
 .intro { margin: 16px 0 32px; display: grid; gap: 16px; }
 .panel { border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; background: var(--bg-soft); }
 .panel h2 { font-size: 14px; margin: 0 0 8px; }
@@ -74,35 +101,52 @@ section.step { margin-bottom: 40px; }
 .step-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 16px; }
 .step-head h2 { font-size: 18px; margin: 0; }
 .step-head label { color: var(--fg-muted); white-space: nowrap; cursor: pointer; }
-.file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px; overflow: hidden; }
+.file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px; }
 .file > summary {
   list-style: none; cursor: pointer; display: flex; gap: 8px; align-items: center;
   padding: 8px 12px; background: var(--bg-soft); position: sticky; top: 0; z-index: 1;
+  border-radius: 6px;
 }
+.file[open] > summary { border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
 .file > summary::-webkit-details-marker { display: none; }
 .file > summary::before { content: ">"; color: var(--fg-muted); font-family: ui-monospace, monospace; transition: transform .1s; }
 .file[open] > summary::before { transform: rotate(90deg); }
-.file[open] > summary { border-bottom: 1px solid var(--border); }
 .file-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; flex: 1; }
 .file-status { font-size: 12px; color: var(--fg-muted); }
 .count-add { color: var(--done); font-size: 12px; }
-.count-del { color: #cf222e; font-size: 12px; }
-.diff-scroll { overflow-x: auto; }
-table.diff { border-collapse: collapse; width: 100%; }
-.diff td { padding: 0 8px; vertical-align: top; white-space: pre; line-height: 20px; }
-.diff td.num { width: 1%; min-width: 48px; text-align: right; color: var(--fg-muted); user-select: none; }
-.diff tr.add td { background: var(--add-bg); }
-.diff tr.add td.num { background: var(--add-num); }
-.diff tr.del td { background: var(--del-bg); }
-.diff tr.del td.num { background: var(--del-num); }
+.count-del { color: var(--removed); font-size: 12px; }
+table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
+.diff td { padding: 0 8px; vertical-align: top; line-height: 20px; }
+.diff td.code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff col.num { width: 56px; }
+.diff col.sign { width: 20px; }
+.diff td.num { text-align: right; color: var(--fg-muted); user-select: none; }
+.diff td.sign { padding: 0 0 0 6px; user-select: none; }
+.diff td.add { background: var(--add-bg); }
+.diff td.num.add { background: var(--add-num); }
+.diff td.del { background: var(--del-bg); }
+.diff td.num.del { background: var(--del-num); }
+.diff td.empty { background: var(--empty-bg); }
 .diff tr.hunk td { background: var(--hunk-bg); color: var(--fg-muted); padding: 4px 8px; }
-.diff td.sign { width: 1%; padding: 0 0 0 8px; user-select: none; }
+.diff tr.hunk button { margin-right: 6px; }
+.diff tr.hunk span { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note { padding: 12px; color: var(--fg-muted); }
 .next { display: inline-block; margin-top: 4px; }
+.hljs-keyword, .hljs-meta .hljs-keyword, .hljs-template-tag, .hljs-type.hljs-keyword, .hljs-variable.language_ { color: var(--hl-keyword); }
+.hljs-string, .hljs-regexp, .hljs-meta .hljs-string, .hljs-char.escape_ { color: var(--hl-string); }
+.hljs-comment, .hljs-code, .hljs-formula, .hljs-quote { color: var(--hl-comment); }
+.hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section, .hljs-doctag { color: var(--hl-title); }
+.hljs-number, .hljs-literal, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-meta, .hljs-property, .hljs-operator, .hljs-selector-attr, .hljs-selector-class, .hljs-selector-id { color: var(--hl-constant); }
+.hljs-built_in, .hljs-type, .hljs-params, .hljs-symbol, .hljs-subst, .hljs-bullet { color: var(--hl-type); }
+.hljs-name, .hljs-tag, .hljs-selector-tag, .hljs-selector-pseudo { color: var(--hl-tag); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong, .hljs-section { font-weight: 600; }
+.hljs-link { text-decoration: underline; }
 @media (max-width: 800px) {
   .layout { display: block; }
   nav { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--border); }
   main { padding: 16px; }
+  .diff col.num { width: 40px; }
 }
 </style>
 </head>
@@ -111,27 +155,36 @@ table.diff { border-collapse: collapse; width: 100%; }
   <nav id="nav" aria-label="Tour steps"></nav>
   <main id="main"></main>
 </div>
+<!-- Syntax highlighting by highlight.js:
+@@HIGHLIGHT_LICENSE@@
+-->
+<script>/*HIGHLIGHT_JS*/</script>
 <script id="tour-data" type="application/json">/*TOUR_DATA*/null</script>
 <script>
 (function () {
   "use strict";
   var data = JSON.parse(document.getElementById("tour-data").textContent);
-  var storageKey = "git-stk-tour:" + data.headSha;
-  var reviewed = loadReviewed();
+  var EXPAND_STEP = 20;
+  var reviewedKey = "git-stk-tour:" + data.headSha;
+  var layoutKey = "git-stk-tour:layout";
+  var reviewed = readStorage(reviewedKey, {});
+  var layout = readStorage(layoutKey, "unified") === "split" ? "split" : "unified";
+  var views = [];
 
-  function loadReviewed() {
+  function readStorage(key, fallback) {
     try {
-      return JSON.parse(localStorage.getItem(storageKey)) || {};
+      var value = JSON.parse(localStorage.getItem(key));
+      return value === null ? fallback : value;
     } catch (error) {
-      return {};
+      return fallback;
     }
   }
 
-  function saveReviewed() {
+  function writeStorage(key, value) {
     try {
-      localStorage.setItem(storageKey, JSON.stringify(reviewed));
+      localStorage.setItem(key, JSON.stringify(value));
     } catch (error) {
-      // Storage can be unavailable for file:// pages; progress just isn't kept.
+      // Storage can be unavailable for file:// pages; the choice just isn't kept.
     }
   }
 
@@ -148,20 +201,354 @@ table.diff { border-collapse: collapse; width: 100%; }
     return node;
   }
 
-  function fileAnchor(stepIndex, fileIndex) {
-    return "step-" + stepIndex + "-file-" + fileIndex;
+  function escapeHtml(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
+
+  function highlight(text, language) {
+    if (language && window.hljs && hljs.getLanguage(language)) {
+      try {
+        return hljs.highlight(text, { language: language, ignoreIllegals: true }).value;
+      } catch (error) {
+        // Fall through to plain text.
+      }
+    }
+    return escapeHtml(text);
+  }
+
+  // Split highlighted HTML into lines, closing the spans still open at each
+  // line break and reopening them on the next line, so every line stands on
+  // its own while multi-line strings and comments keep their color.
+  function splitHighlighted(html) {
+    var lines = [];
+    var open = [];
+    var current = "";
+    var token = /(<span[^>]*>)|(<\/span>)|(\n)|([^<\n]+)/g;
+    var match;
+    while ((match = token.exec(html))) {
+      if (match[1]) {
+        open.push(match[1]);
+        current += match[1];
+      } else if (match[2]) {
+        open.pop();
+        current += match[2];
+      } else if (match[3]) {
+        lines.push(current + "</span>".repeat(open.length));
+        current = open.join("");
+      } else {
+        current += match[4];
+      }
+    }
+    lines.push(current + "</span>".repeat(open.length));
+    return lines;
+  }
+
+  function textLines(text) {
+    if (text === "") return [];
+    var lines = text.replace(/\r\n/g, "\n").split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    return lines;
+  }
+
+  function firstNew(hunk) { return hunk.newLines === 0 ? hunk.newStart + 1 : hunk.newStart; }
+  function firstOld(hunk) { return hunk.oldLines === 0 ? hunk.oldStart + 1 : hunk.oldStart; }
+
+  // One side's highlighted lines by line number. With the whole file
+  // embedded, it is highlighted in full; otherwise only the diff's own lines
+  // of that side are, which can misread a hunk that starts mid-comment.
+  function buildSide(file, side) {
+    var text = side === "old" ? file.oldText : file.newText;
+    var skip = side === "old" ? "+" : "-";
+    var numbered = [];
+    file.hunks.forEach(function (hunk) {
+      var number = side === "old" ? hunk.oldStart : hunk.newStart;
+      hunk.lines.forEach(function (line) {
+        if (line[0] === skip) return;
+        numbered.push([number++, line[1]]);
+      });
+    });
+
+    if (typeof text === "string") {
+      var lines = textLines(text);
+      var matches = numbered.every(function (pair) { return lines[pair[0] - 1] === pair[1]; });
+      if (matches) {
+        var html = splitHighlighted(highlight(lines.join("\n"), file.language));
+        return { full: true, count: lines.length, line: function (number) { return html[number - 1]; } };
+      }
+    }
+    var partial = splitHighlighted(highlight(numbered.map(function (pair) { return pair[1]; }).join("\n"), file.language));
+    var byNumber = {};
+    numbered.forEach(function (pair, index) { byNumber[pair[0]] = partial[index]; });
+    return { full: false, count: 0, line: function (number) { return byNumber[number]; } };
+  }
+
+  function FileView(file, stepIndex, fileIndex, collapsed) {
+    this.file = file;
+    this.anchor = "step-" + stepIndex + "-file-" + fileIndex;
+    this.sides = null;
+    this.gaps = null;
+    this.rendered = false;
+    this.visible = !("IntersectionObserver" in window);
+    this.details = this.build(collapsed);
+  }
+
+  FileView.prototype.build = function (collapsed) {
+    var file = this.file;
+    var label = file.status === "renamed" || file.status === "copied"
+      ? file.oldPath + " -> " + file.path
+      : file.path;
+    var summary = el("summary", {}, [
+      el("span", { class: "file-path", text: label }),
+      file.status !== "modified" ? el("span", { class: "file-status", text: file.status }) : null,
+      el("span", { class: "count-add", text: "+" + file.additions }),
+      el("span", { class: "count-del", text: "-" + file.deletions }),
+    ]);
+    this.body = el("div");
+    var details = el("details", { class: "file", id: this.anchor }, [summary, this.body]);
+    details.open = !collapsed;
+    var view = this;
+    details.addEventListener("toggle", function () {
+      if (details.open && view.visible && !view.rendered) view.render();
+    });
+    return details;
+  };
+
+  // The unchanged stretches before each hunk and after the last, in new-file
+  // line numbers, each with how much of it has been revealed from either end.
+  FileView.prototype.buildGaps = function () {
+    var hunks = this.file.hunks;
+    var expandable = this.sides.old.full && this.sides.new.full;
+    var gaps = hunks.map(function (hunk, index) {
+      var previous = hunks[index - 1];
+      var from = previous ? firstNew(previous) + previous.newLines : 1;
+      return { from: from, to: firstNew(hunk) - 1, offset: firstOld(hunk) - firstNew(hunk), top: 0, bottom: 0 };
+    });
+    var last = hunks[hunks.length - 1];
+    var end = firstNew(last) + last.newLines;
+    gaps.push({
+      from: end,
+      to: expandable ? this.sides.new.count : end - 1,
+      offset: firstOld(last) + last.oldLines - end,
+      top: 0,
+      bottom: 0,
+    });
+    gaps.forEach(function (gap) { gap.expandable = expandable; });
+    return gaps;
+  };
+
+  FileView.prototype.render = function () {
+    var file = this.file;
+    this.rendered = true;
+    this.body.textContent = "";
+    if (file.binary) {
+      this.body.appendChild(el("div", { class: "note", text: "Binary file not shown." }));
+      return;
+    }
+    if (!file.hunks.length) {
+      var reason = file.status === "renamed" ? "Renamed without changes." : "No content changes.";
+      this.body.appendChild(el("div", { class: "note", text: reason }));
+      return;
+    }
+    if (!this.sides) {
+      this.sides = { old: buildSide(file, "old"), new: buildSide(file, "new") };
+      this.gaps = this.buildGaps();
+    }
+    var rows = this.rows();
+    this.body.appendChild(layout === "split" ? this.splitTable(rows) : this.unifiedTable(rows));
+  };
+
+  // The file as a list of hunk headers and lines, with revealed context.
+  FileView.prototype.rows = function () {
+    var view = this;
+    var rows = [];
+    function contextRows(gap, from, to) {
+      for (var number = from; number <= to; number++) {
+        rows.push({ kind: " ", oldNum: number + gap.offset, newNum: number });
+      }
+    }
+    this.file.hunks.forEach(function (hunk, index) {
+      var gap = view.gaps[index];
+      var size = Math.max(0, gap.to - gap.from + 1);
+      contextRows(gap, gap.from, gap.from + gap.top - 1);
+      rows.push({ header: hunk, gap: gap, gapIndex: index, hidden: size - gap.top - gap.bottom });
+      contextRows(gap, gap.to - gap.bottom + 1, gap.to);
+      var oldNum = hunk.oldStart;
+      var newNum = hunk.newStart;
+      hunk.lines.forEach(function (line) {
+        rows.push({
+          kind: line[0],
+          oldNum: line[0] === "+" ? null : oldNum++,
+          newNum: line[0] === "-" ? null : newNum++,
+        });
+      });
+    });
+    var trailing = this.gaps[this.gaps.length - 1];
+    var trailingSize = Math.max(0, trailing.to - trailing.from + 1);
+    contextRows(trailing, trailing.from, trailing.from + trailing.top - 1);
+    if (trailing.expandable && trailingSize - trailing.top > 0) {
+      rows.push({ header: null, gap: trailing, gapIndex: this.gaps.length - 1, hidden: trailingSize - trailing.top });
+    }
+    return rows;
+  };
+
+  FileView.prototype.expand = function (gapIndex, direction) {
+    var gap = this.gaps[gapIndex];
+    var hidden = Math.max(0, gap.to - gap.from + 1) - gap.top - gap.bottom;
+    if (direction === "all") gap.top += hidden;
+    else if (direction === "down") gap.top += Math.min(EXPAND_STEP, hidden);
+    else gap.bottom += Math.min(EXPAND_STEP, hidden);
+    this.render();
+  };
+
+  FileView.prototype.headerCell = function (row, colspan) {
+    var view = this;
+    var cell = el("td", { colspan: String(colspan) });
+    var gap = row.gap;
+    if (gap.expandable && row.hidden > 0) {
+      var isFirst = row.gapIndex === 0;
+      var isTrailing = row.header === null;
+      var buttons = [];
+      if (row.hidden <= EXPAND_STEP) {
+        buttons.push(["all", "Show " + row.hidden + (row.hidden === 1 ? " line" : " lines")]);
+      } else {
+        if (!isFirst) buttons.push(["down", "Expand down"]);
+        if (!isTrailing) buttons.push(["up", "Expand up"]);
+      }
+      buttons.forEach(function (spec) {
+        var button = el("button", { type: "button", text: spec[1] });
+        button.addEventListener("click", function () { view.expand(row.gapIndex, spec[0]); });
+        cell.appendChild(button);
+      });
+    }
+    if (row.header) {
+      var hunk = row.header;
+      var text = "@@ -" + hunk.oldStart + "," + hunk.oldLines + " +" + hunk.newStart + "," + hunk.newLines + " @@" +
+        (hunk.section ? " " + hunk.section : "");
+      cell.appendChild(el("span", { text: text }));
+    }
+    return el("tr", { class: "hunk" }, [cell]);
+  };
+
+  function codeCell(html, cls) {
+    var cell = el("td", { class: "code " + cls });
+    cell.innerHTML = html === undefined ? "" : html;
+    return cell;
+  }
+
+  function numCell(number, cls) {
+    return el("td", { class: "num " + cls, text: number === null || number === undefined ? "" : String(number) });
+  }
+
+  function lineClass(kind) {
+    return kind === "+" ? "add" : kind === "-" ? "del" : "";
+  }
+
+  FileView.prototype.unifiedTable = function (rows) {
+    var view = this;
+    var body = el("tbody");
+    rows.forEach(function (row) {
+      if ("header" in row) {
+        body.appendChild(view.headerCell(row, 4));
+        return;
+      }
+      var cls = lineClass(row.kind);
+      var html = row.kind === "-" ? view.sides.old.line(row.oldNum) : view.sides.new.line(row.newNum);
+      body.appendChild(el("tr", {}, [
+        numCell(row.oldNum, cls),
+        numCell(row.newNum, cls),
+        el("td", { class: "sign " + cls, text: row.kind === " " ? "" : row.kind }),
+        codeCell(html, cls),
+      ]));
+    });
+    var cols = el("colgroup", {}, [el("col", { class: "num" }), el("col", { class: "num" }), el("col", { class: "sign" }), el("col")]);
+    return el("table", { class: "diff" }, [cols, body]);
+  };
+
+  FileView.prototype.splitTable = function (rows) {
+    var view = this;
+    var body = el("tbody");
+    var deleted = [];
+    var added = [];
+    function flush() {
+      for (var index = 0; index < Math.max(deleted.length, added.length); index++) {
+        var left = deleted[index];
+        var right = added[index];
+        body.appendChild(el("tr", {}, [
+          numCell(left ? left.oldNum : null, left ? "del" : "empty"),
+          codeCell(left ? view.sides.old.line(left.oldNum) : "", left ? "del" : "empty"),
+          numCell(right ? right.newNum : null, right ? "add" : "empty"),
+          codeCell(right ? view.sides.new.line(right.newNum) : "", right ? "add" : "empty"),
+        ]));
+      }
+      deleted = [];
+      added = [];
+    }
+    rows.forEach(function (row) {
+      if ("header" in row) {
+        flush();
+        body.appendChild(view.headerCell(row, 4));
+      } else if (row.kind === "-") {
+        if (added.length) flush();
+        deleted.push(row);
+      } else if (row.kind === "+") {
+        added.push(row);
+      } else {
+        flush();
+        body.appendChild(el("tr", {}, [
+          numCell(row.oldNum, ""),
+          codeCell(view.sides.old.line(row.oldNum), ""),
+          numCell(row.newNum, ""),
+          codeCell(view.sides.new.line(row.newNum), ""),
+        ]));
+      }
+    });
+    flush();
+    var cols = el("colgroup", {}, [el("col", { class: "num" }), el("col"), el("col", { class: "num" }), el("col")]);
+    return el("table", { class: "diff split" }, [cols, body]);
+  };
 
   function renderHeader() {
     var review = data.review;
-    var link = el("a", { href: review.url, text: review.id });
+    var additions = 0;
+    var deletions = 0;
+    var files = 0;
+    data.steps.forEach(function (step) {
+      step.files.forEach(function (file) {
+        files++;
+        additions += file.additions;
+        deletions += file.deletions;
+      });
+    });
     var meta = el("div", { class: "meta" }, [
-      link,
+      el("a", { href: review.url, text: review.id }),
       el("span", { class: "state", text: review.state }),
       el("span", {}, [el("code", { text: review.branch }), " into ", el("code", { text: review.base })]),
       el("span", { text: data.commits.length + (data.commits.length === 1 ? " commit" : " commits") }),
+      el("span", {}, [
+        files + (files === 1 ? " file " : " files "),
+        el("span", { class: "count-add", text: "+" + additions }),
+        " ",
+        el("span", { class: "count-del", text: "-" + deletions }),
+      ]),
     ]);
-    return el("header", {}, [el("h1", { text: review.title || review.id }), meta]);
+    var buttons = ["unified", "split"].map(function (name) {
+      var button = el("button", { type: "button", "aria-pressed": String(layout === name), text: name === "split" ? "Split" : "Unified" });
+      button.addEventListener("click", function () { setLayout(name); });
+      return button;
+    });
+    var toolbar = el("div", { class: "toolbar", id: "toolbar" }, ["View:"].concat(buttons));
+    return el("header", {}, [el("h1", { text: review.title || review.id }), meta, toolbar]);
+  }
+
+  function setLayout(name) {
+    layout = name;
+    writeStorage(layoutKey, name);
+    Array.prototype.forEach.call(document.querySelectorAll("#toolbar button"), function (button) {
+      button.setAttribute("aria-pressed", String(button.textContent.toLowerCase() === name));
+    });
+    views.forEach(function (view) {
+      if (view.rendered) view.render();
+    });
   }
 
   function renderIntro() {
@@ -186,78 +573,59 @@ table.diff { border-collapse: collapse; width: 100%; }
   function renderNav() {
     var nav = document.getElementById("nav");
     nav.textContent = "";
-    var done = data.steps.filter(function (step) { return reviewed[step.id]; }).length;
     nav.appendChild(el("h2", { text: "Tour" }));
-    nav.appendChild(el("div", { class: "progress", text: done + " of " + data.steps.length + " steps reviewed" }));
+    nav.appendChild(el("div", { class: "progress", id: "progress" }));
     nav.appendChild(el("ol", {}, data.steps.map(function (step, stepIndex) {
-      var link = el("a", {
-        class: "step-link" + (reviewed[step.id] ? " done" : ""),
-        href: "#step-" + stepIndex,
-      }, [(reviewed[step.id] ? "[x] " : "[ ] ") + (stepIndex + 1) + ". " + step.title]);
+      var title = (stepIndex + 1) + ". " + step.title;
+      var row = el("div", { class: "step-row" }, [
+        reviewedBox(step, "Mark " + title + " reviewed"),
+        el("a", { class: "step-link", "data-step-link": step.id, href: "#step-" + stepIndex, text: title }),
+      ]);
       var files = el("div", { class: "step-files" }, step.files.map(function (file, fileIndex) {
-        return el("a", { href: "#" + fileAnchor(stepIndex, fileIndex), title: file.path, text: file.path });
+        return el("a", { href: "#step-" + stepIndex + "-file-" + fileIndex, title: file.path, text: file.path });
       }));
-      return el("li", { class: "step" }, [link, files]);
+      return el("li", { class: "step" }, [row, files]);
     })));
+    showProgress();
   }
 
-  function renderDiff(file) {
-    if (file.binary) return el("div", { class: "note", text: "Binary file not shown." });
-    if (!file.hunks.length) {
-      return el("div", { class: "note", text: file.status === "renamed" ? "Renamed without changes." : "No content changes." });
-    }
-    var body = el("tbody");
-    file.hunks.forEach(function (hunk) {
-      var header = "@@ -" + hunk.oldStart + "," + hunk.oldLines + " +" + hunk.newStart + "," + hunk.newLines + " @@" +
-        (hunk.section ? " " + hunk.section : "");
-      body.appendChild(el("tr", { class: "hunk" }, [el("td", { colspan: "4", text: header })]));
-      var oldLine = hunk.oldStart;
-      var newLine = hunk.newStart;
-      hunk.lines.forEach(function (line) {
-        var kind = line[0];
-        var oldNum = kind === "+" ? "" : String(oldLine++);
-        var newNum = kind === "-" ? "" : String(newLine++);
-        body.appendChild(el("tr", { class: kind === "+" ? "add" : kind === "-" ? "del" : "" }, [
-          el("td", { class: "num", text: oldNum }),
-          el("td", { class: "num", text: newNum }),
-          el("td", { class: "sign", text: kind === " " ? " " : kind }),
-          el("td", { text: line[1] }),
-        ]));
-      });
+  function showProgress() {
+    var done = data.steps.filter(function (step) { return reviewed[step.id]; }).length;
+    document.getElementById("progress").textContent = done + " of " + data.steps.length + " steps reviewed";
+    data.steps.forEach(function (step) {
+      var link = document.querySelector('[data-step-link="' + step.id + '"]');
+      if (link) link.classList.toggle("done", !!reviewed[step.id]);
     });
-    return el("div", { class: "diff-scroll" }, [el("table", { class: "diff" }, [body])]);
   }
 
-  function renderFile(file, stepIndex, fileIndex, collapsed) {
-    var label = file.status === "renamed" || file.status === "copied"
-      ? file.oldPath + " -> " + file.path
-      : file.path;
-    var summary = el("summary", {}, [
-      el("span", { class: "file-path", text: label }),
-      file.status !== "modified" ? el("span", { class: "file-status", text: file.status }) : null,
-      el("span", { class: "count-add", text: "+" + file.additions }),
-      el("span", { class: "count-del", text: "-" + file.deletions }),
-    ]);
-    var details = el("details", { class: "file", id: fileAnchor(stepIndex, fileIndex) }, [summary, renderDiff(file)]);
-    details.open = !collapsed;
-    return details;
-  }
-
-  function renderStep(step, stepIndex) {
-    var box = el("input", { type: "checkbox" });
+  // A checkbox bound to a step's reviewed state; the sidebar and the step's
+  // own heading each have one, kept in agreement.
+  function reviewedBox(step, label) {
+    var box = el("input", { type: "checkbox", "data-step": step.id });
+    if (label) box.setAttribute("aria-label", label);
     box.checked = !!reviewed[step.id];
     box.addEventListener("change", function () {
       if (box.checked) reviewed[step.id] = true;
       else delete reviewed[step.id];
-      saveReviewed();
-      renderNav();
+      writeStorage(reviewedKey, reviewed);
+      Array.prototype.forEach.call(document.querySelectorAll('input[data-step="' + step.id + '"]'), function (other) {
+        other.checked = box.checked;
+      });
+      showProgress();
     });
+    return box;
+  }
+
+  function renderStep(step, stepIndex) {
+    var box = reviewedBox(step, null);
     var head = el("div", { class: "step-head" }, [
       el("h2", { text: (stepIndex + 1) + ". " + step.title }),
       el("label", {}, [box, " Reviewed"]),
     ]);
     var files = step.files.map(function (file, fileIndex) {
-      return renderFile(file, stepIndex, fileIndex, step.collapsed);
+      var view = new FileView(file, stepIndex, fileIndex, step.collapsed);
+      views.push(view);
+      return view.details;
     });
     var next = stepIndex + 1 < data.steps.length
       ? el("a", { class: "next", href: "#step-" + (stepIndex + 1), text: "Next: " + data.steps[stepIndex + 1].title })
@@ -265,7 +633,25 @@ table.diff { border-collapse: collapse; width: 100%; }
     return el("section", { class: "step", id: "step-" + stepIndex }, [head].concat(files, [next]));
   }
 
-  // Opening a link to a file inside a collapsed step should show it.
+  // A file's diff is built the first time it is open and near the viewport,
+  // so a large review opens quickly.
+  function renderLazily() {
+    if (!("IntersectionObserver" in window)) {
+      views.forEach(function (view) { if (view.details.open) view.render(); });
+      return;
+    }
+    var byElement = new Map(views.map(function (view) { return [view.details, view]; }));
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        var view = byElement.get(entry.target);
+        view.visible = entry.isIntersecting;
+        if (view.visible && view.details.open && !view.rendered) view.render();
+      });
+    }, { rootMargin: "800px 0px" });
+    views.forEach(function (view) { observer.observe(view.details); });
+  }
+
+  // Following a link to a file inside a collapsed step should show it.
   window.addEventListener("hashchange", function () {
     var target = document.getElementById(location.hash.slice(1));
     if (target && target.tagName === "DETAILS") target.open = true;
@@ -278,6 +664,7 @@ table.diff { border-collapse: collapse; width: 100%; }
     main.appendChild(renderStep(step, stepIndex));
   });
   renderNav();
+  renderLazily();
 })();
 </script>
 </body>

@@ -28,6 +28,10 @@ pub struct FileDiff {
     pub status: FileStatus,
     pub binary: bool,
     pub hunks: Vec<Hunk>,
+    /// The whole file before and after, where the tour embeds it for
+    /// highlighting and context expansion.
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
 }
 
 impl FileDiff {
@@ -98,6 +102,8 @@ pub fn parse(patch: &str) -> Vec<FileDiff> {
                 status: FileStatus::Modified,
                 binary: false,
                 hunks: Vec::new(),
+                old_text: None,
+                new_text: None,
             });
             continue;
         }
