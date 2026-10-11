@@ -37,6 +37,20 @@ impl ReviewProvider for GitHubProvider {
         list_review(branch, Some("closed"))
     }
 
+    fn review_by_number(&self, number: u64) -> Result<ReviewRequest> {
+        let output = command_output(
+            "gh",
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--json",
+                "number,state,baseRefName,headRefName,url,title,isDraft",
+            ],
+        )?;
+        parse_github_review(&output)?.with_context(|| format!("no GitHub pull request #{number}"))
+    }
+
     fn create_review(
         &self,
         branch: &str,

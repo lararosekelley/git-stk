@@ -4,6 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.14.0
+
+### Added
+
+- **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
+  URL as well as a branch, so `git stk view 12` opens a review whose branch is
+  not checked out. A URL for another repository's review is refused rather
+  than opening this repository's review of the same number.
+
 ## 0.13.2
 
 ### Fixed

@@ -199,8 +199,8 @@ than failing the whole command.
 git stk provider
 git stk config
 git stk status [branch]
-git stk review [branch]
-git stk view [branch]
+git stk review [branch | number | url]
+git stk view [branch | number | url]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
@@ -212,6 +212,10 @@ git stk cleanup [branch] [--dry-run] [--keep-branch]
 
 `review` prints a branch's review (id, base, state, url); `view` opens it in your browser. Both work on
 merged and closed reviews, and report clearly when none exists yet.
+
+Either command also takes a review by number (`12`, `#12`, `!12`) or by its web URL, so you can reach a
+review whose branch you have not checked out. A bare number names a branch only when a local branch has
+exactly that name. A URL must point at this repository's reviews.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider
 CLI - handy for a review bot that answers a mention: `git stk comment "@claude review"`.

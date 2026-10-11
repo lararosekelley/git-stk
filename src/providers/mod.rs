@@ -45,11 +45,13 @@ mod gitea;
 mod github;
 mod gitlab;
 mod json;
+mod review_ref;
 
 use demo::DemoProvider;
 use gitea::GiteaProvider;
 use github::GitHubProvider;
 use gitlab::GitLabProvider;
+pub use review_ref::ReviewRef;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ProviderKind {
@@ -398,6 +400,10 @@ pub trait ReviewProvider {
     /// dead review for a live one; only the stack-notes ledger wants closed
     /// state, to restyle the entry rather than drop it.
     fn review_for_branch_including_closed(&self, branch: &str) -> Result<Option<ReviewRequest>>;
+
+    /// The review numbered `number`, in any state - for a reference to someone
+    /// else's review, whose branch may not exist locally.
+    fn review_by_number(&self, number: u64) -> Result<ReviewRequest>;
 
     /// Open a review for the branch; with `draft`, as a draft. `title` sets the
     /// review's title, defaulting to the branch tip's commit subject.

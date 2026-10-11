@@ -29,6 +29,10 @@ impl ReviewProvider for DemoProvider {
         Ok(find(&state, branch, &["open", "merged", "closed"]).map(review_from))
     }
 
+    fn review_by_number(&self, number: u64) -> Result<ReviewRequest> {
+        Ok(review_from(by_number(&load()?, number)?))
+    }
+
     fn create_review(
         &self,
         branch: &str,
@@ -227,11 +231,14 @@ fn find<'state>(state: &'state Value, branch: &str, states: &[&str]) -> Option<&
 }
 
 fn by_id<'state>(state: &'state Value, review: &ReviewRequest) -> Result<&'state Value> {
-    let id: u64 = review.id_value().parse().context("demo review id")?;
+    by_number(state, review.id_value().parse().context("demo review id")?)
+}
+
+fn by_number(state: &Value, id: u64) -> Result<&Value> {
     state["reviews"]
         .as_array()
         .and_then(|reviews| reviews.iter().find(|entry| entry["id"] == json!(id)))
-        .with_context(|| format!("no demo review {}", review.id))
+        .with_context(|| format!("no demo review #{id}"))
 }
 
 fn with_review(
