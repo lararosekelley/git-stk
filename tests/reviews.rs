@@ -820,6 +820,124 @@ fn view_opens_the_review_in_the_browser() {
 }
 
 #[test]
+fn review_reads_a_github_pr_by_number() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = FakeProvider::new()
+        .on(
+            "pr view 12 --json",
+            r##"{"number":12,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/12"}"##,
+        )
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    for target in ["12", "#12"] {
+        repo.stack_faked(&fake)
+            .args(["review", target])
+            .assert()
+            .success()
+            .stdout("#12 feature/b -> feature/a open https://github.com/owner/repo/pull/12\n");
+    }
+}
+
+#[test]
+fn review_treats_a_number_that_names_a_local_branch_as_the_branch() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["branch", "12"]);
+    let fake = FakeProvider::new()
+        .on(
+            "pr list --head 12",
+            r##"[{"number":40,"state":"OPEN","baseRefName":"main","headRefName":"12","url":"https://github.com/owner/repo/pull/40"}]"##,
+        )
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["review", "12"])
+        .assert()
+        .success()
+        .stdout("#40 12 -> main open https://github.com/owner/repo/pull/40\n");
+}
+
+#[test]
+fn view_opens_a_gitlab_mr_by_url() {
+    let repo = TestRepo::new();
+    repo.git([
+        "remote",
+        "add",
+        "origin",
+        "git@gitlab.com:group/sub/repo.git",
+    ]);
+    let fake = FakeProvider::new()
+        .record("mr view 34 --web", "view-args.txt", "")
+        .on(
+            "mr view 34 --output json",
+            r##"{"iid":34,"state":"merged","target_branch":"main","source_branch":"feature/x","web_url":"https://gitlab.com/group/sub/repo/-/merge_requests/34"}"##,
+        )
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args([
+            "view",
+            "https://gitlab.com/group/sub/repo/-/merge_requests/34/diffs",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("opening !34"));
+
+    let recorded = fs::read_to_string(repo.path().join("view-args.txt")).expect("view args");
+    assert_eq!(recorded.trim(), "mr view 34 --web");
+}
+
+#[test]
+fn view_reads_a_gitea_pr_by_number() {
+    let repo = TestRepo::new();
+    repo.git([
+        "remote",
+        "add",
+        "origin",
+        "https://gitea.com/owner/repo.git",
+    ]);
+    let fake = FakeProvider::new()
+        .commands(&["tea"])
+        .record("open pulls/7", "view-args.txt", "")
+        .on(
+            "repos/owner/repo/pulls/7",
+            r##"{"number":7,"state":"open","merged":false,"head":{"ref":"feature/a"},"base":{"ref":"main"},"html_url":"https://gitea.com/owner/repo/pulls/7","title":"A"}"##,
+        )
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["view", "#7"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("opening #7"));
+
+    let recorded = fs::read_to_string(repo.path().join("view-args.txt")).expect("view args");
+    assert_eq!(recorded.trim(), "open pulls/7");
+}
+
+#[test]
+fn view_refuses_a_url_for_another_repository_without_asking_the_provider() {
+    let repo = TestRepo::new();
+    repo.git(["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+    let fake = FakeProvider::new()
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["view", "https://github.com/someone/else/pull/12"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "is not a review in this repository (github.com/owner/repo)",
+        ));
+}
+
+#[test]
 fn provider_command_points_at_auth_login_when_the_cli_is_not_signed_in() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);

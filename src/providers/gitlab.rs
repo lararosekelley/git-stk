@@ -38,6 +38,14 @@ impl ReviewProvider for GitLabProvider {
         list_review(branch, Some("--closed"))
     }
 
+    fn review_by_number(&self, number: u64) -> Result<ReviewRequest> {
+        let output = command_output(
+            "glab",
+            &["mr", "view", &number.to_string(), "--output", "json"],
+        )?;
+        parse_gitlab_review(&output)?.with_context(|| format!("no GitLab merge request !{number}"))
+    }
+
     fn create_review(
         &self,
         branch: &str,

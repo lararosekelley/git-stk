@@ -34,6 +34,10 @@ impl ReviewProvider for GiteaProvider {
         find_review(branch, true)
     }
 
+    fn review_by_number(&self, number: u64) -> Result<ReviewRequest> {
+        gitea_review_from(&api_pull(&number.to_string())?)
+    }
+
     fn create_review(
         &self,
         branch: &str,
