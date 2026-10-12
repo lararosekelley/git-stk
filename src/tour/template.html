@@ -228,6 +228,20 @@ header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-hei
   margin: 6px 0; padding: 4px 12px; font-family: var(--font-ui); font-size: 13px; white-space: normal;
 }
 .tour-note-label { font-size: 12px; font-weight: 600; color: var(--hl-keyword); padding-top: 2px; }
+.finding {
+  border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 6px; background: var(--bg);
+  margin: 6px 0; padding: 6px 12px; font-family: var(--font-ui); font-size: 13px; white-space: normal;
+}
+.finding-required { border-left-color: var(--removed); }
+.finding-recommended { border-left-color: var(--hl-constant); }
+.finding-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 2px; }
+.severity { font-size: 11px; font-weight: 600; border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; color: var(--fg-muted); white-space: nowrap; }
+.severity-required { color: var(--removed); border-color: var(--removed); }
+.severity-recommended { color: var(--hl-constant); border-color: var(--hl-constant); }
+.finding-category { font-size: 12px; color: var(--fg-muted); }
+.finding-suggestion { margin: 4px 0 6px; padding: 6px 8px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
+.finding-index { margin-top: 12px; }
+.finding-counts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .thread-index { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 13px; }
 .thread-index li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; min-width: 0; }
 .thread-index code { font-size: 12px; }
@@ -537,6 +551,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       el("span", { class: "count-add", text: "+" + file.additions }),
       el("span", { class: "count-del", text: "-" + file.deletions }),
       this.threads.length ? el("span", { class: "comment-count", title: "Comment threads", text: this.threads.length + " " + (this.threads.length === 1 ? "thread" : "threads") }) : null,
+      findingsOnFile(file).length ? el("span", { class: "comment-count finding-count", title: "Findings from the tour agent", text: "\u2728 " + findingsOnFile(file).length + (findingsOnFile(file).length === 1 ? " finding" : " findings") }) : null,
     ]);
     this.body = el("div");
     var details = el("details", { class: "file", id: this.anchor }, [summary, this.body]);
@@ -598,8 +613,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     this.body.appendChild(table);
   };
 
-  // Rows for the current threads on a line, each shown once.
-  FileView.prototype.threadRows = function (oldNum, newNum) {
+  // Rows for the threads, findings, notes, and drafts on a line, each thread
+  // shown once. A comment on a context line carries its other side's line too.
+  FileView.prototype.threadRows = function (oldNum, newNum, context) {
     var view = this;
     var rows = this.threads.filter(function (thread, index) {
       if (thread.outdated || thread.line === null || view.placed[index]) return false;
@@ -608,6 +624,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       return here;
     }).map(function (thread) {
       return el("tr", { class: "thread-row" }, [el("td", { colspan: "4" }, [renderThread(thread)])]);
+    });
+    findingsOnFile(this.file).filter(function (finding) {
+      return finding.side === "old" ? finding.line === oldNum : finding.line === newNum;
+    }).forEach(function (finding) {
+      rows.push(el("tr", { class: "thread-row" }, [el("td", { colspan: "4" }, [view.renderFinding(finding, context ? (finding.side === "old" ? newNum : oldNum) : null)])]));
     });
     notesOnFile(this.file).filter(function (note) {
       return note.side === "old" ? note.line === oldNum : note.line === newNum;
@@ -816,7 +837,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         codeCell(html, cls),
       ].forEach(function (cell) { tr.appendChild(cell); });
       body.appendChild(tr);
-      view.threadRows(row.oldNum, row.newNum).forEach(function (tr) { body.appendChild(tr); });
+      view.threadRows(row.oldNum, row.newNum, row.kind === " ").forEach(function (tr) { body.appendChild(tr); });
     });
     var cols = el("colgroup", {}, [el("col", { class: "num" }), el("col", { class: "num" }), el("col", { class: "sign" }), el("col")]);
     return el("table", { class: "diff" }, [cols, body]);
@@ -865,7 +886,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
           codeCell(view.sides.new.line(row.newNum), ""),
         ].forEach(function (cell) { tr.appendChild(cell); });
         body.appendChild(tr);
-        view.threadRows(row.oldNum, row.newNum).forEach(function (tr) { body.appendChild(tr); });
+        view.threadRows(row.oldNum, row.newNum, true).forEach(function (tr) { body.appendChild(tr); });
       }
     });
     flush();
@@ -985,6 +1006,70 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     summary.focus();
   }
 
+  // The agent's review findings on a file's lines, for an agentReview tour.
+  function findingsOnFile(file) {
+    var findings = chapter.plan && chapter.plan.findings ? chapter.plan.findings : [];
+    return findings.filter(function (finding) {
+      return finding.path === file.path || (finding.side === "old" && finding.path === file.oldPath);
+    });
+  }
+
+  var SEVERITIES = { required: "Required", recommended: "Recommended", optional: "Optional" };
+
+  // A finding as a comment for the review: its severity and title, its body,
+  // and its suggested code, as a suggestion GitHub can apply.
+  function findingComment(finding) {
+    var heading = "**" + (SEVERITIES[finding.severity] || finding.severity) + (finding.title ? ": " + finding.title : "") + "**";
+    var parts = [heading];
+    if (finding.body) parts.push(finding.body);
+    if (finding.suggestion) {
+      var fence = data.forge === "github" ? "```suggestion" : "```";
+      parts.push(fence + "\n" + finding.suggestion.replace(/\n$/, "") + "\n```");
+    }
+    return parts.join("\n\n");
+  }
+
+  function findingKey(finding) {
+    return [finding.path, finding.side, finding.line, finding.title].join(":");
+  }
+
+  FileView.prototype.renderFinding = function (finding, pairedLine) {
+    var view = this;
+    var body = el("div", { class: "markdown comment-body" });
+    setMarkdown(body, finding.bodyHtml);
+    var head = el("div", { class: "finding-head" }, [
+      el("span", { class: "agent-mark", "aria-label": "Written by the tour agent", text: "\u2728" }),
+      el("span", { class: "severity severity-" + finding.severity, text: SEVERITIES[finding.severity] || finding.severity }),
+      finding.category ? el("span", { class: "finding-category", text: finding.category }) : null,
+      el("strong", { text: finding.title || "Finding" }),
+    ]);
+    var parts = [head, body];
+    if (finding.suggestion) {
+      parts.push(el("div", { class: "note-label", text: "Suggested" + (finding.startLine ? " for lines " + finding.startLine + "-" + finding.line : "") + ":" }));
+      parts.push(el("pre", { class: "finding-suggestion", text: finding.suggestion }));
+    }
+    if (data.served) {
+      var added = drafts().some(function (draft) { return draft.finding === findingKey(finding); });
+      var add = el("button", { type: "button", text: added ? "Added to the review" : "Add to review" });
+      add.disabled = added;
+      add.addEventListener("click", function () {
+        saveDraft({
+          path: finding.path,
+          oldPath: view.file.oldPath,
+          side: finding.side,
+          line: finding.line,
+          startLine: finding.startLine || null,
+          pairedLine: pairedLine,
+          body: findingComment(finding),
+          finding: findingKey(finding),
+        });
+        view.render();
+      });
+      parts.push(el("div", { class: "thread-actions" }, [add]));
+    }
+    return el("div", { class: "finding finding-" + finding.severity }, parts);
+  };
+
   // The agent's notes on a file's lines, for an agent tour.
   function notesOnFile(file) {
     var notes = chapter.plan ? chapter.plan.notes : [];
@@ -1026,6 +1111,33 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     ]);
   }
 
+  // The findings by severity, each linking to its file.
+  function renderFindingIndex(plan) {
+    var findings = plan.findings || [];
+    if (!findings.length) return null;
+    var anchors = {};
+    chapter.steps.forEach(function (step, stepIndex) {
+      step.files.forEach(function (file, fileIndex) {
+        anchors[file.path] = stepAnchor(stepIndex) + "-file-" + fileIndex;
+        if (file.oldPath) anchors[file.oldPath] = anchors[file.path];
+      });
+    });
+    var counts = ["required", "recommended", "optional"].map(function (severity) {
+      var count = findings.filter(function (finding) { return finding.severity === severity; }).length;
+      return count ? el("span", { class: "severity severity-" + severity, text: count + " " + severity }) : null;
+    });
+    return el("div", { class: "finding-index" }, [
+      el("div", { class: "finding-counts" }, [el("span", { class: "agent-mark", text: "\u2728" }), el("strong", { text: plural(findings.length, "finding", "findings") })].concat(counts)),
+      el("ul", { class: "thread-index" }, findings.map(function (finding) {
+        return el("li", {}, [
+          el("span", { class: "severity severity-" + finding.severity, text: finding.severity }),
+          el("a", { href: "#" + (anchors[finding.path] || "") }, [el("code", { text: finding.path + ":" + finding.line })]),
+          el("span", { class: "thread-excerpt", text: finding.title }),
+        ]);
+      })),
+    ]);
+  }
+
   function renderPlan(plan) {
     var overview = null;
     if (plan.overviewHtml) {
@@ -1033,7 +1145,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       setMarkdown(overview, plan.overviewHtml);
       overview = agentText(overview);
     }
-    return el("section", { class: "plan", "aria-label": "Tour plan" }, [overview, planAttribution(plan)]);
+    return el("section", { class: "plan", "aria-label": "Tour plan" }, [overview, renderFindingIndex(plan), planAttribution(plan)]);
   }
 
   function threadsOnFile(file) {

@@ -38,7 +38,8 @@ pub struct Tour {
     #[arg(long, action = ArgAction::SetTrue)]
     no_stack: bool,
     /// How to lay out the tour: `standard` groups files by role; `agentTour`
-    /// has the tour agent plan its steps (overrides stk.tourStyle).
+    /// has the tour agent plan its steps; `agentReview` adds the agent's
+    /// review findings (overrides stk.tourStyle).
     #[arg(long, value_name = "STYLE")]
     style: Option<TourStyle>,
     /// The command an agent tour is planned with, such as `claude -p` - your
@@ -587,6 +588,7 @@ fn planner(
         agent,
         plan_file,
         refresh,
+        review: style == TourStyle::AgentReview,
     }))
 }
 
