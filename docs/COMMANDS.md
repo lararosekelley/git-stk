@@ -268,7 +268,7 @@ lines. The agent is a command you give in `stk.tourAgent` or `--agent`, such as 
 commits, and diff on stdin and reads a JSON plan back, checks it against the diff (each file once, every file
 somewhere, notes only on lines the diff shows), and falls back to the file-role steps, with a warning, for a
 review it cannot plan. The page opens the review with the plan's overview and a line naming the command that
-planned it and the provider, model, and effort level the agent reports for itself; each step shows its
+planned it, effort and model flags included, and the provider and model the agent reports; each step shows its
 explanation, and the plan's notes sit on their lines as tour notes, set apart from review comments; everything
 the agent wrote is marked with a sparkle emoji. The first agent tour in a repository asks before sending
 anything, and records the command you agreed to as `stk.tourAgentAllowed` in that repository's config; a
