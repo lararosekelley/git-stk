@@ -50,7 +50,6 @@ pub struct Note {
 pub struct Reported {
     pub provider: String,
     pub model: String,
-    pub effort: String,
 }
 
 /// A plan as the tour uses it: its steps, laid over the review's files.
@@ -131,7 +130,6 @@ pub fn parse(answer: &str) -> Result<Plan> {
         reported: Reported {
             provider: text(&agent, "provider"),
             model: text(&agent, "model"),
-            effort: text(&agent, "effort"),
         },
     })
 }
@@ -403,7 +401,7 @@ pub const INSTRUCTIONS: &str = r#"You are planning a guided tour of one changese
 
 {
   "version": 1,
-  "agent": {"provider": "who serves you", "model": "your model name", "effort": "your reasoning effort level, or empty if you do not know"},
+  "agent": {"provider": "who serves you", "model": "your model name"},
   "overview": "Two to four sentences of Markdown: what the changeset does and why, and what to keep in mind while reading it.",
   "steps": [
     {"title": "A short title for this step", "summary": "One to three sentences of Markdown on what these files do in the changeset and what to look at.", "files": ["path/of/a/changed/file"]}
@@ -469,7 +467,6 @@ diff --git a/Cargo.lock b/Cargo.lock
                 Reported {
                     provider: "P".into(),
                     model: "M".into(),
-                    effort: "high".into()
                 }
             );
         }

@@ -1379,12 +1379,12 @@ fn an_agent_tour_follows_the_agents_plan_and_saves_it() {
     assert_eq!(plan["source"], "agent");
     assert_eq!(plan["command"], "tour-agent --print");
     assert_eq!(
-        (&plan["provider"], &plan["model"], &plan["effort"]),
-        (
-            &Value::from("Fake Labs"),
-            &Value::from("fake-1"),
-            &Value::from("low")
-        )
+        (&plan["provider"], &plan["model"]),
+        (&Value::from("Fake Labs"), &Value::from("fake-1"))
+    );
+    assert!(
+        plan.get("effort").is_none(),
+        "an agent cannot see its own effort, so its guess is not shown"
     );
     assert_eq!(plan["cached"], false);
     assert_eq!(plan["notes"][0]["line"], 2);

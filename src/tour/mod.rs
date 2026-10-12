@@ -371,7 +371,6 @@ impl Chapter {
                 "cached": plan.cached,
                 "provider": plan.reported.provider,
                 "model": plan.reported.model,
-                "effort": plan.reported.effort,
                 "overviewHtml": markdown::to_html(&plan.overview),
                 "notes": plan.notes.iter().map(|note| json!({
                     "path": note.path,
