@@ -48,7 +48,10 @@ mod gitlab;
 mod json;
 mod review_ref;
 
-pub use conversation::{Anchor, Comment, Conversation, Side, Thread, Verdict, VerdictState};
+pub use conversation::{
+    Anchor, Comment, Conversation, DraftComment, ReviewEvent, Side, Submission, Thread, Verdict,
+    VerdictState,
+};
 use demo::DemoProvider;
 use gitea::GiteaProvider;
 use github::GitHubProvider;
@@ -452,6 +455,19 @@ pub trait ReviewProvider: Sync {
     /// The review's discussion: submitted reviews, threads on its code, and
     /// comments on it as a whole.
     fn conversation(&self, review: &ReviewRequest) -> Result<Conversation>;
+
+    /// Post a review with its line comments as one submission, returning a
+    /// link to it or a note on what was posted.
+    fn submit_review(&self, review: &ReviewRequest, submission: &Submission) -> Result<String>;
+
+    /// The outcomes a review can be submitted with here.
+    fn review_events(&self) -> &'static [ReviewEvent] {
+        &[
+            ReviewEvent::Comment,
+            ReviewEvent::Approve,
+            ReviewEvent::RequestChanges,
+        ]
+    }
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String>;
 
@@ -937,7 +953,47 @@ fn looks_unauthenticated(stderr: &str) -> bool {
 }
 
 fn command_output(program: &str, args: &[&str]) -> Result<String> {
-    let output = match Command::new(program).args(args).output() {
+    run_command(program, args, None)
+}
+
+/// [`command_output`] with `input` on the command's stdin, for a request body
+/// too large or structured for arguments.
+fn command_output_with_input(program: &str, args: &[&str], input: &str) -> Result<String> {
+    run_command(program, args, Some(input))
+}
+
+fn run_command(program: &str, args: &[&str], input: Option<&str>) -> Result<String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    let output = match input {
+        None => command.output(),
+        Some(input) => command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                let mut stdin = child.stdin.take().expect("stdin is piped");
+                let input = input.to_owned();
+                let writer = std::thread::spawn(move || {
+                    use std::io::Write;
+                    stdin.write_all(input.as_bytes())
+                });
+                let output = child.wait_with_output()?;
+                // A CLI may exit without reading all its input, closing the
+                // pipe under the writer; its exit status says how it went.
+                match writer.join().expect("stdin writer panicked") {
+                    Err(error)
+                        if output.status.success()
+                            && error.kind() != std::io::ErrorKind::BrokenPipe =>
+                    {
+                        Err(error)
+                    }
+                    _ => Ok(output),
+                }
+            }),
+    };
+    let output = match output {
         Ok(output) => output,
         // The most common newcomer failure: the provider CLI isn't installed.
         // Turn the raw "No such file or directory (os error 2)" into guidance.
@@ -962,11 +1018,16 @@ fn command_output(program: &str, args: &[&str]) -> Result<String> {
     {
         bail!("{program} failed: {stderr}\n(if you are not signed in, run `{auth}`)");
     }
-    if stderr.is_empty() {
-        Err(anyhow!("{program} exited with status {}", output.status))
-    } else {
-        Err(anyhow!("{program} failed: {stderr}"))
-    }
+    // An API passthrough prints the host's reason on stdout and only the
+    // status on stderr.
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let detail = match (stderr.is_empty(), stdout.is_empty()) {
+        (true, true) => return Err(anyhow!("{program} exited with status {}", output.status)),
+        (false, true) => stderr,
+        (true, false) => stdout,
+        (false, false) => format!("{stderr}: {stdout}"),
+    };
+    Err(anyhow!("{program} failed: {detail}"))
 }
 
 /// Attempts and the pause between them for a merge the platform briefly
@@ -1206,6 +1267,15 @@ pub(crate) fn label(title: &str, id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cli_that_succeeds_without_reading_its_input_succeeds() {
+        // More than a pipe holds, so the write outlives `true`.
+        let input = "x".repeat(1 << 20);
+        assert_eq!(command_output_with_input("true", &[], &input).unwrap(), "");
+        assert!(command_output_with_input("false", &[], &input).is_err());
+    }
 
     fn stack_of(number: u64, ids: &[&str]) -> NativeStack {
         stack_with(

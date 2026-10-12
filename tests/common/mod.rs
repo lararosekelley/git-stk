@@ -225,6 +225,15 @@ impl FakeProvider {
         self
     }
 
+    /// Like [`fail`](Self::fail), but only once `marker_file` exists - for a
+    /// call that succeeds the first time and fails the next.
+    pub fn fail_after(mut self, needle: &str, marker_file: &str, stderr: &str) -> Self {
+        self.rules.push(serde_json::json!({
+            "contains": needle, "if_file": marker_file, "stderr": stderr, "exit": 1,
+        }));
+        self
+    }
+
     /// Fail (exit 1) with `stdout` as well as `stderr` - for a command like
     /// `gh pr checks` that prints its result table to stdout even when it
     /// exits non-zero on a failure.

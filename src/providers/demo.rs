@@ -10,8 +10,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::{
-    Conversation, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
-    command_output,
+    Conversation, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, Submission,
+    WaitOutcome, command_output,
 };
 use crate::git;
 
@@ -95,6 +95,13 @@ impl ReviewProvider for DemoProvider {
     fn conversation(&self, _review: &ReviewRequest) -> Result<Conversation> {
         // The demo's reviews have no discussion.
         Ok(Conversation::default())
+    }
+
+    fn submit_review(&self, review: &ReviewRequest, _submission: &Submission) -> Result<String> {
+        bail!(
+            "{} is a demo review, which takes no review comments",
+            review.id
+        )
     }
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::git;
 
@@ -9,10 +9,42 @@ use super::json::{
     parse_state, required_string,
 };
 use super::{
-    Anchor, CheckStatus, Comment, Conversation, IssueState, MergeBlocker, ReviewProvider,
-    ReviewRequest, ReviewSummary, Side, Thread, Verdict, VerdictState, WaitOutcome, command_output,
-    merge_with_resettle, merge_with_retry,
+    Anchor, CheckStatus, Comment, Conversation, IssueState, MergeBlocker, ReviewEvent,
+    ReviewProvider, ReviewRequest, ReviewSummary, Side, Submission, Thread, Verdict, VerdictState,
+    WaitOutcome, command_output, command_output_with_input, merge_with_resettle, merge_with_retry,
 };
+
+/// One draft note per comment, positioned on the MR's current diff, then the
+/// summary as a note of its own. An unchanged line takes both its numbers.
+fn gitlab_draft_notes(submission: &Submission, refs: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut notes: Vec<serde_json::Value> = submission
+        .comments
+        .iter()
+        .map(|comment| {
+            let mut position = serde_json::json!({
+                "position_type": "text",
+                "base_sha": optional_string(refs, "base_sha"),
+                "start_sha": optional_string(refs, "start_sha"),
+                "head_sha": optional_string(refs, "head_sha"),
+                "old_path": if comment.old_path.is_empty() { &comment.path } else { &comment.old_path },
+                "new_path": comment.path,
+            });
+            let (own, other) = match comment.anchor.side {
+                Side::New => ("new_line", "old_line"),
+                Side::Old => ("old_line", "new_line"),
+            };
+            position[own] = comment.anchor.line.into();
+            if let Some(paired) = comment.paired_line {
+                position[other] = paired.into();
+            }
+            serde_json::json!({ "note": comment.body, "position": position })
+        })
+        .collect();
+    if !submission.body.trim().is_empty() {
+        notes.push(serde_json::json!({ "note": submission.body }));
+    }
+    notes
+}
 
 /// The discussion from an MR's discussions and approvals listings. A thread
 /// left on another head than `head` is outdated: GitLab keeps its position on
@@ -275,6 +307,114 @@ impl ReviewProvider for GitLabProvider {
         )
         .ok();
         parse_gitlab_conversation(&discussions, approvals.as_deref(), &head, &review.url)
+    }
+
+    fn submit_review(&self, review: &ReviewRequest, submission: &Submission) -> Result<String> {
+        if submission.event == ReviewEvent::RequestChanges {
+            bail!("GitLab reviews here can comment or approve, not request changes");
+        }
+        let iid = review.id_value();
+        let mr: serde_json::Value = serde_json::from_str(&command_output(
+            "glab",
+            &["mr", "view", iid, "--output", "json"],
+        )?)
+        .context("failed to parse glab MR JSON")?;
+        let refs = mr
+            .get("diff_refs")
+            .context("glab MR JSON has no diff_refs")?;
+        let head = optional_string(refs, "head_sha");
+        if head != submission.commit {
+            bail!(
+                "{} has new commits since these comments were written",
+                review.id
+            );
+        }
+        let post = |path: String, body: &serde_json::Value| {
+            command_output_with_input(
+                "glab",
+                &[
+                    "api",
+                    "--method",
+                    "POST",
+                    "-H",
+                    "Content-Type: application/json",
+                    &path,
+                    "--input",
+                    "-",
+                ],
+                &body.to_string(),
+            )
+        };
+        // Draft notes publish together, notifying once, as a review does
+        // elsewhere. Publishing takes every draft of the user's on the MR,
+        // so any left from GitLab's own pages must be dealt with first.
+        let drafts = format!("projects/:id/merge_requests/{iid}/draft_notes");
+        let existing: serde_json::Value = serde_json::from_str(&command_output(
+            "glab",
+            &["api", "--method", "GET", &drafts],
+        )?)
+        .context("failed to parse glab draft notes JSON")?;
+        if existing.as_array().is_some_and(|notes| !notes.is_empty()) {
+            bail!(
+                "you have unpublished draft comments on {} in GitLab, which publishing this review would send too; publish or delete them there first",
+                review.id
+            );
+        }
+        let mut created: Vec<String> = Vec::new();
+        let discard = |created: &[String]| {
+            for id in created {
+                let _ = command_output(
+                    "glab",
+                    &["api", "--method", "DELETE", &format!("{drafts}/{id}")],
+                );
+            }
+        };
+        for note in gitlab_draft_notes(submission, refs) {
+            let id = post(drafts.clone(), &note).and_then(|output| {
+                serde_json::from_str::<serde_json::Value>(&output)
+                    .ok()
+                    .and_then(|note| note.get("id").and_then(serde_json::Value::as_u64))
+                    .map(|id| id.to_string())
+                    .context("GitLab created a draft note without saying its id")
+            });
+            match id {
+                Ok(id) => created.push(id),
+                Err(error) => {
+                    discard(&created);
+                    return Err(error);
+                }
+            }
+        }
+        // Approving before publishing means a refused approval leaves
+        // nothing posted to retry over.
+        let approving = submission.event == ReviewEvent::Approve;
+        if approving
+            && let Err(error) = post(
+                format!("projects/:id/merge_requests/{iid}/approve"),
+                &serde_json::json!({ "sha": head }),
+            )
+        {
+            discard(&created);
+            return Err(error);
+        }
+        if !created.is_empty()
+            && let Err(error) = post(format!("{drafts}/bulk_publish"), &serde_json::json!({}))
+        {
+            discard(&created);
+            return Err(if approving {
+                error.context(format!(
+                    "{} was approved, but its comments were not posted",
+                    review.id
+                ))
+            } else {
+                error
+            });
+        }
+        Ok(review.url.clone())
+    }
+
+    fn review_events(&self) -> &'static [ReviewEvent] {
+        &[ReviewEvent::Comment, ReviewEvent::Approve]
     }
 
     fn issue_state(&self, number: u64) -> Result<IssueState> {
@@ -740,6 +880,39 @@ fn classify_gitlab_merge(json: &str) -> MergeBlocker {
 mod tests {
     use super::*;
     use crate::providers::{CheckStatus, ReviewRequest, ReviewState};
+
+    #[test]
+    fn gitlab_draft_notes_position_each_comment_and_add_the_summary() {
+        let submission = Submission {
+            event: ReviewEvent::Approve,
+            body: "Summary".into(),
+            comments: vec![super::super::DraftComment {
+                path: "src/a.rs".into(),
+                old_path: String::new(),
+                anchor: Anchor {
+                    side: Side::New,
+                    line: 9,
+                    start_line: None,
+                },
+                paired_line: Some(8),
+                body: "Why?".into(),
+            }],
+            commit: "head".into(),
+        };
+        let refs =
+            serde_json::json!({"base_sha": "base", "start_sha": "start", "head_sha": "head"});
+        let notes = gitlab_draft_notes(&submission, &refs);
+        assert_eq!(
+            notes,
+            [
+                serde_json::json!({"note": "Why?", "position": {
+                    "position_type": "text", "base_sha": "base", "start_sha": "start", "head_sha": "head",
+                    "old_path": "src/a.rs", "new_path": "src/a.rs", "new_line": 9, "old_line": 8,
+                }}),
+                serde_json::json!({"note": "Summary"}),
+            ]
+        );
+    }
 
     #[test]
     fn gitlab_conversation_reads_discussions_and_approvals() {
