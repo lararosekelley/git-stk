@@ -455,8 +455,19 @@ fn plan_chapters(
                 None => to_ask.push(index),
             }
         }
+        // A plan made without the guidance is used but not saved.
+        let mut unsaved = Vec::new();
         for &index in &to_ask {
-            chapters[index].guidance = read_guidance(&chapters[index]);
+            match read_guidance(&chapters[index]) {
+                Ok(guidance) => chapters[index].guidance = guidance,
+                Err(error) => {
+                    warnings.push(format!(
+                        "could not read the repository's guidance for {}, so it is planned without it: {error:#}",
+                        chapters[index].review.id
+                    ));
+                    unsaved.push(index);
+                }
+            }
         }
         let prompts: Vec<(usize, String)> = to_ask
             .iter()
@@ -470,9 +481,10 @@ fn plan_chapters(
         // keeps the plans it already has.
         let save = |index: usize, answer: &str| {
             let chapter = &chapters[index];
-            let usable = plan::parse(answer)
-                .and_then(|parsed| plan::check(&parsed, &chapter.steps))
-                .is_ok();
+            let usable = !unsaved.contains(&index)
+                && plan::parse(answer)
+                    .and_then(|parsed| plan::check(&parsed, &chapter.steps))
+                    .is_ok();
             if usable && let Ok(path) = plan_cache(chapter, agent, planner.review) {
                 let _ = path
                     .parent()
@@ -617,11 +629,12 @@ const MAX_GUIDANCE_DIRS: usize = 100;
 const MAX_GUIDANCE_FILE_BYTES: usize = 16 * 1024;
 const MAX_GUIDANCE_BYTES: usize = 48 * 1024;
 
-/// The guidance files at `chapter`'s head in the repository root and in each
-/// directory holding a changed file, root first, as (path, text). A file is
+/// The guidance files at `chapter`'s base in the repository root and in each
+/// directory holding a changed file, root first, as (path, text). The base's,
+/// not the head's, so a review cannot rewrite the rules it is judged by. A file is
 /// cut short past a size, and past a total the files farthest from both the
 /// root and the changes are left out, since the nearest file wins.
-fn read_guidance(chapter: &Chapter) -> Vec<(String, String)> {
+fn read_guidance(chapter: &Chapter) -> Result<Vec<(String, String)>> {
     let mut dirs = std::collections::BTreeSet::new();
     dirs.insert(String::new());
     for file in chapter.steps.iter().flat_map(|step| &step.files) {
@@ -646,17 +659,15 @@ fn read_guidance(chapter: &Chapter) -> Vec<(String, String)> {
         .collect();
     let specs: Vec<String> = paths
         .iter()
-        .map(|path| format!("{}:{path}", chapter.head_sha))
+        .map(|path| format!("{}:{path}", chapter.base_sha))
         .collect();
-    let Ok(texts) = git::blob_texts(&specs, MAX_EMBEDDED_BYTES, MAX_EMBEDDED_BYTES) else {
-        return Vec::new();
-    };
+    let texts = git::blob_texts(&specs, MAX_EMBEDDED_BYTES, MAX_EMBEDDED_BYTES)?;
     let found: Vec<(String, String)> = paths
         .into_iter()
         .zip(texts)
         .filter_map(|(path, text)| Some((path, text.filter(|text| !text.trim().is_empty())?)))
         .collect();
-    within_guidance_budget(found)
+    Ok(within_guidance_budget(found))
 }
 
 /// `found` guidance, root first, cut down to its budget: the root's files are
