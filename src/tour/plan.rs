@@ -437,6 +437,19 @@ pub fn apply(plan: Plan, steps: Vec<Step>) -> Applied {
         let start_line = raw
             .start_line
             .filter(|&start| start < line && (start..line).all(shows));
+        // Code written for a range it cannot have would replace the wrong lines.
+        let range_lost = raw
+            .start_line
+            .is_some_and(|start| start != line && start_line.is_none());
+        // Replacement code applies to the new side; a removed line has none.
+        let mut suggestion = Some(raw.suggestion)
+            .filter(|suggestion| raw.side == Side::New && !suggestion.trim().is_empty());
+        if range_lost && suggestion.take().is_some() {
+            corrections.push(format!(
+                "suggested code for lines of {} the diff does not show, so it is left out",
+                raw.path
+            ));
+        }
         findings.push(Finding {
             path: raw.path,
             side: raw.side,
@@ -446,9 +459,7 @@ pub fn apply(plan: Plan, steps: Vec<Step>) -> Applied {
             category: Category::parse(&raw.category),
             title: raw.title,
             body: raw.body,
-            // Replacement code applies to the new side; a removed line has none.
-            suggestion: Some(raw.suggestion)
-                .filter(|suggestion| raw.side == Side::New && !suggestion.trim().is_empty()),
+            suggestion,
         });
     }
     findings.sort_by_key(|finding| finding.severity);
@@ -761,6 +772,8 @@ diff --git a/Cargo.lock b/Cargo.lock
                 {"path":"src/a.rs","side":"old","line":2,"startLine":2,"severity":"blocker",
                  "category":"vibes","title":"Gone","body":"B","suggestion":"fn b() {}"},
                 {"path":"src/a.rs","side":"new","line":9,"severity":"required","title":"Nowhere"},
+                {"path":"src/a.rs","side":"new","line":2,"startLine":5,"severity":"recommended",
+                 "title":"Backwards","body":"B","suggestion":"fn e() {}"},
                 {"path":"src/a.rs","side":"new","line":1,"severity":"required"}]}"#,
         )
         .unwrap();
@@ -781,16 +794,18 @@ diff --git a/Cargo.lock b/Cargo.lock
             shape,
             [
                 ("Assert", Severity::Required, Some(Category::Tests), None),
+                ("Backwards", Severity::Recommended, None, None),
                 ("Name", Severity::Optional, Some(Category::Style), Some(1)),
                 ("Gone", Severity::Optional, None, None),
             ]
         );
         assert_eq!(
-            applied.findings[1].suggestion.as_deref(),
+            applied.findings[2].suggestion.as_deref(),
             Some("    fn d() {}\n")
         );
+        assert_eq!(applied.findings[1].suggestion, None, "its range was lost");
         assert_eq!(
-            applied.findings[2].suggestion, None,
+            applied.findings[3].suggestion, None,
             "no suggestion on a removed line"
         );
         assert_eq!(
@@ -798,6 +813,7 @@ diff --git a/Cargo.lock b/Cargo.lock
             [
                 "gave the finding at src/a.rs:2 the unknown severity \"blocker\", so it is optional",
                 "found something at src/a.rs:9, which the diff does not show",
+                "suggested code for lines of src/a.rs the diff does not show, so it is left out",
                 "left a finding at src/a.rs:1 empty",
             ]
         );
