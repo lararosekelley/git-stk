@@ -1650,6 +1650,53 @@ fn a_review_its_agent_cannot_plan_is_toured_by_file_role() {
     }
 }
 
+/// An agent that plans the first two changesets and never answers for the
+/// third, which alone changes part-3.txt.
+#[cfg(unix)]
+#[test]
+fn an_interrupted_agent_tour_keeps_the_plans_it_finished() {
+    use std::process::{Command, Stdio};
+    let (repo, _origin) = stacked_prs();
+    let plan = r#"{"version":1,"overview":"O","steps":[{"title":"The part","summary":"S","files":["part-1.txt","part-2.txt","part-3.txt"]}]}"#;
+    let script = repo.path().join("agent.sh");
+    fs::write(
+        &script,
+        format!(
+            "PATH=/usr/bin:/bin\nif grep -q part-3.txt; then exec sleep 30; fi\necho '{plan}'\n"
+        ),
+    )
+    .unwrap();
+    let agent = format!("/bin/sh {}", script.display());
+    repo.git(["config", "stk.tourAgent", &agent]);
+    repo.git(["config", "stk.tourAgentAllowed", &agent]);
+    let fake = stack_fake(Some(&stack_listing()))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin("git-stk"));
+    TestRepo::isolate_git_config(&mut command);
+    let mut child = command
+        .args(["tour", "13", "--style", "agentTour", "--no-open"])
+        .current_dir(repo.path())
+        .env("PATH", &fake.path)
+        .env("STK_FAKE_SPEC", &fake.spec)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let plans = repo.path().join(".git/stk/tours/plans");
+    let saved = || fs::read_dir(&plans).map_or(0, Iterator::count);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while saved() < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Still waiting on the third answer, the tour is stopped.
+    assert!(child.try_wait().unwrap().is_none());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(saved(), 2, "the two finished plans are saved");
+}
+
 #[test]
 fn an_agent_tour_plans_every_changeset_in_a_stack() {
     let (repo, _origin) = stacked_prs();

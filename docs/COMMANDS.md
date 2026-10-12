@@ -272,10 +272,10 @@ planned it, effort and model flags included, and the provider and model the agen
 explanation, and the plan's notes sit on their lines as tour notes, set apart from review comments; everything
 the agent wrote is marked with a sparkle emoji. The first agent tour in a repository asks before sending
 anything, and records the command you agreed to as `stk.tourAgentAllowed` in that repository's config; a
-different command asks again, and without a terminal to ask at, the tour stops instead. Plans are saved per
-review head under `.git/stk/tours/plans/`, so a tour of the same commits plans nothing new; `--refresh-plan`
-asks again. `--plan <file>` follows a plan written ahead of time, by a harness for example, for the review
-asked for.
+different command asks again, and without a terminal to ask at, the tour stops instead. Plans are saved
+under `.git/stk/tours/plans/` as each one arrives, by review head and base, so a tour of the same commits
+plans nothing new, and an interrupted one keeps what it finished; `--refresh-plan` asks again. `--plan <file>`
+follows a plan written ahead of time, by a harness for example, for the review asked for.
 
 An agent review (`--style agentReview`) is an agent tour whose agent also reviews the changes. Each finding
 sits on a line of the diff with a severity (required, recommended, or optional), a category (bug, security,

@@ -454,7 +454,21 @@ fn plan_chapters(
             .iter()
             .filter(|answer| matches!(answer, Some((_, true))))
             .count();
-        for (index, result) in ask_in_pool(agent, &prompts, cached, progress) {
+        // Each usable answer is saved as it arrives, so an interrupted tour
+        // keeps the plans it already has.
+        let save = |index: usize, answer: &str| {
+            let chapter = &chapters[index];
+            let usable = plan::parse(answer)
+                .and_then(|parsed| plan::check(&parsed, &chapter.steps))
+                .is_ok();
+            if usable && let Ok(path) = plan_cache(chapter, agent, planner.review) {
+                let _ = path
+                    .parent()
+                    .map(std::fs::create_dir_all)
+                    .map(|_| std::fs::write(&path, answer));
+            }
+        };
+        for (index, result) in ask_in_pool(agent, &prompts, cached, progress, save) {
             answers[index] = Some((result, false));
         }
     }
@@ -480,20 +494,10 @@ fn plan_chapters(
                 parsed.findings.clear();
             }
             let steps = std::mem::take(&mut chapter.steps);
-            Ok((plan::apply(parsed, steps), answer))
+            Ok(plan::apply(parsed, steps))
         });
         match applied {
-            Ok((applied, answer)) => {
-                if !from_file
-                    && !cached
-                    && let Some(agent) = &planner.agent
-                    && let Ok(path) = plan_cache(chapter, agent, planner.review)
-                {
-                    let _ = path
-                        .parent()
-                        .map(std::fs::create_dir_all)
-                        .map(|_| std::fs::write(&path, &answer));
-                }
+            Ok(applied) => {
                 if !applied.corrections.is_empty() {
                     warnings.push(format!(
                         "the plan for {} from {source} {}; that was set right",
@@ -530,6 +534,7 @@ fn ask_in_pool(
     prompts: &[(usize, String)],
     cached: usize,
     progress: &Progress,
+    on_answer: impl Fn(usize, &str) + Sync,
 ) -> Vec<(usize, Result<String>)> {
     let total = prompts.len() + cached;
     let report = |finished: usize| {
@@ -558,6 +563,9 @@ fn ask_in_pool(
                         break;
                     };
                     let answer = agent.ask(prompt);
+                    if let Ok(text) = &answer {
+                        on_answer(*index, text);
+                    }
                     if let Ok(mut answers) = answers.lock() {
                         answers.push((*index, answer));
                     }
