@@ -14,6 +14,7 @@ try {
 <style>
 :root {
   /* Catppuccin Latte */
+  --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%23eff1f5' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   --bg: #eff1f5;
   --bg-soft: #e6e9ef;
   --fg: #4c4f69;
@@ -40,6 +41,7 @@ try {
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     /* Catppuccin Mocha */
+    --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%231e1e2e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     --bg: #1e1e2e;
     --bg-soft: #181825;
     --fg: #cdd6f4;
@@ -65,6 +67,7 @@ try {
   }
 }
 :root[data-theme="dark"] {
+  --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%231e1e2e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   --bg: #1e1e2e;
   --bg-soft: #181825;
   --fg: #cdd6f4;
@@ -92,14 +95,36 @@ try {
 :root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 html { scroll-padding-top: calc(var(--header-height, 0px) + 16px); }
+/* The page loads nothing from the network, so type is the system's own. */
+:root {
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-code: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6 3.5 10.5 8 6 12.5' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+/* Every fold opens and closes on the same chevron. */
+.file > summary, .discussion > summary, .outdated > summary, .thread.resolved > summary { list-style: none; }
+.file > summary::-webkit-details-marker, .discussion > summary::-webkit-details-marker,
+.outdated > summary::-webkit-details-marker, .thread.resolved > summary::-webkit-details-marker { display: none; }
+.file > summary::before, .discussion > summary::before, .outdated > summary::before, .thread.resolved > summary::before {
+  content: ""; display: inline-block; width: 14px; height: 14px; flex: none; vertical-align: -2px; margin-right: 4px;
+  background-color: var(--fg-muted);
+  -webkit-mask: var(--chevron) center / contain no-repeat; mask: var(--chevron) center / contain no-repeat;
+  transition: transform .15s ease;
+}
+.file[open] > summary::before, .discussion[open] > summary::before,
+.outdated[open] > summary::before, .thread.resolved[open] > summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .file > summary::before, .discussion > summary::before, .outdated > summary::before, .thread.resolved > summary::before { transition: none; }
+}
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font: 14px/1.5 var(--font-ui);
 }
 a { color: var(--accent); }
-code, pre, .diff { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+code, pre, .diff { font-family: var(--font-code); font-size: 12.5px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button {
   font: inherit; font-size: 12px; color: var(--fg); background: var(--bg);
   border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px; cursor: pointer;
@@ -111,47 +136,91 @@ button[aria-pressed="true"] { background: var(--accent); border-color: var(--acc
 .layout.nav-hidden nav { display: none; }
 nav {
   position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
-  border-right: 1px solid var(--border); background: var(--bg-soft); padding: 16px;
+  border-right: 1px solid var(--border); background: var(--bg-soft); padding: 22px 18px;
 }
-nav h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-muted); margin: 0 0 8px; }
+nav h2 { font-size: 13px; font-weight: 600; color: var(--fg); margin: 0 0 10px; }
 nav ol { list-style: none; margin: 0; padding: 0; }
-nav li.step { margin-bottom: 12px; }
-nav .step-row { display: flex; align-items: center; gap: 6px; }
-nav .step-row input { margin: 0; }
-nav .step-link { font-weight: 600; color: var(--fg); text-decoration: none; }
-nav .step-link.done { color: var(--done); }
-nav .step-files { margin: 4px 0 0 20px; }
-nav .step-files a { display: block; color: var(--fg-muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-nav .step-files a:hover, nav .step-link:hover { text-decoration: underline; }
-nav .progress { margin-bottom: 16px; color: var(--fg-muted); }
-nav .chapters { margin-bottom: 4px; }
-nav .chapter { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+nav .progress { margin: -6px 0 12px; color: var(--fg-muted); font-size: 12px; }
+/* Rails: markers on a line, the way `git stk list` draws a stack. */
+.rail { margin-bottom: 26px; }
+.rail-item { position: relative; padding-left: 24px; }
+.rail-item::before {
+  content: ""; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px; background: var(--border);
+}
+.rail-item:first-child::before { top: 12px; }
+.rail-item:last-child::before { bottom: auto; height: 12px; }
+.rail-item:only-child::before { display: none; }
+.chapters .rail-item::after {
+  content: ""; position: absolute; left: 1px; top: 6px; width: 12px; height: 12px; box-sizing: border-box;
+  border-radius: 50%; border: 2px solid var(--fg-muted); background: var(--bg-soft);
+}
+.chapters .rail-item.current::after { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 2px var(--bg-soft); }
+.chapters .rail-item.trunk::after { border-color: var(--border); }
+.chapters .rail-item.done::after { border-color: var(--done); background: var(--done) var(--check-image) center / 10px no-repeat; box-shadow: none; }
+.chapters .rail-item.done .chapter-link { color: var(--fg-muted); }
+.chapters .rail-item.done.current .chapter-link { color: var(--fg); }
+nav .chapter { display: flex; align-items: baseline; gap: 8px; padding: 2px 0 2px 24px; }
 nav .chapter-link {
   flex: 1; min-width: 0; color: var(--fg); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  border-left: 2px solid var(--border); padding: 2px 0 2px 8px;
 }
 nav .chapter-link:hover { text-decoration: underline; }
-nav .chapter-link[aria-current="page"] { border-left-color: var(--accent); font-weight: 600; }
-nav .chapter-id { color: var(--fg-muted); }
-nav .chapter-progress { color: var(--fg-muted); font-size: 12px; }
+nav .chapter-link[aria-current="page"] { font-weight: 600; }
+nav .chapter-id { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+nav .chapter-progress { color: var(--fg-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 nav .chapter-progress.done { color: var(--done); }
-nav .chapters-base { color: var(--fg-muted); font-size: 12px; margin: 0 0 20px 10px; }
+nav .trunk code { color: var(--fg-muted); font-size: 12px; }
+.steps .rail-item { padding-bottom: 12px; }
+nav .step-row { display: flex; align-items: center; gap: 8px; }
+nav .step-row input { position: absolute; left: 0; top: 5px; margin: 0; }
+nav .step-link { font-weight: 600; color: var(--fg); text-decoration: none; }
+nav .step-link.done { color: var(--done); }
+nav .step-files { margin-top: 2px; }
+nav .step-files a { display: block; color: var(--fg-muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/1.8 var(--font-code); }
+nav .step-files a:hover, nav .step-link:hover { text-decoration: underline; color: var(--fg); }
+/* A step's reviewed box is its marker: a ring that fills when reviewed. */
+input[type="checkbox"][data-step] {
+  appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; cursor: pointer;
+  border: 2px solid var(--fg-muted); background: var(--bg-soft); margin: 0; flex: none; z-index: 1;
+}
+input[type="checkbox"][data-step]:checked { border-color: var(--done); background: var(--done) var(--check-image) center / 12px no-repeat; }
 main { padding: 0 32px 64px; min-width: 0; }
 main > header {
   position: sticky; top: 0; z-index: 3; background: var(--bg);
   padding: 24px 0 12px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
 }
 .header-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 4px; }
-header h1 { font-size: 24px; margin: 0; overflow-wrap: anywhere; flex: 1; }
+header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.25; margin: 0; overflow-wrap: anywhere; flex: 1; }
 .icon-button { padding: 5px; line-height: 0; color: var(--fg-muted); }
 .icon-button:hover { color: var(--fg); }
 .nav-toggle { margin-top: 4px; }
 .meta { color: var(--fg-muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
 .state { border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; font-size: 12px; }
+.state-open { color: var(--done); border-color: var(--done); }
+.state-merged { color: var(--hl-keyword); border-color: var(--hl-keyword); }
+.state-closed { color: var(--removed); border-color: var(--removed); }
 .toolbar { display: flex; gap: 6px; align-items: center; margin-top: 12px; color: var(--fg-muted); }
-.intro { margin: 16px 0 32px; display: grid; gap: 16px; }
-.panel { border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; background: var(--bg-soft); }
-.panel h2 { font-size: 14px; margin: 0 0 8px; }
+.intro { margin: 24px 0 40px; display: grid; gap: 20px; }
+.description { font-size: 15px; line-height: 1.6; max-width: 72ch; }
+.description.empty { color: var(--fg-muted); margin: 0; }
+.description h1 { font-size: 19px; }
+.description h2 { font-size: 17px; }
+.discussion { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.discussion > summary {
+  cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 12px 0;
+}
+.discussion-title { font-weight: 600; }
+.discussion-counts { color: var(--fg-muted); }
+.toolbar-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+#refresh-discussion { font-size: 13px; padding: 5px 12px; }
+.discussion > :not(summary) { max-width: 88ch; }
+.discussion > :last-child { margin-bottom: 16px; }
+.thread-index { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 13px; }
+.thread-index li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; min-width: 0; }
+.thread-index code { font-size: 12px; }
+.thread-state { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; color: var(--fg-muted); flex: none; }
+.thread-state-open { color: var(--accent); border-color: var(--accent); }
+.thread-state-resolved { color: var(--done); border-color: var(--done); }
+.thread-excerpt { color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .markdown { overflow-wrap: anywhere; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
@@ -169,22 +238,31 @@ header h1 { font-size: 24px; margin: 0; overflow-wrap: anywhere; flex: 1; }
 .markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 10px; }
 .markdown hr { border: 0; border-top: 1px solid var(--border); }
-.commits { list-style: none; margin: 0; padding: 0; }
-.commits code { color: var(--fg-muted); margin-right: 8px; }
+.commits { list-style: none; margin: 0; padding: 0; font-size: 13px; color: var(--fg-muted); }
+.commits li { display: flex; gap: 10px; }
+.commits code { color: var(--fg-muted); }
+.commits span { color: var(--fg); }
 section.step { margin-bottom: 40px; }
 .step-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 16px; }
-.step-head h2 { font-size: 18px; margin: 0; }
+.step-head h2 { font-size: 19px; font-weight: 650; margin: 0; display: flex; align-items: center; gap: 10px; }
+.step-number {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: none;
+  border-radius: 50%; border: 2px solid var(--fg-muted); font-size: 12px; font-weight: 700; color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.step-number.done { border-color: var(--done); color: transparent; background: var(--done) var(--check-image) center / 16px no-repeat; }
+.state-reviewed { color: var(--done); border-color: var(--done); }
+.reviewed-toggle { display: inline-flex; align-items: center; gap: 6px; }
+.reviewed-toggle input[data-step] { background: var(--bg); }
 .step-head label { color: var(--fg-muted); white-space: nowrap; cursor: pointer; }
-.file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px; }
+/* The card clips its own corners, so its header can stick square-cornered
+   without the code showing past it. */
+.file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px; overflow: clip; }
 .file > summary {
   list-style: none; cursor: pointer; display: flex; gap: 8px; align-items: center;
-  padding: 8px 12px; background: var(--bg-soft); position: sticky; top: var(--header-height, 0px); z-index: 1;
-  border-radius: 6px;
+  padding: 8px 12px; background: var(--bg-soft); position: sticky; top: calc(var(--header-height, 0px) - 1px); z-index: 1;
 }
-.file[open] > summary { border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
-.file > summary::-webkit-details-marker { display: none; }
-.file > summary::before { content: ">"; color: var(--fg-muted); font-family: ui-monospace, monospace; transition: transform .1s; }
-.file[open] > summary::before { transform: rotate(90deg); }
+.file[open] > summary { border-bottom: 1px solid var(--border); }
 .file-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; flex: 1; }
 .file-status { font-size: 12px; color: var(--fg-muted); }
 .count-add { color: var(--done); font-size: 12px; }
@@ -202,29 +280,29 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .diff td.num.del { background: var(--del-num); }
 .diff td.empty { background: var(--empty-bg); }
 .diff tr.hunk td { background: var(--hunk-bg); color: var(--fg-muted); padding: 4px 8px; }
-.diff tr.hunk button { margin-right: 6px; }
+.diff tr.hunk button { margin-right: 6px; font-family: var(--font-ui); }
 .diff tr.hunk span { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note { padding: 12px; color: var(--fg-muted); }
 .next { display: inline-block; margin-top: 4px; }
 .comment-count { font-size: 12px; color: var(--fg-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; }
-.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.panel-head h2 { margin: 0; }
 .timeline-item { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
 .verdict { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 999px; padding: 0 8px; margin-bottom: 4px; border: 1px solid var(--border); }
 .verdict-approved { color: var(--done); border-color: var(--done); }
 .verdict-changes_requested { color: var(--removed); border-color: var(--removed); }
 .thread { border: 1px solid var(--border); border-radius: 6px; background: var(--bg); margin: 6px 0; padding: 4px 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; white-space: normal; }
-.thread.resolved > summary { cursor: pointer; color: var(--fg-muted); padding: 4px 0; }
+.thread.resolved > summary { cursor: pointer; color: var(--fg-muted); padding: 4px 0; display: flex; align-items: center; }
 .comment { padding: 6px 0; }
 .comment + .comment { border-top: 1px solid var(--border); }
 .comment-meta { color: var(--fg-muted); font-size: 12px; margin-bottom: 2px; }
+.comment-body h1, .comment-body h2 { font-size: 15px; margin: 10px 0 6px; }
+.comment-body h3, .comment-body h4 { font-size: 14px; margin: 8px 0 4px; }
 .comment-meta strong { color: var(--fg); }
 .comment-meta a { color: var(--fg-muted); }
 .diff tr.thread-row td { background: var(--bg-soft); padding: 4px 8px; }
 .file-notes:empty { display: none; }
 .file-notes { padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-soft); }
 .note-label { font-size: 12px; color: var(--fg-muted); margin-top: 6px; }
-.outdated > summary { cursor: pointer; color: var(--fg-muted); font-size: 12px; padding: 4px 0; }
+.outdated > summary { cursor: pointer; color: var(--fg-muted); font-size: 12px; padding: 4px 0; display: flex; align-items: center; }
 .thread-hunk { margin: 4px 0; padding: 6px 8px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
 td.num.commentable { cursor: pointer; }
 td.num.commentable:hover { color: var(--accent); text-decoration: underline; }
@@ -235,9 +313,13 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .thread.pending { border-style: dashed; }
 .pending-label { font-size: 12px; font-weight: 600; color: var(--accent); }
 .draft-body { white-space: pre-wrap; padding: 4px 0 6px; }
-.review-button { margin-left: auto; }
+.review-button {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+  font-size: 13px; font-weight: 600; padding: 5px 16px; display: inline-flex; align-items: center; gap: 6px;
+}
+.review-button:hover { filter: brightness(1.08); border-color: var(--accent); }
 .draft-count:empty { display: none; }
-.draft-count { background: var(--accent); color: var(--accent-fg); border-radius: 999px; padding: 0 6px; margin-left: 2px; }
+.draft-count { background: var(--accent-fg); color: var(--accent); border-radius: 999px; padding: 0 7px; font-size: 12px; }
 .review-panel {
   position: fixed; top: 16px; right: 16px; z-index: 10; width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto;
   background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: 0 8px 24px rgba(0, 0, 0, .2);
@@ -640,6 +722,15 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     return cell;
   }
 
+  // A diff row that knows its line numbers, so an open comment editor can
+  // find its line again after the diff is rebuilt.
+  function lineRow(oldNum, newNum) {
+    var tr = el("tr");
+    if (oldNum !== null && oldNum !== undefined) tr.setAttribute("data-old", oldNum);
+    if (newNum !== null && newNum !== undefined) tr.setAttribute("data-new", newNum);
+    return tr;
+  }
+
   function numCell(number, cls) {
     return el("td", { class: "num " + cls, text: number === null || number === undefined ? "" : String(number) });
   }
@@ -670,6 +761,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     var row = el("tr", { class: "editor-row" }, [el("td", { colspan: "4" }, [
       el("div", { class: "editor" }, [text, el("div", { class: "editor-actions" }, [cancel, save])]),
     ])]);
+    row.draft = draft;
+    row.text = text;
     after.parentNode.insertBefore(row, after.nextSibling);
     text.focus();
     cancel.addEventListener("click", function () { row.remove(); });
@@ -695,7 +788,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       }
       var cls = lineClass(row.kind);
       var html = row.kind === "-" ? view.sides.old.line(row.oldNum) : view.sides.new.line(row.newNum);
-      var tr = el("tr");
+      var tr = lineRow(row.oldNum, row.newNum);
       var self = function () { return tr; };
       [
         view.commentCell(numCell(row.oldNum, cls), row, "old", self),
@@ -719,7 +812,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       for (var index = 0; index < Math.max(deleted.length, added.length); index++) {
         var left = deleted[index];
         var right = added[index];
-        var tr = el("tr");
+        var tr = lineRow(left ? left.oldNum : null, right ? right.newNum : null);
         var self = function () { return tr; };
         [
           left ? view.commentCell(numCell(left.oldNum, "del"), left, "old", self) : numCell(null, "empty"),
@@ -744,7 +837,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         added.push(row);
       } else {
         flush();
-        var tr = el("tr");
+        var tr = lineRow(row.oldNum, row.newNum);
         var self = function () { return tr; };
         [
           view.commentCell(numCell(row.oldNum, ""), row, "old", self),
@@ -861,7 +954,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         status.appendChild(document.createTextNode("Posted. "));
         if (result.answer.url) status.appendChild(el("a", { href: result.answer.url, target: "_blank", rel: "noopener", text: "View the review" }));
         showDraftCount();
-        var refresh = document.querySelector(".conversation .panel-head button");
+        var refresh = document.getElementById("refresh-discussion");
         if (refresh) refresh.click();
       }).catch(function () {
         submit.disabled = false;
@@ -924,7 +1017,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
           return false;
         }
         status.textContent = "";
-        var refresh = document.querySelector(".conversation .panel-head button");
+        var refresh = document.getElementById("refresh-discussion");
         if (refresh) refresh.click();
         return true;
       })
@@ -1001,18 +1094,48 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     dismissed: "Dismissed",
   };
 
-  // The review's discussion that is not on a line of this diff: outcomes,
-  // comments on the review, and threads on files the diff does not show.
+  // Whether the discussion is open, kept across the re-renders a refresh does.
+  var discussionOpen = false;
+
+  // The plain text of rendered Markdown, cut to one line.
+  function textOf(html) {
+    var holder = document.createElement("div");
+    holder.innerHTML = html || "";
+    var text = (holder.textContent || "").replace(/\s+/g, " ").trim();
+    return text.length > 90 ? text.slice(0, 87) + "..." : text;
+  }
+
+  function plural(count, one, many) {
+    return count + " " + (count === 1 ? one : many);
+  }
+
+  // A one-line account of the discussion, so it can stay folded.
+  function discussionSummary(conversation) {
+    if (conversation.error) return "could not be loaded";
+    var threads = conversation.threads || [];
+    var open = threads.filter(function (thread) { return thread.resolved === false; }).length;
+    var parts = [];
+    var verdicts = (conversation.verdicts || []).length;
+    var comments = (conversation.comments || []).length;
+    if (verdicts) parts.push(plural(verdicts, "review", "reviews"));
+    if (comments) parts.push(plural(comments, "comment", "comments"));
+    if (threads.length) parts.push(plural(threads.length, "thread", "threads") + " on the code" + (open ? " (" + open + " open)" : ""));
+    return parts.length ? parts.join(", ") : "no comments yet";
+  }
+
+  // The review's discussion that is not on a line of this diff - outcomes,
+  // comments on the review, and threads on files the diff does not show -
+  // with an index of the threads that are, linking to their files.
   function renderConversation() {
     var conversation = discussion();
-    var panel = el("div", { class: "panel conversation" });
-    var heading = el("div", { class: "panel-head" }, [el("h2", { text: "Conversation" })]);
-    if (data.served) {
-      var refresh = el("button", { type: "button", text: "Refresh" });
-      refresh.addEventListener("click", function () { refreshConversation(refresh); });
-      heading.appendChild(refresh);
-    }
-    panel.appendChild(heading);
+    var panel = el("details", { class: "discussion" });
+    panel.open = discussionOpen;
+    panel.addEventListener("toggle", function () { discussionOpen = panel.open; });
+    var summary = el("summary", {}, [
+      el("span", { class: "discussion-title", text: "Discussion" }),
+      el("span", { class: "discussion-counts", text: discussionSummary(conversation) }),
+    ]);
+    panel.appendChild(summary);
     if (conversation.error) {
       panel.appendChild(el("div", { class: "note", text: "The discussion could not be loaded: " + conversation.error }));
       return panel;
@@ -1026,13 +1149,35 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       return { at: comment.at, node: el("div", { class: "timeline-item" }, [renderComment(comment)]) };
     }));
     items.sort(function (a, b) { return (a.at || "").localeCompare(b.at || ""); });
+    // Each file's anchor, by its path either side of a rename.
     var paths = {};
-    chapter.steps.forEach(function (step) {
-      step.files.forEach(function (file) { paths[file.path] = true; if (file.oldPath) paths[file.oldPath] = true; });
+    chapter.steps.forEach(function (step, stepIndex) {
+      step.files.forEach(function (file, fileIndex) {
+        var anchor = stepAnchor(stepIndex) + "-file-" + fileIndex;
+        paths[file.path] = anchor;
+        if (file.oldPath) paths[file.oldPath] = anchor;
+      });
     });
     var elsewhere = (conversation.threads || []).filter(function (thread) { return !paths[thread.path]; });
+    var inDiff = (conversation.threads || []).filter(function (thread) { return paths[thread.path]; });
+    // Open threads first; the rest keep the forge's order.
+    inDiff.sort(function (a, b) { return (b.resolved === false) - (a.resolved === false); });
     if (!items.length && !elsewhere.length && !(conversation.threads || []).length) {
-      panel.appendChild(el("div", { class: "note", text: "No comments yet." }));
+      panel.appendChild(el("div", { class: "note", text: "No one has commented on this review yet." }));
+    }
+    if (inDiff.length) {
+      panel.appendChild(el("div", { class: "note-label", text: "On the code, shown on their lines below:" }));
+      panel.appendChild(el("ul", { class: "thread-index" }, inDiff.map(function (thread) {
+        var first = thread.comments[0];
+        var where = thread.path + (thread.line === null ? "" : ":" + thread.line);
+        var state = thread.resolved ? "resolved" : thread.resolved === false ? "open" : "";
+        return el("li", {}, [
+          el("a", { href: "#" + paths[thread.path] }, [el("code", { text: where })]),
+          state ? el("span", { class: "thread-state thread-state-" + state, text: state }) : null,
+          thread.outdated ? el("span", { class: "thread-state", text: "outdated" }) : null,
+          first ? el("span", { class: "thread-excerpt", text: (first.author ? first.author + ": " : "") + textOf(first.bodyHtml) }) : null,
+        ]);
+      })));
     }
     items.forEach(function (item) { panel.appendChild(item.node); });
     elsewhere.forEach(function (thread) {
@@ -1060,7 +1205,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   // Text typed into the comment box and open reply editors, which a
   // refresh would otherwise throw away with the panel it rebuilds.
   function unsentText() {
-    var unsent = { comment: "", replies: {} };
+    var unsent = { comment: "", replies: {}, lines: [] };
+    Array.prototype.forEach.call(document.querySelectorAll("tr.editor-row"), function (row) {
+      if (row.draft && row.text.value) unsent.lines.push({ draft: row.draft, text: row.text.value });
+    });
     var box = document.querySelector(".comment-box textarea");
     if (box) unsent.comment = box.value;
     Array.prototype.forEach.call(document.querySelectorAll(".thread-actions[data-thread-id]"), function (actions) {
@@ -1074,6 +1222,16 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   function restoreText(unsent) {
     var box = document.querySelector(".comment-box textarea");
     if (box) box.value = unsent.comment;
+    unsent.lines.forEach(function (line) {
+      var draft = line.draft;
+      var view = views.filter(function (candidate) { return candidate.file.path === draft.path; })[0];
+      if (!view) return;
+      if (!view.rendered) view.render();
+      var tr = view.body.querySelector("tr[data-" + (draft.side === "old" ? "old" : "new") + '="' + draft.line + '"]');
+      if (!tr) return;
+      view.openEditor(tr, draft);
+      tr.nextSibling.text.value = line.text;
+    });
     Object.keys(unsent.replies).forEach(function (id) {
       var actions = [].find.call(document.querySelectorAll(".thread-actions[data-thread-id]"), function (candidate) {
         return candidate.getAttribute("data-thread-id") === id;
@@ -1139,7 +1297,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       : null;
     var meta = el("div", { class: "meta" }, [
       el("a", { href: review.url, target: "_blank", rel: "noopener noreferrer", text: review.id }),
-      el("span", { class: "state", text: review.state }),
+      el("span", { class: "state state-" + review.state, text: review.state }),
+      el("span", { class: "state state-reviewed", id: "reviewed-badge", text: "reviewed", hidden: "" }),
       el("span", {}, [el("code", { text: review.branch }), " into ", el("code", { text: review.base })]),
       stacked,
       el("span", { text: chapter.commits.length + (chapter.commits.length === 1 ? " commit" : " commits") }),
@@ -1157,9 +1316,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     });
     var toolbar = el("div", { class: "toolbar", id: "toolbar" }, ["View:"].concat(buttons));
     if (data.served) {
+      var refresh = el("button", { type: "button", id: "refresh-discussion", title: "Load new comments and reviews", text: "Refresh" });
+      refresh.addEventListener("click", function () { refreshConversation(refresh); });
       var reviewButton = el("button", { type: "button", class: "review-button" }, ["Review ", el("span", { id: "draft-count", class: "draft-count" })]);
       reviewButton.addEventListener("click", openReview);
-      toolbar.appendChild(reviewButton);
+      toolbar.appendChild(el("span", { class: "toolbar-actions" }, [refresh, reviewButton]));
     }
     var top = el("div", { class: "header-top" }, [
       navButton(),
@@ -1234,33 +1395,32 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   }
 
   function renderIntro() {
-    var panels = [];
+    var parts = [];
     if (chapter.review.bodyHtml) {
       // Rendered from Markdown by git-stk with raw HTML and script links removed.
-      var body = el("div", { class: "markdown" });
+      var body = el("div", { class: "markdown description" });
       setMarkdown(body, chapter.review.bodyHtml);
-      panels.push(el("div", { class: "panel" }, [el("h2", { text: "Description" }), body]));
+      parts.push(body);
+    } else {
+      parts.push(el("p", { class: "description empty", text: "This review has no description." }));
     }
     if (chapter.commits.length) {
-      panels.push(el("div", { class: "panel" }, [
-        el("h2", { text: "Commits" }),
-        el("ol", { class: "commits" }, chapter.commits.map(function (commit) {
-          return el("li", {}, [el("code", { text: commit.sha }), commit.subject]);
-        })),
-      ]));
+      parts.push(el("ol", { class: "commits", "aria-label": "Commits" }, chapter.commits.map(function (commit) {
+        return el("li", {}, [el("code", { text: commit.sha }), el("span", { text: commit.subject })]);
+      })));
     }
-    panels.push(renderConversation());
-    return el("div", { class: "intro" }, panels);
+    parts.push(renderConversation());
+    return el("div", { class: "intro" }, parts);
   }
 
   function renderNav() {
     var nav = document.getElementById("nav");
     nav.textContent = "";
     if (data.chapters.length > 1) renderStackNav(nav);
-    nav.appendChild(el("h2", { text: "Tour" }));
+    nav.appendChild(el("h2", { text: "Steps" }));
     nav.appendChild(el("div", { class: "progress", id: "progress" }));
-    nav.appendChild(el("ol", {}, chapter.steps.map(function (step, stepIndex) {
-      var title = (stepIndex + 1) + ". " + step.title;
+    nav.appendChild(el("ol", { class: "rail steps" }, chapter.steps.map(function (step, stepIndex) {
+      var title = step.title;
       var row = el("div", { class: "step-row" }, [
         reviewedBox(step, "Mark " + title + " reviewed"),
         el("a", { class: "step-link", "data-step-link": step.id, href: "#" + stepAnchor(stepIndex), text: title }),
@@ -1268,7 +1428,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       var files = el("div", { class: "step-files" }, step.files.map(function (file, fileIndex) {
         return el("a", { href: "#" + stepAnchor(stepIndex) + "-file-" + fileIndex, title: file.path, text: file.path });
       }));
-      return el("li", { class: "step" }, [row, files]);
+      return el("li", { class: "step rail-item" }, [row, files]);
     })));
     showProgress();
   }
@@ -1284,26 +1444,33 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         other.review.title || other.review.branch,
       ]);
       if (index === chapterIndex) link.setAttribute("aria-current", "page");
-      return el("li", { class: "chapter" }, [link, el("span", { class: "chapter-progress", "data-chapter": index })]);
+      return el("li", { class: "chapter rail-item" + (index === chapterIndex ? " current" : "") }, [link, el("span", { class: "chapter-progress", "data-chapter": index })]);
     }).reverse();
-    nav.appendChild(el("ol", { class: "chapters" }, items));
-    nav.appendChild(el("div", { class: "chapters-base" }, [el("code", { text: data.chapters[0].review.base })]));
+    items.push(el("li", { class: "chapter rail-item trunk" }, [el("code", { text: data.chapters[0].review.base })]));
+    nav.appendChild(el("ol", { class: "rail chapters" }, items));
   }
 
   function showProgress() {
     var done = chapter.steps.filter(function (step) { return reviewed[step.id]; }).length;
     document.getElementById("progress").textContent = done + " of " + chapter.steps.length + " steps reviewed";
+    var badge = document.getElementById("reviewed-badge");
+    if (badge) badge.hidden = done !== chapter.steps.length;
     chapter.steps.forEach(function (step) {
       var link = document.querySelector('[data-step-link="' + step.id + '"]');
       if (link) link.classList.toggle("done", !!reviewed[step.id]);
+      var number = document.querySelector('[data-step-number="' + step.id + '"]');
+      if (number) number.classList.toggle("done", !!reviewed[step.id]);
     });
     data.chapters.forEach(function (other, index) {
       var progress = document.querySelector('[data-chapter="' + index + '"]');
       if (!progress) return;
       var marks = index === chapterIndex ? reviewed : readStorage(reviewedKeyFor(other), {});
       var count = other.steps.filter(function (step) { return marks[step.id]; }).length;
+      var finished = count === other.steps.length;
       progress.textContent = count + "/" + other.steps.length;
-      progress.classList.toggle("done", count === other.steps.length);
+      progress.classList.toggle("done", finished);
+      progress.parentNode.classList.toggle("done", finished);
+      progress.title = finished ? "Every step reviewed" : count + " of " + other.steps.length + " steps reviewed";
     });
   }
 
@@ -1328,8 +1495,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   function renderStep(step, stepIndex) {
     var box = reviewedBox(step, null);
     var head = el("div", { class: "step-head" }, [
-      el("h2", { text: (stepIndex + 1) + ". " + step.title }),
-      el("label", {}, [box, " Reviewed"]),
+      el("h2", {}, [el("span", { class: "step-number", "data-step-number": step.id, text: String(stepIndex + 1) }), step.title]),
+      el("label", { class: "reviewed-toggle" }, [box, " Reviewed"]),
     ]);
     var files = step.files.map(function (file, fileIndex) {
       var view = new FileView(file, stepIndex, fileIndex, step.collapsed);
