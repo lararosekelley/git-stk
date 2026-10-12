@@ -7,8 +7,8 @@
 //!
 //! Scenarios, all on one ephemeral repo, GitHub / GitLab / Gitea:
 //!   1. core lifecycle   - build a stack -> submit -> look up and tour a review
-//!      by number and URL -> post a review from the tour -> restack ->
-//!      squash-merge
+//!      by number and URL -> post a review, reply, and resolve from the tour ->
+//!      restack -> squash-merge
 //!   2. issue auto-close - a branch that references an issue closes it on merge
 //!   3. metadata surgery - adopt, repair, rename
 //!   4. conflict recovery - an interrupted restack: abort, then continue
@@ -449,13 +449,11 @@ fn review_lookup_and_tour(
 }
 
 /// A review submitted from a served tour, confirmed at its terminal prompt,
-/// lands on the host with its line comment: each host's review call, which
-/// only a live run can check. Comments only, since a host may refuse an
-/// approval from the review's own author.
+/// lands on the host with its line comment; then a reply joins its thread
+/// and, where the host resolves threads, the thread is resolved. Each is a
+/// host call only a live run can check. Comments only, since a host may
+/// refuse an approval from the review's own author.
 fn review_submit(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-
     let review = open_review(provider, slug, "feat/b")?
         .ok_or_else(|| "no open review for feat/b".to_owned())?;
     let number = match provider {
@@ -466,65 +464,157 @@ fn review_submit(provider: Provider, slug: &str, work: &Path) -> Result<(), Stri
     .ok_or_else(|| format!("no number in {review}"))?
     .to_string();
 
-    eprintln!("e2e: $ git-stk tour {number} --no-open (served)");
-    let mut server = Command::new(env("GIT_STK_BIN"))
-        .args(["tour", &number, "--no-open"])
-        .current_dir(work)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("failed to start the tour: {e}"))?;
-    let mut stdout = BufReader::new(server.stdout.take().expect("stdout is piped"));
-    let mut first_line = String::new();
-    stdout
-        .read_line(&mut first_line)
-        .map_err(|e| format!("read the tour's address: {e}"))?;
-    let url = first_line
-        .split_whitespace()
-        .find(|word| word.starts_with("http://127.0.0.1:"))
-        .ok_or_else(|| format!("the tour printed no address: {first_line}"))?
-        .to_owned();
-
     // The review's chapter is the second, after feat/a's; b.txt's one line
     // is in its diff.
+    let mut tour = ServedTour::start(work, &number)?;
     let submission = serde_json::json!({
         "chapter": 1,
         "event": "comment",
         "body": "e2e review summary",
         "comments": [{"path": "b.txt", "oldPath": "b.txt", "side": "new", "line": 1,
                       "pairedLine": null, "body": "e2e line comment"}],
-    })
-    .to_string();
-    tour_request(&url, "POST", "api/alive", "\"e2e\"")?;
-    let submit = {
-        let url = url.clone();
-        std::thread::spawn(move || tour_request(&url, "POST", "api/submit", &submission))
-    };
-    sleep(Duration::from_secs(2));
-    let mut stdin = server.stdin.take().expect("stdin is piped");
-    stdin
-        .write_all(b"y\n")
-        .map_err(|e| format!("answer the prompt: {e}"))?;
-    let answer = submit
-        .join()
-        .map_err(|_| "the submit request panicked".to_owned())??;
-    tour_request(&url, "POST", "api/closed", "\"e2e\"")?;
-    let _ = server.wait();
-    if !answer.starts_with("HTTP/1.1 200") {
-        return Err(format!("submitting the review failed: {answer}"));
-    }
+    });
+    tour.post_confirmed("api/submit", &submission)?;
+    tour.close();
 
-    // The tour reads the discussion back, as anyone touring it would.
-    let page = work.join(".git").join("e2e-review.html");
-    let page_arg = page.to_string_lossy().into_owned();
-    stk(work, &["tour", &number, "--no-open", "--output", &page_arg])?;
-    let html = std::fs::read_to_string(&page).map_err(|e| format!("read the tour: {e}"))?;
-    let shown = |text: &str| html.contains(text);
-    if !shown("e2e line comment") || !shown("e2e review summary") {
-        return Err("the submitted review did not come back in the tour".to_owned());
+    let data = tour_snapshot(work, &number, "e2e-review.html")?;
+    let discussion = &data["chapters"][1]["conversation"];
+    let text = discussion.to_string();
+    if !text.contains("e2e line comment") || !text.contains("e2e review summary") {
+        return Err(format!(
+            "the submitted review did not come back in the tour: {discussion}"
+        ));
+    }
+    let thread = discussion["threads"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|thread| thread.to_string().contains("e2e line comment"))
+        .ok_or_else(|| format!("no thread for the line comment: {discussion}"))?
+        .clone();
+    let target = serde_json::json!({
+        "id": thread["id"], "path": thread["path"], "side": thread["side"],
+        "line": thread["line"], "outdated": thread["outdated"],
+    });
+
+    let resolves = !matches!(provider, Provider::Gitea);
+    let mut tour = ServedTour::start(work, &number)?;
+    tour.post_confirmed(
+        "api/reply",
+        &serde_json::json!({"chapter": 1, "thread": target, "body": "e2e reply"}),
+    )?;
+    if resolves {
+        let answer = tour_request(
+            &tour.url,
+            "POST",
+            "api/resolve",
+            &serde_json::json!({"chapter": 1, "thread": target, "resolved": true}).to_string(),
+        )?;
+        if !answer.starts_with("HTTP/1.1 200") {
+            return Err(format!("resolving the thread failed: {answer}"));
+        }
+    }
+    tour.close();
+
+    let data = tour_snapshot(work, &number, "e2e-reply.html")?;
+    let thread = data["chapters"][1]["conversation"]["threads"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|found| found["id"] == thread["id"] || found.to_string().contains("e2e line comment"))
+        .cloned()
+        .unwrap_or_default();
+    if !thread.to_string().contains("e2e reply") {
+        return Err(format!("the reply did not join its thread: {thread}"));
+    }
+    if resolves && thread["resolved"] != true {
+        return Err(format!("the thread was not resolved: {thread}"));
     }
     Ok(())
+}
+
+/// The tour data a `--output` snapshot of review `number` holds.
+fn tour_snapshot(work: &Path, number: &str, name: &str) -> Result<serde_json::Value, String> {
+    let page = work.join(".git").join(name);
+    let page_arg = page.to_string_lossy().into_owned();
+    stk(work, &["tour", number, "--no-open", "--output", &page_arg])?;
+    let html = std::fs::read_to_string(&page).map_err(|e| format!("read the tour: {e}"))?;
+    let start_tag = r#"<script id="tour-data" type="application/json">"#;
+    let data = html
+        .split_once(start_tag)
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(data, _)| data)
+        .ok_or_else(|| "the tour page has no data".to_owned())?;
+    serde_json::from_str(data).map_err(|e| format!("parse the tour data: {e}"))
+}
+
+/// A served tour of one review, open in a pretend tab.
+struct ServedTour {
+    server: std::process::Child,
+    stdin: std::process::ChildStdin,
+    /// Held open, so the server can still print its prompts.
+    _stdout: std::io::BufReader<std::process::ChildStdout>,
+    url: String,
+}
+
+impl ServedTour {
+    fn start(work: &Path, number: &str) -> Result<Self, String> {
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+        eprintln!("e2e: $ git-stk tour {number} --no-open (served)");
+        let mut server = Command::new(env("GIT_STK_BIN"))
+            .args(["tour", number, "--no-open"])
+            .current_dir(work)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("failed to start the tour: {e}"))?;
+        let mut stdout = BufReader::new(server.stdout.take().expect("stdout is piped"));
+        let mut first_line = String::new();
+        stdout
+            .read_line(&mut first_line)
+            .map_err(|e| format!("read the tour's address: {e}"))?;
+        let url = first_line
+            .split_whitespace()
+            .find(|word| word.starts_with("http://127.0.0.1:"))
+            .ok_or_else(|| format!("the tour printed no address: {first_line}"))?
+            .to_owned();
+        let stdin = server.stdin.take().expect("stdin is piped");
+        tour_request(&url, "POST", "api/alive", "\"e2e\"")?;
+        Ok(Self {
+            server,
+            stdin,
+            _stdout: stdout,
+            url,
+        })
+    }
+
+    /// Post `body` to `path` as the page would, saying yes at the terminal.
+    fn post_confirmed(&mut self, path: &str, body: &serde_json::Value) -> Result<(), String> {
+        use std::io::Write;
+        let request = {
+            let (url, path, body) = (self.url.clone(), path.to_owned(), body.to_string());
+            std::thread::spawn(move || tour_request(&url, "POST", &path, &body))
+        };
+        sleep(Duration::from_secs(2));
+        self.stdin
+            .write_all(b"y\n")
+            .map_err(|e| format!("answer the prompt: {e}"))?;
+        let answer = request
+            .join()
+            .map_err(|_| "the request panicked".to_owned())??;
+        if answer.starts_with("HTTP/1.1 200") {
+            Ok(())
+        } else {
+            Err(format!("{path} failed: {answer}"))
+        }
+    }
+
+    fn close(mut self) {
+        let _ = tour_request(&self.url, "POST", "api/closed", "\"e2e\"");
+        let _ = self.server.wait();
+    }
 }
 
 /// One request to a served tour at `url`, returning the raw response.

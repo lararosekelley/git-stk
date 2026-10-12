@@ -51,6 +51,8 @@ pub struct Tour {
     warnings: Vec<String>,
     /// The outcomes a review can be submitted with on this forge.
     events: Vec<&'static str>,
+    /// Whether this forge resolves threads.
+    resolves: bool,
 }
 
 /// One review's commits and changes.
@@ -203,6 +205,7 @@ impl Tour {
                 .iter()
                 .map(|event| event.as_str())
                 .collect(),
+            resolves: provider.resolves_threads(),
         })
     }
 
@@ -264,6 +267,7 @@ impl Tour {
         json!({
             "served": served,
             "reviewEvents": self.events,
+            "resolvesThreads": self.resolves,
             "current": self.current,
             "chapters": self.chapters.iter().map(Chapter::data).collect::<Vec<_>>(),
         })

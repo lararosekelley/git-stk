@@ -243,6 +243,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .review-status { margin-top: 8px; color: var(--fg-muted); }
 .review-status.failed { color: var(--removed); }
 .review-status.posted { color: var(--done); }
+.thread-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0 6px; }
+.action-status { color: var(--fg-muted); font-size: 12px; }
+.action-status.failed { color: var(--removed); }
+.comment-box { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
 .chapter-nav { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding-top: 16px; }
 .chapter-nav a { color: var(--accent); text-decoration: none; }
 .chapter-nav a:last-child { text-align: right; }
@@ -898,6 +902,74 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     return el("div", { class: "comment" }, [meta, body]);
   }
 
+  // Post to the tour server, which asks in the terminal before posting
+  // anything; show progress in `status`, and refresh the discussion after.
+  function postAction(path, payload, status, asks) {
+    status.className = "action-status";
+    status.textContent = asks ? "Confirm in your terminal to post this." : "Saving...";
+    payload.chapter = chapterIndex;
+    return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      .then(function (response) {
+        return response.json().then(function (answer) { return { ok: response.ok, answer: answer }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          status.className = "action-status failed";
+          status.textContent = result.answer.error || "That did not go through.";
+          return false;
+        }
+        status.textContent = "";
+        var refresh = document.querySelector(".conversation .panel-head button");
+        if (refresh) refresh.click();
+        return true;
+      })
+      .catch(function () {
+        status.className = "action-status failed";
+        status.textContent = "The tour server did not answer; it may have stopped.";
+        return false;
+      });
+  }
+
+  function threadTarget(thread) {
+    return { id: thread.id, path: thread.path, side: thread.side, line: thread.line, outdated: thread.outdated };
+  }
+
+  // Reply and resolve controls for a thread on a served page.
+  function threadActions(thread) {
+    if (!data.served) return null;
+    var status = el("span", { class: "action-status" });
+    var actions = el("div", { class: "thread-actions", "data-thread-id": thread.id });
+    var reply = el("button", { type: "button", text: "Reply" });
+    actions.appendChild(reply);
+    if (data.resolvesThreads && thread.resolved !== null) {
+      var toggle = el("button", { type: "button", text: thread.resolved ? "Reopen" : "Resolve" });
+      toggle.addEventListener("click", function () {
+        toggle.disabled = true;
+        postAction("api/resolve", { thread: threadTarget(thread), resolved: !thread.resolved }, status, false)
+          .then(function () { toggle.disabled = false; });
+      });
+      actions.appendChild(toggle);
+    }
+    actions.appendChild(status);
+    reply.addEventListener("click", function () {
+      if (actions.querySelector("textarea")) return;
+      var text = el("textarea", { rows: "3", placeholder: "Reply" });
+      var send = el("button", { type: "button", class: "primary", text: "Reply" });
+      var cancel = el("button", { type: "button", text: "Cancel" });
+      var editor = el("div", { class: "editor" }, [text, el("div", { class: "editor-actions" }, [cancel, send])]);
+      actions.parentNode.insertBefore(editor, actions);
+      text.focus();
+      cancel.addEventListener("click", function () { editor.remove(); });
+      send.addEventListener("click", function () {
+        if (!text.value.trim()) return;
+        send.disabled = true;
+        postAction("api/reply", { thread: threadTarget(thread), body: text.value }, status, true)
+          .then(function (posted) { if (posted) editor.remove(); else send.disabled = false; });
+      });
+    });
+    return actions;
+  }
+
   function renderThread(thread) {
     var parts = [];
     if (thread.outdated) {
@@ -906,6 +978,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       if (thread.diffHunk) parts.push(el("pre", { class: "thread-hunk", text: thread.diffHunk }));
     }
     thread.comments.forEach(function (comment) { parts.push(renderComment(comment)); });
+    var actions = threadActions(thread);
+    if (actions) parts.push(actions);
     if (thread.resolved) {
       var first = thread.comments[0];
       return el("details", { class: "thread resolved" }, [
@@ -963,7 +1037,47 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     if (conversation.incomplete) {
       panel.appendChild(el("div", { class: "note" }, ["Some of the discussion was left out; ", el("a", { href: chapter.review.url, target: "_blank", rel: "noopener", text: "open the review" }), " to see all of it."]));
     }
+    if (data.served) {
+      var text = el("textarea", { rows: "3", placeholder: "Comment on this review" });
+      var send = el("button", { type: "button", class: "primary", text: "Comment" });
+      var status = el("span", { class: "action-status" });
+      send.addEventListener("click", function () {
+        if (!text.value.trim()) return;
+        send.disabled = true;
+        postAction("api/comment", { body: text.value }, status, true)
+          .then(function (posted) { send.disabled = false; if (posted) text.value = ""; });
+      });
+      panel.appendChild(el("div", { class: "editor comment-box" }, [text, el("div", { class: "editor-actions" }, [status, send])]));
+    }
     return panel;
+  }
+
+  // Text typed into the comment box and open reply editors, which a
+  // refresh would otherwise throw away with the panel it rebuilds.
+  function unsentText() {
+    var unsent = { comment: "", replies: {} };
+    var box = document.querySelector(".comment-box textarea");
+    if (box) unsent.comment = box.value;
+    Array.prototype.forEach.call(document.querySelectorAll(".thread-actions[data-thread-id]"), function (actions) {
+      var editor = actions.previousElementSibling;
+      var text = editor && editor.classList.contains("editor") ? editor.querySelector("textarea") : null;
+      if (text && text.value) unsent.replies[actions.getAttribute("data-thread-id")] = text.value;
+    });
+    return unsent;
+  }
+
+  function restoreText(unsent) {
+    var box = document.querySelector(".comment-box textarea");
+    if (box) box.value = unsent.comment;
+    Object.keys(unsent.replies).forEach(function (id) {
+      var actions = [].find.call(document.querySelectorAll(".thread-actions[data-thread-id]"), function (candidate) {
+        return candidate.getAttribute("data-thread-id") === id;
+      });
+      if (!actions) return;
+      actions.querySelector("button").click();
+      var editor = actions.previousElementSibling;
+      if (editor) editor.querySelector("textarea").value = unsent.replies[id];
+    });
   }
 
   function refreshConversation(button) {
@@ -982,7 +1096,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         data.chapters[shown].conversation = conversation;
         if (chapterIndex === shown) {
           var scroll = window.scrollY;
+          var unsent = unsentText();
           renderChapter(shown);
+          restoreText(unsent);
           window.scrollTo(0, scroll);
         }
       })

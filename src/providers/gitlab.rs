@@ -417,6 +417,55 @@ impl ReviewProvider for GitLabProvider {
         &[ReviewEvent::Comment, ReviewEvent::Approve]
     }
 
+    fn reply_to_thread(
+        &self,
+        review: &ReviewRequest,
+        thread: &Thread,
+        _commit: &str,
+        body: &str,
+    ) -> Result<()> {
+        command_output_with_input(
+            "glab",
+            &[
+                "api",
+                "--method",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                &format!(
+                    "projects/:id/merge_requests/{}/discussions/{}/notes",
+                    review.id_value(),
+                    thread.id
+                ),
+                "--input",
+                "-",
+            ],
+            &serde_json::json!({ "body": body }).to_string(),
+        )?;
+        Ok(())
+    }
+
+    fn resolves_threads(&self) -> bool {
+        true
+    }
+
+    fn set_resolved(&self, review: &ReviewRequest, thread: &Thread, resolved: bool) -> Result<()> {
+        command_output(
+            "glab",
+            &[
+                "api",
+                "--method",
+                "PUT",
+                &format!(
+                    "projects/:id/merge_requests/{}/discussions/{}?resolved={resolved}",
+                    review.id_value(),
+                    thread.id
+                ),
+            ],
+        )?;
+        Ok(())
+    }
+
     fn issue_state(&self, number: u64) -> Result<IssueState> {
         // Merge requests are numbered apart from issues, so `#N` is never one.
         parse_issue_state(&command_output(

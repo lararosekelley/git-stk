@@ -448,6 +448,32 @@ impl ReviewProvider for GitHubProvider {
         Ok(optional_string(&value, "html_url"))
     }
 
+    fn reply_to_thread(
+        &self,
+        _review: &ReviewRequest,
+        thread: &Thread,
+        _commit: &str,
+        body: &str,
+    ) -> Result<()> {
+        graphql_mutation(
+            "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}",
+            &[("id", &thread.id), ("body", body)],
+        )
+    }
+
+    fn resolves_threads(&self) -> bool {
+        true
+    }
+
+    fn set_resolved(&self, _review: &ReviewRequest, thread: &Thread, resolved: bool) -> Result<()> {
+        let mutation = if resolved {
+            "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}"
+        } else {
+            "mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}"
+        };
+        graphql_mutation(mutation, &[("id", &thread.id)])
+    }
+
     fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
         // gh pages through the API itself; a repository under the limit costs
         // a single request.
@@ -818,6 +844,31 @@ fn parse_base_merge_queue(json: &str) -> bool {
                 .map(|queue| !queue.is_null())
         })
         .unwrap_or(false)
+}
+
+/// Run a GraphQL mutation with string variables. `gh api graphql` answers
+/// HTTP 200 with an `errors` list when the mutation itself is refused, so
+/// that is checked too.
+fn graphql_mutation(mutation: &str, variables: &[(&str, &str)]) -> Result<()> {
+    let query_arg = format!("query={mutation}");
+    let variables: Vec<String> = variables
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    let mut args = vec!["api", "graphql", "-f", query_arg.as_str()];
+    for variable in &variables {
+        args.extend(["-f", variable.as_str()]);
+    }
+    let output = command_output("gh", &args)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&output).context("failed to parse gh GraphQL JSON")?;
+    if let Some(message) = value
+        .pointer("/errors/0/message")
+        .and_then(serde_json::Value::as_str)
+    {
+        bail!("GitHub refused it: {message}");
+    }
+    Ok(())
 }
 
 /// The body of a create-review request: one review carrying every comment,

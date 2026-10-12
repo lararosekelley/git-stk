@@ -254,6 +254,12 @@ running the tour shows exactly what will be posted and asks before anything is s
 posted at once. A review whose head has moved since the tour started is refused, since its comments were
 written against the old diff; restart the tour to review the new commits.
 
+Threads can be answered in place: Reply posts to the thread, Resolve and Reopen change its state on GitHub and
+GitLab (Gitea has no way to resolve one from outside its pages), and the box at the end of the conversation
+comments on the review as a whole. Replies and comments are confirmed in the terminal like reviews; resolving
+posts nothing, so it is not asked about. Gitea places a reply by line, so it can only answer a thread on a
+line of the current diff.
+
 The step sidebar can be hidden, and the sun/moon button switches between light and dark themes (the page
 follows the system theme until one is chosen). The tour is served from a local address only this machine
 can reach, behind a token generated for each run, and opened in your browser (`--no-open` just prints the

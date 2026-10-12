@@ -460,6 +460,27 @@ pub trait ReviewProvider: Sync {
     /// link to it or a note on what was posted.
     fn submit_review(&self, review: &ReviewRequest, submission: &Submission) -> Result<String>;
 
+    /// Reply to `thread` on `review`. `commit` is the head the reply is
+    /// written against, for a forge that places replies by line.
+    fn reply_to_thread(
+        &self,
+        review: &ReviewRequest,
+        thread: &Thread,
+        commit: &str,
+        body: &str,
+    ) -> Result<()>;
+
+    /// Whether threads can be resolved here, through [`set_resolved`](Self::set_resolved).
+    fn resolves_threads(&self) -> bool {
+        false
+    }
+
+    /// Mark `thread` on `review` resolved, or open it again.
+    fn set_resolved(&self, review: &ReviewRequest, thread: &Thread, resolved: bool) -> Result<()> {
+        let _ = (thread, resolved);
+        bail!("threads on {} cannot be resolved here", review.id)
+    }
+
     /// The outcomes a review can be submitted with here.
     fn review_events(&self) -> &'static [ReviewEvent] {
         &[

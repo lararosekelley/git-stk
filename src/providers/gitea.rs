@@ -159,6 +159,37 @@ impl ReviewProvider for GiteaProvider {
         Ok(optional_string(&value, "html_url"))
     }
 
+    fn reply_to_thread(
+        &self,
+        review: &ReviewRequest,
+        thread: &Thread,
+        commit: &str,
+        body: &str,
+    ) -> Result<()> {
+        // Gitea has no reply call: a comment on the same line of the same
+        // side joins the conversation there, which needs a line on `commit`.
+        let Some(anchor) = thread.anchor.filter(|_| !thread.outdated) else {
+            bail!(
+                "Gitea can only reply to a conversation on a line of the current diff; reply on {} instead",
+                review.url
+            );
+        };
+        let submission = Submission {
+            event: ReviewEvent::Comment,
+            body: String::new(),
+            comments: vec![super::DraftComment {
+                path: thread.path.clone(),
+                old_path: thread.path.clone(),
+                anchor,
+                paired_line: None,
+                body: body.to_owned(),
+            }],
+            commit: commit.to_owned(),
+        };
+        self.submit_review(review, &submission)?;
+        Ok(())
+    }
+
     fn issue_state(&self, number: u64) -> Result<IssueState> {
         let endpoint = format!("repos/{}/issues/{number}", repo_slug()?);
         parse_issue_state(&command_output("tea", &["api", &endpoint])?)

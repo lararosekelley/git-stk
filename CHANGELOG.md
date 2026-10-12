@@ -21,13 +21,14 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   outcomes and comments, threads under their lines, and outdated threads with
   the code they were left on. Line comments can be drafted on the page and
   submitted as one review (comment, approve, or request changes) once the
-  terminal running the tour confirms what will be posted. Reviewed steps are
-  remembered per head commit. A
-  review in a stack is toured with the rest of its stack, branches included,
-  one review at a time; the stack is found from review bases, so stacks not
-  made with git-stk work too (`--no-stack` tours one review). The page header
-  stays in view, the step sidebar can be hidden, and the page follows the
-  system theme or a light/dark choice from its toggle.
+  terminal running the tour confirms what will be posted; threads can be
+  replied to and resolved, and the review commented on, the same way. Reviewed
+  steps are remembered per head commit. A review in a stack is toured with the
+  rest of its stack, branches included, one review at a time; the stack is
+  found from review bases, so stacks not made with git-stk work too
+  (`--no-stack` tours one review). The page header stays in view, the step
+  sidebar can be hidden, and the page follows the system theme or a light/dark
+  choice from its toggle.
 - **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
   URL as well as a branch, so `git stk view 12` opens a review whose branch is
   not checked out. A URL for another repository's review is refused rather
