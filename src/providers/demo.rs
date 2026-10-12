@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::{
-    MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome, command_output,
+    Conversation, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
+    command_output,
 };
 use crate::git;
 
@@ -89,6 +90,11 @@ impl ReviewProvider for DemoProvider {
         let state = load()?;
         let entry = by_id(&state, review)?;
         Ok(entry["body"].as_str().unwrap_or_default().to_owned())
+    }
+
+    fn conversation(&self, _review: &ReviewRequest) -> Result<Conversation> {
+        // The demo's reviews have no discussion.
+        Ok(Conversation::default())
     }
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String> {

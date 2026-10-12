@@ -10,11 +10,13 @@ use serde_json::{Value, json};
 use crate::git;
 use crate::notes;
 use crate::progress::Progress;
-use crate::providers::{ProviderKind, ReviewProvider, ReviewRequest};
+use crate::providers::{Conversation, ProviderKind, ReviewProvider, ReviewRequest};
 use crate::settings;
 
+mod conversation;
 mod diff;
 mod markdown;
+pub mod server;
 pub mod stack;
 mod steps;
 
@@ -59,6 +61,8 @@ struct Chapter {
     head_sha: String,
     commits: Vec<(String, String)>,
     steps: Vec<Step>,
+    /// The review's discussion as page data.
+    conversation: Value,
 }
 
 impl Tour {
@@ -81,21 +85,19 @@ impl Tour {
             count => format!("fetching {count} reviews"),
         });
         let mut warnings = Vec::new();
-        // The descriptions come from the provider while git fetches.
-        let (tips, bodies) = thread::scope(|scope| {
+        // The descriptions and discussions come from the provider while git
+        // fetches.
+        let (tips, bodies, conversations) = thread::scope(|scope| {
             let bodies: Vec<_> = reviews
                 .iter()
                 .map(|review| scope.spawn(move || provider.review_body(review)))
                 .collect();
-            let tips = stack_tips(kind, &reviews, current, &mut warnings);
-            let bodies: Vec<_> = bodies
-                .into_iter()
-                .map(|body| {
-                    body.join()
-                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-                })
+            let conversations: Vec<_> = reviews
+                .iter()
+                .map(|review| scope.spawn(move || provider.conversation(review)))
                 .collect();
-            (tips, bodies)
+            let tips = stack_tips(kind, &reviews, current, &mut warnings);
+            (tips, joined(bodies), joined(conversations))
         });
         let tips = tips?;
         let linked: Vec<bool> = parents
@@ -120,6 +122,8 @@ impl Tour {
         let mut reviews: Vec<Option<ReviewRequest>> = reviews.into_iter().map(Some).collect();
         let mut tips = tips;
         let mut bodies: Vec<Option<Result<String>>> = bodies.into_iter().map(Some).collect();
+        let mut conversations: Vec<Option<Result<Conversation>>> =
+            conversations.into_iter().map(Some).collect();
         let mut read: Vec<Option<Option<Chapter>>> = (0..reviews.len()).map(|_| None).collect();
         // The asked-for review first, so the text budget goes to it.
         let order = std::iter::once(current).chain((0..reviews.len()).filter(|&i| i != current));
@@ -136,6 +140,20 @@ impl Tour {
             let chapter = body
                 .with_context(|| format!("failed to read the description of {id}"))
                 .and_then(|body| Chapter::read(review, &body, &base_tip, head_sha, &mut budget));
+            let chapter = chapter.map(|chapter| {
+                chapter.map(|mut chapter| {
+                    chapter.conversation = match conversations[index].take() {
+                        Some(Ok(conversation)) => conversation::data(&conversation),
+                        Some(Err(error)) => {
+                            warnings
+                                .push(format!("could not read the discussion on {id}: {error:#}"));
+                            conversation::error(&format!("{error:#}"))
+                        }
+                        None => conversation::error("not read"),
+                    };
+                    chapter
+                })
+            });
             match chapter {
                 Ok(None) if index == current => bail!(
                     "{id} has no changes against {base}; a merged review's changes are already in its base"
@@ -190,13 +208,6 @@ impl Tour {
         &self.chapters[self.current]
     }
 
-    /// The file name a tour of this review at its current head is saved as.
-    pub fn file_name(&self) -> String {
-        let chapter = self.current();
-        let short = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
-        format!("{}-{short}.html", chapter.review.id_value())
-    }
-
     /// How many reviews the tour covers.
     pub fn review_count(&self) -> usize {
         self.chapters.len()
@@ -211,7 +222,9 @@ impl Tour {
             .sum()
     }
 
-    pub fn render(&self) -> String {
+    /// The page. A `served` page talks to the tour server; one that is not
+    /// is a read-only snapshot.
+    pub fn render(&self, served: bool) -> String {
         let title = format!("Tour of {}", self.current().review.label());
         fill(
             TEMPLATE,
@@ -219,13 +232,23 @@ impl Tour {
                 (TITLE_PLACEHOLDER, &escape_html(&title)),
                 (LICENSE_PLACEHOLDER, HIGHLIGHT_LICENSE),
                 (HIGHLIGHT_PLACEHOLDER, HIGHLIGHT_JS),
-                (DATA_PLACEHOLDER, &script_json(&self.data())),
+                (DATA_PLACEHOLDER, &script_json(&self.data(served))),
             ],
         )
     }
 
-    fn data(&self) -> Value {
+    /// A chapter's discussion as it stands now, for a page refreshing it.
+    pub fn conversation(&self, provider: &dyn ReviewProvider, chapter: usize) -> Result<Value> {
+        let chapter = self
+            .chapters
+            .get(chapter)
+            .context("no such review in this tour")?;
+        Ok(conversation::data(&provider.conversation(&chapter.review)?))
+    }
+
+    fn data(&self, served: bool) -> Value {
         json!({
+            "served": served,
             "current": self.current,
             "chapters": self.chapters.iter().map(Chapter::data).collect::<Vec<_>>(),
         })
@@ -266,6 +289,7 @@ impl Chapter {
             head_sha,
             commits,
             steps,
+            conversation: Value::Null,
         }))
     }
 
@@ -281,6 +305,7 @@ impl Chapter {
                 "base": self.review.base,
                 "bodyHtml": markdown::to_html(&self.body),
             },
+            "conversation": self.conversation,
             "baseSha": self.base_sha,
             "headSha": self.head_sha,
             "commits": self.commits.iter().map(|(sha, subject)| {
@@ -294,6 +319,18 @@ impl Chapter {
             })).collect::<Vec<_>>(),
         })
     }
+}
+
+/// The results of scoped threads, in order, re-raising a panic from any.
+fn joined<T>(handles: Vec<thread::ScopedJoinHandle<'_, T>>) -> Vec<T> {
+    handles
+        .into_iter()
+        .map(|handle| {
+            handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
+        .collect()
 }
 
 /// Each review's base tip and head, or None for a review that could not be

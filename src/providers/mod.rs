@@ -40,6 +40,7 @@ fn humanize(duration: Duration) -> String {
     }
 }
 
+mod conversation;
 mod demo;
 mod gitea;
 mod github;
@@ -47,6 +48,7 @@ mod gitlab;
 mod json;
 mod review_ref;
 
+pub use conversation::{Anchor, Comment, Conversation, Side, Thread, Verdict, VerdictState};
 use demo::DemoProvider;
 use gitea::GiteaProvider;
 use github::GitHubProvider;
@@ -446,6 +448,10 @@ pub trait ReviewProvider: Sync {
     fn update_review_title(&self, review: &ReviewRequest, title: &str) -> Result<String>;
 
     fn review_body(&self, review: &ReviewRequest) -> Result<String>;
+
+    /// The review's discussion: submitted reviews, threads on its code, and
+    /// comments on it as a whole.
+    fn conversation(&self, review: &ReviewRequest) -> Result<Conversation>;
 
     fn update_review_body(&self, review: &ReviewRequest, body: &str) -> Result<String>;
 

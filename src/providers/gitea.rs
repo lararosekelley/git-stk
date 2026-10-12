@@ -7,9 +7,10 @@ use super::json::{
     all_reviews, optional_bool, optional_string, parse_issue_state, parse_state, required_string,
 };
 use super::{
-    CHECK_GRACE_POLLS, CheckStatus, IssueState, MergeBlocker, ReviewProvider, ReviewRequest,
-    ReviewState, ReviewSummary, WaitOutcome, check_poll_interval, checks_timed_out, command_output,
-    merge_with_resettle, review_merged_out_of_band,
+    Anchor, CHECK_GRACE_POLLS, CheckStatus, Comment, Conversation, IssueState, MergeBlocker,
+    ReviewProvider, ReviewRequest, ReviewState, ReviewSummary, Side, Thread, Verdict, VerdictState,
+    WaitOutcome, check_poll_interval, checks_timed_out, command_output, merge_with_resettle,
+    review_merged_out_of_band,
 };
 
 pub(super) struct GiteaProvider;
@@ -109,6 +110,42 @@ impl ReviewProvider for GiteaProvider {
 
     fn review_body(&self, review: &ReviewRequest) -> Result<String> {
         Ok(optional_string(&api_pull(review.id_value())?, "body"))
+    }
+
+    fn conversation(&self, review: &ReviewRequest) -> Result<Conversation> {
+        let slug = repo_slug()?;
+        let number = review.id_value();
+        let api = |endpoint: String| -> Result<Value> {
+            serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+                .context("failed to parse gitea JSON")
+        };
+        let head = api_pull(number)?
+            .pointer("/head/sha")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let reviews = api(format!(
+            "repos/{slug}/pulls/{number}/reviews?limit={CONVERSATION_PAGE}"
+        ))?;
+        let mut review_comments = Vec::new();
+        for review in reviews.as_array().into_iter().flatten() {
+            if review.get("comments_count").and_then(Value::as_u64) == Some(0) {
+                continue;
+            }
+            let id = review.get("id").and_then(Value::as_u64).unwrap_or_default();
+            review_comments.push(api(format!(
+                "repos/{slug}/pulls/{number}/reviews/{id}/comments"
+            ))?);
+        }
+        let issue_comments = api(format!(
+            "repos/{slug}/issues/{number}/comments?limit={CONVERSATION_PAGE}"
+        ))?;
+        Ok(gitea_conversation(
+            &reviews,
+            &review_comments,
+            &issue_comments,
+            &head,
+        ))
     }
 
     fn issue_state(&self, number: u64) -> Result<IssueState> {
@@ -340,6 +377,114 @@ fn state_rank(state: &ReviewState) -> u8 {
     }
 }
 
+/// How many reviews or comments one conversation listing asks for; a full
+/// page marks the conversation incomplete.
+const CONVERSATION_PAGE: usize = 50;
+
+/// The discussion from a pull's reviews, each review's comments, and its
+/// issue comments. Gitea has no thread object: comments on the same line of
+/// the same side of a file make one conversation, as its own pages show them.
+fn gitea_conversation(
+    reviews: &Value,
+    review_comments: &[Value],
+    issue_comments: &Value,
+    head: &str,
+) -> Conversation {
+    let comment = |value: &Value| Comment {
+        id: value.get("id").map(|id| id.to_string()).unwrap_or_default(),
+        author: value
+            .pointer("/user/login")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        body: optional_string(value, "body"),
+        created_at: optional_string(value, "created_at"),
+        url: optional_string(value, "html_url"),
+    };
+    let reviews = reviews.as_array().map(Vec::as_slice).unwrap_or_default();
+    let issue_comments = issue_comments
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut conversation = Conversation {
+        incomplete: reviews.len() >= CONVERSATION_PAGE || issue_comments.len() >= CONVERSATION_PAGE,
+        comments: issue_comments.iter().map(comment).collect(),
+        ..Conversation::default()
+    };
+    conversation.verdicts = reviews
+        .iter()
+        .filter_map(|review| {
+            // A dismissed review keeps its original state.
+            let state = match review.get("state").and_then(Value::as_str)? {
+                _ if optional_bool(review, "dismissed") => VerdictState::Dismissed,
+                "APPROVED" => VerdictState::Approved,
+                "REQUEST_CHANGES" => VerdictState::ChangesRequested,
+                "COMMENT" => VerdictState::Commented,
+                _ => return None,
+            };
+            let body = optional_string(review, "body");
+            Some(Verdict {
+                author: review
+                    .pointer("/user/login")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                state,
+                body,
+                submitted_at: optional_string(review, "submitted_at"),
+                url: optional_string(review, "html_url"),
+            })
+        })
+        .collect();
+
+    for value in review_comments.iter().filter_map(Value::as_array).flatten() {
+        let line = |key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_u64)
+                .and_then(|line| u32::try_from(line).ok())
+                .filter(|&line| line > 0)
+        };
+        let anchor = match (line("position"), line("original_position")) {
+            (Some(line), _) => Some(Anchor {
+                side: Side::New,
+                line,
+                start_line: None,
+            }),
+            (None, Some(line)) => Some(Anchor {
+                side: Side::Old,
+                line,
+                start_line: None,
+            }),
+            (None, None) => None,
+        };
+        let path = optional_string(value, "path");
+        let existing = conversation
+            .threads
+            .iter_mut()
+            .find(|thread| thread.path == path && thread.anchor == anchor);
+        let comment = comment(value);
+        match existing {
+            Some(thread) => thread.comments.push(comment),
+            None => conversation.threads.push(Thread {
+                id: comment.id.clone(),
+                path,
+                anchor,
+                outdated: optional_string(value, "commit_id") != head,
+                resolved: Some(
+                    value
+                        .get("resolver")
+                        .is_some_and(|resolver| !resolver.is_null()),
+                ),
+                diff_hunk: Some(optional_string(value, "diff_hunk"))
+                    .filter(|hunk| !hunk.is_empty()),
+                comments: vec![comment],
+            }),
+        }
+    }
+    conversation
+}
+
 /// One pull request's canonical API object.
 fn api_pull(id_value: &str) -> Result<Value> {
     let endpoint = format!("repos/{}/pulls/{id_value}", repo_slug()?);
@@ -497,6 +642,57 @@ fn slug_from_url(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gitea_conversation_groups_review_comments_by_line() {
+        let reviews: Value = serde_json::from_str(
+            r#"[{"id":1,"user":{"login":"bo"},"state":"REQUEST_CHANGES","body":"Fix","submitted_at":"t1","html_url":"u1","comments_count":2},
+                {"id":2,"user":{"login":"ann"},"state":"COMMENT","body":"","submitted_at":"t2","html_url":"u2","comments_count":1},
+                {"id":3,"user":{"login":"cy"},"state":"PENDING","body":"","comments_count":0},
+                {"id":4,"user":{"login":"dee"},"state":"APPROVED","body":"Was fine","dismissed":true,"comments_count":0}]"#,
+        )
+        .unwrap();
+        let comments: Vec<Value> = vec![
+            serde_json::from_str(
+                r#"[{"id":10,"path":"a.rs","position":4,"original_position":0,"commit_id":"HEAD","diff_hunk":"@@ x","body":"One","user":{"login":"bo"},"created_at":"t","html_url":"c1","resolver":null},
+                    {"id":11,"path":"a.rs","position":0,"original_position":2,"commit_id":"OLD","diff_hunk":"","body":"Old side","user":{"login":"bo"},"created_at":"t","html_url":"c2","resolver":{"login":"ann"}}]"#,
+            )
+            .unwrap(),
+            serde_json::from_str(
+                r#"[{"id":12,"path":"a.rs","position":4,"original_position":0,"commit_id":"HEAD","diff_hunk":"@@ x","body":"Reply","user":{"login":"ann"},"created_at":"t","html_url":"c3","resolver":null}]"#,
+            )
+            .unwrap(),
+        ];
+        let issue_comments: Value =
+            serde_json::from_str(r#"[{"id":20,"body":"General","user":{"login":"ann"},"created_at":"t","html_url":"i1"}]"#)
+                .unwrap();
+        let conversation = gitea_conversation(&reviews, &comments, &issue_comments, "HEAD");
+        assert_eq!(conversation.comments[0].body, "General");
+        let states: Vec<VerdictState> = conversation.verdicts.iter().map(|v| v.state).collect();
+        assert_eq!(
+            states,
+            [
+                VerdictState::ChangesRequested,
+                VerdictState::Commented,
+                VerdictState::Dismissed
+            ]
+        );
+        let [new_side, old_side] = &conversation.threads[..] else {
+            panic!("two threads");
+        };
+        assert_eq!(new_side.comments.len(), 2, "same line, same side");
+        assert_eq!(
+            new_side.anchor.map(|a| (a.side, a.line)),
+            Some((Side::New, 4))
+        );
+        assert!(!new_side.outdated);
+        assert_eq!(
+            old_side.anchor.map(|a| (a.side, a.line)),
+            Some((Side::Old, 2))
+        );
+        assert!(old_side.outdated);
+        assert_eq!(old_side.resolved, Some(true));
+    }
 
     #[test]
     fn draft_titles_are_recognized_whatever_their_case() {

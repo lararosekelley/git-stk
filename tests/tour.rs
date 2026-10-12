@@ -44,6 +44,17 @@ fn repo_with_review(head_ref: &str) -> (TestRepo, tempfile::TempDir) {
     (repo, origin)
 }
 
+const GITHUB_REPO: &str = r#"{"nameWithOwner":"owner/repo"}"#;
+
+const NO_GITHUB_DISCUSSION: &str = r#"{"data":{"repository":{"pullRequest":{"comments":{"totalCount":0,"nodes":[]},"reviews":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]}}}}}"#;
+
+/// An approval, a comment on the review, and a thread on `src/lib.rs`.
+const GITHUB_DISCUSSION: &str = r#"{"data":{"repository":{"pullRequest":{
+    "comments":{"totalCount":1,"nodes":[{"id":"IC1","author":{"login":"ann"},"body":"Thanks!","createdAt":"2026-10-11T01:00:00Z","url":"https://github.com/owner/repo/pull/12#issuecomment-1"}]},
+    "reviews":{"totalCount":1,"nodes":[{"author":{"login":"bo"},"state":"APPROVED","body":"Ship it","submittedAt":"2026-10-11T02:00:00Z","url":"u"}]},
+    "reviewThreads":{"totalCount":1,"nodes":[{"id":"T1","isResolved":false,"isOutdated":false,"path":"src/lib.rs","line":2,"originalLine":2,"startLine":null,"originalStartLine":null,"diffSide":"RIGHT","subjectType":"LINE",
+        "comments":{"totalCount":1,"nodes":[{"id":"C1","author":{"login":"bo"},"body":"Name it `two`?","createdAt":"2026-10-11T03:00:00Z","url":"u","diffHunk":"@@ -1 +1,2 @@"}]}}]}}}}}"#;
+
 const GITHUB_REVIEW: &str = r##"{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"contrib","url":"https://github.com/owner/repo/pull/12","title":"Add two"}"##;
 
 #[test]
@@ -57,6 +68,8 @@ fn tour_walks_a_github_pr_in_role_order() {
         )
         .on("pr view 12 --json", GITHUB_REVIEW)
         .on("pr list", &format!("[{GITHUB_REVIEW}]"))
+        .on("repo view", GITHUB_REPO)
+        .on("api graphql", GITHUB_DISCUSSION)
         .fallback_fail("unexpected provider call")
         .install(&repo);
 
@@ -73,7 +86,24 @@ fn tour_walks_a_github_pr_in_role_order() {
     let data = tour_data(&html);
     assert_eq!(data["current"], 0);
     assert_eq!(data["chapters"].as_array().unwrap().len(), 1);
+    assert_eq!(data["served"], false, "a written tour is a snapshot");
     let data = &data["chapters"][0];
+    let discussion = &data["conversation"];
+    assert_eq!(discussion["verdicts"][0]["state"], "approved");
+    assert_eq!(discussion["comments"][0]["bodyHtml"], "<p>Thanks!</p>\n");
+    let thread = &discussion["threads"][0];
+    assert_eq!(
+        (&thread["path"], &thread["side"], &thread["line"]),
+        (
+            &Value::from("src/lib.rs"),
+            &Value::from("new"),
+            &Value::from(2)
+        )
+    );
+    assert_eq!(
+        thread["comments"][0]["bodyHtml"],
+        "<p>Name it <code>two</code>?</p>\n"
+    );
     assert_eq!(data["review"]["bodyHtml"], "<p>Why it matters.</p>\n");
     assert_eq!(data["commits"][0]["subject"], "add two");
 
@@ -140,28 +170,95 @@ fn tour_walks_a_github_pr_in_role_order() {
     );
 }
 
+/// A request to the tour server: the status and body it answers with.
+fn http(url: &str, method: &str, path: &str, body: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let rest = url.strip_prefix("http://").unwrap();
+    let (host, base) = rest.split_once('/').unwrap();
+    let mut stream = std::net::TcpStream::connect(host).unwrap();
+    write!(
+        stream,
+        "{method} /{base}{path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let status = response[9..12].parse().unwrap();
+    let body = response.split_once("\r\n\r\n").unwrap().1.to_owned();
+    (status, body)
+}
+
 #[test]
-fn tour_saves_under_the_git_dir_by_head_commit() {
+fn tour_serves_the_page_until_its_last_tab_closes() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+
     let (repo, _origin) = repo_with_review("refs/pull/12/head");
     repo.git(["config", "stk.provider", "github"]);
     let fake = FakeProvider::new()
         .on("pr view 12 --json body", r#"{"body":""}"#)
         .on("pr view 12 --json", GITHUB_REVIEW)
         .on("pr list", "[]")
+        .on("repo view", GITHUB_REPO)
+        .on("api graphql", GITHUB_DISCUSSION)
         .fallback_fail("unexpected provider call")
         .install(&repo);
-
-    repo.stack_faked(&fake)
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin("git-stk"));
+    TestRepo::isolate_git_config(&mut command);
+    let mut server = command
         .args(["tour", "12", "--no-open"])
-        .assert()
-        .success();
+        .current_dir(repo.path())
+        .env("PATH", &fake.path)
+        .env("STK_FAKE_SPEC", &fake.spec)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first_line = String::new();
+    std::io::BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut first_line)
+        .unwrap();
+    let url = first_line
+        .split_whitespace()
+        .find(|word| word.starts_with("http://127.0.0.1:"))
+        .unwrap_or_else(|| panic!("no address in {first_line:?}"))
+        .to_owned();
 
-    let head = repo.git(["ls-remote", "origin", "refs/pull/12/head"]);
-    let path = repo
-        .path()
-        .join(".git/stk/tours")
-        .join(format!("12-{}.html", &head[..12]));
-    assert!(path.exists(), "missing {}", path.display());
+    let (status, page) = http(&url, "GET", "", "");
+    assert_eq!(status, 200);
+    assert!(page.contains("<title>Tour of Add two (#12)</title>"));
+    assert!(page.contains(r#""served":true"#));
+    let (status, discussion) = http(&url, "GET", "api/conversation?chapter=0", "");
+    assert_eq!(status, 200);
+    let discussion: Value = serde_json::from_str(&discussion).unwrap();
+    assert_eq!(discussion["threads"][0]["path"], "src/lib.rs");
+
+    // Without the token there is nothing to find.
+    let origin_only = url
+        .trim_end_matches('/')
+        .rsplit_once('/')
+        .unwrap()
+        .0
+        .to_owned()
+        + "/";
+    assert_eq!(http(&origin_only, "GET", "", "").0, 404);
+
+    // The server stops once its last tab closes.
+    assert_eq!(http(&url, "POST", "api/alive", r#""tab""#).0, 200);
+    assert_eq!(http(&url, "POST", "api/closed", r#""tab""#).0, 200);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some(status) = server.try_wait().unwrap() {
+            assert!(status.success(), "{status}");
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            server.kill().unwrap();
+            panic!("the server outlived its last tab");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 #[test]
@@ -255,6 +352,9 @@ fn stack_fake(listed: Option<&[String]>) -> FakeProvider {
         ),
         None => fake.fail("pr list", "HTTP 502"),
     };
+    fake = fake
+        .on("repo view", GITHUB_REPO)
+        .on("api graphql", NO_GITHUB_DISCUSSION);
     for (number, branch, base) in STACKED {
         fake = fake
             .on(&format!("pr view {number} --json body"), r#"{"body":""}"#)
@@ -524,6 +624,8 @@ fn tour_pages_through_every_open_gitlab_mr() {
             &format!("[{}]", others.join(",")),
         )
         .on("mr list --output json --per-page 100 --page 2", "[]")
+        .on("merge_requests/34/discussions", "[]")
+        .on("merge_requests/34/approvals", r#"{"approved_by":[]}"#)
         .fallback_fail("unexpected provider call")
         .install(&repo);
 
@@ -582,6 +684,8 @@ fn tour_does_not_stack_reviews_on_a_release_review() {
         )
         .on("pr view 41 --json body", r#"{"body":""}"#)
         .on("pr view 41 --json", &github_pr(41, "feature-x", "develop"))
+        .on("repo view", GITHUB_REPO)
+        .on("api graphql", NO_GITHUB_DISCUSSION)
         .fallback_fail("unexpected provider call")
         .install(&repo);
 
@@ -593,6 +697,36 @@ fn tour_does_not_stack_reviews_on_a_release_review() {
 
     let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
     assert_eq!(chapter_ids(&data), ["#41"]);
+}
+
+#[test]
+fn tour_still_writes_a_review_whose_discussion_it_cannot_read() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = FakeProvider::new()
+        .on("pr view 12 --json body", r#"{"body":""}"#)
+        .on("pr view 12 --json", GITHUB_REVIEW)
+        .on("pr list", "[]")
+        .on("repo view", GITHUB_REPO)
+        .fail("api graphql", "HTTP 502")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "tour.html"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "warning: could not read the discussion on #12",
+        ));
+
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    assert!(
+        data["chapters"][0]["conversation"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("HTTP 502")
+    );
 }
 
 #[test]
