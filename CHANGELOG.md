@@ -27,8 +27,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   rest of its stack, branches included, one review at a time; the stack is
   found from review bases, so stacks not made with git-stk work too
   (`--no-stack` tours one review). The page header stays in view, the step
-  sidebar can be hidden, and the page follows the system theme or a light/dark
-  choice from its toggle.
+  sidebar can be hidden, and the page follows the system theme or a choice
+  from its toggle between Catppuccin Latte and Mocha.
 - **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
   URL as well as a branch, so `git stk view 12` opens a review whose branch is
   not checked out. A URL for another repository's review is refused rather
