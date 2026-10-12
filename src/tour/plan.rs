@@ -531,7 +531,7 @@ pub struct Request<'a> {
     /// The reviews this one is stacked on, nearest last, by label.
     pub below: Vec<String>,
     /// The repository's instructions for contributors, as (path, text) at
-    /// the review's head, root first.
+    /// the review's base, root first.
     pub guidance: &'a [(String, String)],
     /// What reviewers have said so far, or null when it could not be read.
     pub discussion: &'a Value,
