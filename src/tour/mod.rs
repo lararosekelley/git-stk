@@ -73,6 +73,10 @@ struct Chapter {
     steps: Vec<Step>,
     /// The review's discussion as page data.
     conversation: Value,
+    /// The review's discussion for the tour agent, or null.
+    discussion: Value,
+    /// The repository's instructions for contributors, for the tour agent.
+    guidance: Vec<(String, String)>,
     /// The plan the review's steps follow, for an agent tour.
     plan: Option<PlanInfo>,
 }
@@ -182,7 +186,10 @@ impl Tour {
             let chapter = chapter.map(|chapter| {
                 chapter.map(|mut chapter| {
                     chapter.conversation = match conversations[index].take() {
-                        Some(Ok(conversation)) => conversation::data(&conversation),
+                        Some(Ok(conversation)) => {
+                            chapter.discussion = conversation::for_agent(&conversation);
+                            conversation::data(&conversation)
+                        }
                         Some(Err(error)) => {
                             warnings
                                 .push(format!("could not read the discussion on {id}: {error:#}"));
@@ -355,6 +362,8 @@ impl Chapter {
             commits,
             steps,
             conversation: Value::Null,
+            discussion: Value::Null,
+            guidance: Vec::new(),
             plan: None,
         }))
     }
@@ -445,6 +454,9 @@ fn plan_chapters(
                 Some(answer) => answers[index] = Some((Ok(answer), true)),
                 None => to_ask.push(index),
             }
+        }
+        for &index in &to_ask {
+            chapters[index].guidance = read_guidance(&chapters[index]);
         }
         let prompts: Vec<(usize, String)> = to_ask
             .iter()
@@ -593,7 +605,73 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
         commits: &chapter.commits,
         steps: &chapter.steps,
         below,
+        guidance: &chapter.guidance,
+        discussion: &chapter.discussion,
     }
+}
+
+/// Files a repository keeps its instructions for contributors and agents in.
+const GUIDANCE_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"];
+/// Directories whose guidance is looked for, nearest the root first.
+const MAX_GUIDANCE_DIRS: usize = 100;
+const MAX_GUIDANCE_FILE_BYTES: usize = 16 * 1024;
+const MAX_GUIDANCE_BYTES: usize = 48 * 1024;
+
+/// The guidance files at `chapter`'s head in the repository root and in each
+/// directory holding a changed file, root first, as (path, text). A file is
+/// cut short past a size, and once enough is gathered the rest are left out.
+fn read_guidance(chapter: &Chapter) -> Vec<(String, String)> {
+    let mut dirs = std::collections::BTreeSet::new();
+    dirs.insert(String::new());
+    for file in chapter.steps.iter().flat_map(|step| &step.files) {
+        for path in [&file.old_path, &file.new_path] {
+            let mut dir = path.as_str();
+            while let Some((parent, _)) = dir.rsplit_once('/') {
+                dirs.insert(format!("{parent}/"));
+                dir = parent;
+            }
+        }
+    }
+    let mut dirs: Vec<String> = dirs.into_iter().collect();
+    dirs.sort_by_key(|dir| dir.matches('/').count());
+    dirs.truncate(MAX_GUIDANCE_DIRS);
+    let paths: Vec<String> = dirs
+        .iter()
+        .flat_map(|dir| {
+            GUIDANCE_FILES
+                .iter()
+                .map(move |name| format!("{dir}{name}"))
+        })
+        .collect();
+    let specs: Vec<String> = paths
+        .iter()
+        .map(|path| format!("{}:{path}", chapter.head_sha))
+        .collect();
+    let Ok(texts) = git::blob_texts(&specs, MAX_EMBEDDED_BYTES, MAX_EMBEDDED_BYTES) else {
+        return Vec::new();
+    };
+    let mut left = MAX_GUIDANCE_BYTES;
+    let mut guidance = Vec::new();
+    for (path, text) in paths.into_iter().zip(texts) {
+        let Some(mut text) = text.filter(|text| !text.trim().is_empty()) else {
+            continue;
+        };
+        let room = MAX_GUIDANCE_FILE_BYTES.min(left);
+        if room == 0 {
+            break;
+        }
+        if text.len() > room {
+            let mut at = room;
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            text.truncate(at);
+            text.push_str("\n[cut short]");
+        }
+        left = left.saturating_sub(text.len());
+        guidance.push((path, text));
+    }
+    guidance
 }
 
 /// Where a chapter's plan from `agent` is saved: per review, head, agent

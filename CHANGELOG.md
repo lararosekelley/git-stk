@@ -32,7 +32,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   calendar, under the git-stk logo. An agent tour (`--style
   agentTour` or `stk.tourStyle`) has your own agent command (`stk.tourAgent`
   or `--agent`, such as `claude -p`) plan each review into explained steps
-  with line notes, shows which command and model planned it, asks once per
+  with line notes, given the repository's AGENTS.md, CLAUDE.md, and
+  CONTRIBUTING.md guidance and the review's discussion so far, shows which command and model planned it, asks once per
   repository and command before sending anything, and saves plans per head;
   `--plan` follows a plan written ahead of time. An agent review (`--style
   agentReview`) adds the agent's findings, each on a line with a severity

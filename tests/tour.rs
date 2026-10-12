@@ -1697,6 +1697,93 @@ fn an_interrupted_agent_tour_keeps_the_plans_it_finished() {
     assert_eq!(saved(), 2, "the two finished plans are saved");
 }
 
+/// The agent hears the repository's guidance at the review's head, from the
+/// root and the changed files' directories only, and the open discussion.
+#[cfg(unix)]
+#[test]
+fn an_agent_tour_tells_the_agent_the_repos_guidance_and_discussion() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    // Guidance only the review's head has: the root's, one beside changed
+    // code, and one in a directory the review leaves alone.
+    fs::create_dir_all(repo.path().join("docs")).unwrap();
+    repo.commit_file("docs/AGENTS.md", "Docs rule: unrelated.\n", "docs guidance");
+    repo.git(["push", "-q", "origin", "main"]);
+    repo.git(["fetch", "-q", "origin", "refs/pull/12/head"]);
+    repo.git(["switch", "-q", "--detach", "FETCH_HEAD"]);
+    repo.git(["merge", "-q", "--no-edit", "main"]);
+    repo.write("AGENTS.md", "Root rule: say changeset.\n");
+    repo.write("src/AGENTS.md", "Src rule: no unwrap.\n");
+    repo.git(["add", "-A"]);
+    repo.git(["commit", "-qm", "guidance"]);
+    repo.git(["push", "-q", "-f", "origin", "HEAD:refs/pull/12/head"]);
+    repo.git(["switch", "-q", "main"]);
+
+    let prompt = repo.path().join(".git/prompt.txt");
+    let plan = repo.path().join(".git/plan.json");
+    fs::write(&plan, r#"{"version":1,"overview":"O","steps":[]}"#).unwrap();
+    let script = repo.path().join(".git/agent.sh");
+    fs::write(
+        &script,
+        format!(
+            "PATH=/usr/bin:/bin\ncat > {}\ncat {}\n",
+            prompt.display(),
+            plan.display()
+        ),
+    )
+    .unwrap();
+    let agent = format!("/bin/sh {}", script.display());
+    repo.git(["config", "stk.tourAgent", &agent]);
+    repo.git(["config", "stk.tourAgentAllowed", &agent]);
+    let fake = github_tour_fake()
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "agentTour",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .success();
+
+    let prompt = fs::read_to_string(prompt).unwrap();
+    let changeset: Value = serde_json::from_str(
+        prompt
+            .split_once("The changeset:\n\n")
+            .expect("the changeset follows the instructions")
+            .1,
+    )
+    .unwrap();
+    let guidance: Vec<(&str, &str)> = changeset["guidance"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|guide| {
+            (
+                guide["path"].as_str().unwrap(),
+                guide["text"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        guidance,
+        [
+            ("AGENTS.md", "Root rule: say changeset.\n"),
+            ("src/AGENTS.md", "Src rule: no unwrap.\n")
+        ]
+    );
+    let discussion = &changeset["discussion"];
+    assert_eq!(discussion["comments"][0]["body"], "Thanks!");
+    assert_eq!(discussion["reviews"][0]["state"], "approved");
+    assert_eq!(discussion["openThreads"][0]["path"], "src/lib.rs");
+}
+
 #[test]
 fn an_agent_tour_plans_every_changeset_in_a_stack() {
     let (repo, _origin) = stacked_prs();

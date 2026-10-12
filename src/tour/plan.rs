@@ -530,6 +530,11 @@ pub struct Request<'a> {
     pub steps: &'a [Step],
     /// The reviews this one is stacked on, nearest last, by label.
     pub below: Vec<String>,
+    /// The repository's instructions for contributors, as (path, text) at
+    /// the review's head, root first.
+    pub guidance: &'a [(String, String)],
+    /// What reviewers have said so far, or null when it could not be read.
+    pub discussion: &'a Value,
 }
 
 impl Request<'_> {
@@ -573,6 +578,8 @@ impl Request<'_> {
             "description": self.body,
             "commits": self.commits.iter().map(|(_, subject)| subject).collect::<Vec<_>>(),
             "stackedOn": self.below,
+            "guidance": self.guidance.iter().map(|(path, text)| json!({ "path": path, "text": text })).collect::<Vec<_>>(),
+            "discussion": self.discussion,
             "files": files,
         });
         format!(
@@ -624,6 +631,8 @@ Review rules:
 - "category" is one of: "bug", "security", "performance", "design", "tests", "docs", "style".
 - Put each finding on a line that appears in the diff; "startLine" is optional, for a finding about a range ending at "line". Use "side" "old" for removed lines and "new" otherwise.
 - Give a "suggestion" only on the "new" side, and only when it is the exact replacement for those lines, with their indentation.
+- Judge the changeset against the conventions in "guidance".
+- Do not raise what an open thread in "discussion" already raises.
 - Report real problems, most important first, at most fifteen; an empty array is a fine answer. Do not repeat what the steps and notes already say."#;
 
 // The agent reads "changeset" for what git-stk calls a review, so its
@@ -647,6 +656,8 @@ Rules:
 - Put every file the changeset touches in exactly one step, using the paths given. Group files that belong together; a step usually has one to five files.
 - Generated files (marked "generated") go together in one last step.
 - "stackedOn" lists the changesets this one builds on, oldest first; this tour covers only the changeset given.
+- "guidance" holds the repository's own instructions for contributors and agents (such as AGENTS.md and CONTRIBUTING.md) as of this changeset, root first; a file nearer the changed code wins where they differ. Use its conventions and terms.
+- "discussion" is what reviewers have said so far: reviews, comments, and the threads still open, by file and line. Take it into account.
 - Notes are optional; add at most ten, only on lines that appear in the diff, with "side" "old" for a removed line and "new" otherwise.
 - Describe what the code does; do not praise it or grade it.
 - Fill "agent" with what you know about yourself, and leave a field empty rather than guess."#;
@@ -863,6 +874,8 @@ diff --git a/Cargo.lock b/Cargo.lock
             commits: &[("abc".into(), "rename".into())],
             steps: &steps,
             below: vec!["Base work (#6)".into()],
+            guidance: &[],
+            discussion: &Value::Null,
         }
         .prompt(false);
         assert!(prompt.starts_with(INSTRUCTIONS));

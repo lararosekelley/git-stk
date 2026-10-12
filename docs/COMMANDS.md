@@ -265,17 +265,20 @@ An agent tour (`--style agentTour`, or `stk.tourStyle = agentTour`) has an agent
 overview, the files in reading order as titled steps with a short explanation each, and notes on particular
 lines. The agent is a command you give in `stk.tourAgent` or `--agent`, such as `claude -p` or `llm -m
 <model>`; it holds its own credentials, so git-stk holds none. git-stk sends it the review's description,
-commits, and diff on stdin and reads a JSON plan back, checks it against the diff (each file once, every file
-somewhere, notes only on lines the diff shows), and falls back to the file-role steps, with a warning, for a
-review it cannot plan. The page opens the review with the plan's overview and a line naming the command that
-planned it, effort and model flags included, and the provider and model the agent reports; each step shows its
-explanation, and the plan's notes sit on their lines as tour notes, set apart from review comments; everything
-the agent wrote is marked with a sparkle emoji. The first agent tour in a repository asks before sending
-anything, and records the command you agreed to as `stk.tourAgentAllowed` in that repository's config; a
-different command asks again, and without a terminal to ask at, the tour stops instead. Plans are saved
-under `.git/stk/tours/plans/` as each one arrives, by review head and base, so a tour of the same commits
-plans nothing new, and an interrupted one keeps what it finished; `--refresh-plan` asks again. `--plan <file>`
-follows a plan written ahead of time, by a harness for example, for the review asked for.
+commits, and diff on stdin, with the repository's guidance (AGENTS.md, CLAUDE.md, and CONTRIBUTING.md from the
+root and the changed files' directories, as of the review's head) and what reviewers have said so far
+(reviews, comments, and open threads), and reads a JSON plan back, checks it against the diff (each file once,
+every file somewhere, notes only on lines the diff shows), and falls back to the file-role steps, with a
+warning, for a review it cannot plan. The page opens the review with the plan's overview and a line naming the
+command that planned it, effort and model flags included, and the provider and model the agent reports; each
+step shows its explanation, and the plan's notes sit on their lines as tour notes, set apart from review
+comments; everything the agent wrote is marked with a sparkle emoji. The first agent tour in a repository asks
+before sending anything, and records the command you agreed to as `stk.tourAgentAllowed` in that repository's
+config; a different command asks again, and without a terminal to ask at, the tour stops instead. Plans are
+saved under `.git/stk/tours/plans/` as each one arrives, by review head and base, so a tour of the same
+commits plans nothing new, even after new discussion, and an interrupted one keeps what it finished;
+`--refresh-plan` asks again. `--plan <file>` follows a plan written ahead of time, by a harness for example,
+for the review asked for.
 
 An agent review (`--style agentReview`) is an agent tour whose agent also reviews the changes. Each finding
 sits on a line of the diff with a severity (required, recommended, or optional), a category (bug, security,

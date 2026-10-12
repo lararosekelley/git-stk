@@ -35,6 +35,42 @@ pub fn data(conversation: &Conversation) -> Value {
     })
 }
 
+/// What reviewers have said, for the tour agent: Markdown as written,
+/// without resolved threads, each body cut to a few thousand characters.
+pub fn for_agent(conversation: &Conversation) -> Value {
+    const MAX_BODY_CHARS: usize = 2000;
+    const MAX_THREADS: usize = 40;
+    const MAX_COMMENTS: usize = 30;
+    let clip = |body: &str| -> String {
+        match body.char_indices().nth(MAX_BODY_CHARS) {
+            Some((at, _)) => format!("{} [cut short]", &body[..at]),
+            None => body.to_owned(),
+        }
+    };
+    let said = |comment: &Comment| json!({ "author": comment.author, "body": clip(&comment.body) });
+    let skipped = conversation.comments.len().saturating_sub(MAX_COMMENTS);
+    json!({
+        "reviews": conversation.verdicts.iter().filter(|verdict| {
+            verdict.state != VerdictState::Commented || !verdict.body.trim().is_empty()
+        }).map(|verdict| json!({
+            "author": verdict.author,
+            "state": verdict.state.as_str(),
+            "body": clip(&verdict.body),
+        })).collect::<Vec<_>>(),
+        "comments": conversation.comments[skipped..].iter().map(said).collect::<Vec<_>>(),
+        "openThreads": conversation.threads.iter()
+            .filter(|thread| thread.resolved != Some(true))
+            .take(MAX_THREADS)
+            .map(|thread| json!({
+                "path": thread.path,
+                "side": thread.anchor.map(|anchor| anchor.side.as_str()),
+                "line": thread.anchor.map(|anchor| anchor.line),
+                "outdated": thread.outdated,
+                "comments": thread.comments.iter().map(said).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+    })
+}
+
 /// A discussion that could not be read, for the page to say so.
 pub fn error(message: &str) -> Value {
     json!({ "error": message })
@@ -65,6 +101,54 @@ fn hunk_tail(hunk: &str) -> String {
 mod tests {
     use super::*;
     use crate::providers::{Anchor, Side, Thread, Verdict};
+
+    #[test]
+    fn the_agent_hears_open_threads_in_plain_markdown() {
+        let comment = |body: &str| Comment {
+            id: "C".into(),
+            author: "ann".into(),
+            body: body.into(),
+            created_at: String::new(),
+            url: String::new(),
+        };
+        let thread = |id: &str, resolved, body: &str| Thread {
+            id: id.into(),
+            path: "src/a.rs".into(),
+            anchor: Some(Anchor {
+                side: Side::New,
+                line: 3,
+                start_line: None,
+            }),
+            outdated: false,
+            resolved,
+            diff_hunk: None,
+            comments: vec![comment(body)],
+        };
+        let conversation = Conversation {
+            verdicts: Vec::new(),
+            comments: vec![comment(&"x".repeat(2500))],
+            threads: vec![
+                thread("T1", Some(true), "settled"),
+                thread("T2", Some(false), "Is `a` *needed*?"),
+                thread("T3", None, "Gitea cannot say"),
+            ],
+            incomplete: false,
+        };
+        let said = for_agent(&conversation);
+        let open: Vec<&str> = said["openThreads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|thread| thread["comments"][0]["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(open, ["Is `a` *needed*?", "Gitea cannot say"]);
+        assert_eq!(said["openThreads"][0]["line"], 3);
+        let long = said["comments"][0]["body"].as_str().unwrap();
+        assert!(
+            long.ends_with(" [cut short]") && long.len() < 2100,
+            "{long}"
+        );
+    }
 
     #[test]
     fn bodies_are_sanitized_and_hunks_trimmed() {
