@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title><!--TOUR_TITLE--></title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='7' y='16' width='37' height='12' rx='6' fill='%23cc6699'/%3E%3Crect x='20' y='36' width='37' height='12' rx='6' fill='%23cc6699'/%3E%3C/svg%3E">
 <script>
 try {
   var theme = JSON.parse(localStorage.getItem("git-stk-tour:theme"));
@@ -13,91 +14,101 @@ try {
 </script>
 <style>
 :root {
-  /* Catppuccin Latte */
-  --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%23eff1f5' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  --bg: #eff1f5;
-  --bg-soft: #e6e9ef;
-  --fg: #4c4f69;
-  --fg-muted: #6c6f85;
-  --border: #ccd0da;
-  --accent: #1e66f5;
-  --accent-fg: #eff1f5;
-  --add-bg: #d6e6d9;
-  --add-num: #c2dcc0;
-  --del-bg: #ebd1db;
-  --del-num: #e7b6c4;
-  --hunk-bg: #dae3f5;
-  --empty-bg: #e6e9ef;
-  --done: #40a02b;
-  --removed: #d20f39;
-  --hl-keyword: #8839ef;
-  --hl-string: #40a02b;
-  --hl-comment: #7c7f93;
-  --hl-title: #1e66f5;
-  --hl-constant: #fe640b;
-  --hl-type: #df8e1d;
-  --hl-tag: #1e66f5;
+  /* Callie Light, from the Callie calendar */
+  --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%23fbf5f8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --bg: #fbf5f8;
+  --bg-soft: #f3e7ee;
+  --fg: #2b1a26;
+  --fg-muted: #6b5562;
+  --border: #e0ccd7;
+  --accent: #e45f97;
+  --accent-fg: #2e0f20;
+  --accent-ink: #a83a6d;
+  --accent-edge: #a83a6d;
+  --add-bg: #e2f1e5;
+  --add-num: #cbe6d1;
+  --del-bg: #fadbe3;
+  --del-num: #f3c2cf;
+  --hunk-bg: #f1e3ef;
+  --empty-bg: #f3e7ee;
+  --done: #2f8a50;
+  --removed: #c93c45;
+  --hl-keyword: #7d4cc0;
+  --hl-string: #2f7d4a;
+  --hl-comment: #8f7a87;
+  --hl-title: #3a62b5;
+  --hl-constant: #b5571c;
+  --hl-type: #86650c;
+  --hl-tag: #a83a6d;
+  --shadow: rgba(92, 42, 71, .18);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    /* Catppuccin Mocha */
-    --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%231e1e2e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    --bg: #1e1e2e;
-    --bg-soft: #181825;
-    --fg: #cdd6f4;
-    --fg-muted: #a6adc8;
-    --border: #313244;
-    --accent: #89b4fa;
-    --accent-fg: #1e1e2e;
-    --add-bg: #343e40;
-    --add-num: #475950;
-    --del-bg: #402f42;
-    --del-num: #5e3f53;
-    --hunk-bg: #2b3046;
-    --empty-bg: #181825;
-    --done: #a6e3a1;
-    --removed: #f38ba8;
-    --hl-keyword: #cba6f7;
-    --hl-string: #a6e3a1;
-    --hl-comment: #9399b2;
-    --hl-title: #89b4fa;
-    --hl-constant: #fab387;
-    --hl-type: #f9e2af;
-    --hl-tag: #89b4fa;
+    /* Callie */
+    --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%231c1220' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    --bg: #1c1220;
+    --bg-soft: #261a2a;
+    --fg: #f6eef5;
+    --fg-muted: #c9b7c6;
+    --border: #3d2c42;
+    --accent: #f08fb8;
+    --accent-fg: #2e0f20;
+    --accent-ink: #f08fb8;
+    --accent-edge: #a64b7a;
+    --add-bg: #1f2f28;
+    --add-num: #2b4537;
+    --del-bg: #3a1b28;
+    --del-num: #57283c;
+    --hunk-bg: #33243a;
+    --empty-bg: #170f1a;
+    --done: #9cd8ab;
+    --removed: #e66e6d;
+    --hl-keyword: #c9a7f5;
+    --hl-string: #a8dcb0;
+    --hl-comment: #9a8797;
+    --hl-title: #a9c4f5;
+    --hl-constant: #f5b38a;
+    --hl-type: #f0d58c;
+    --hl-tag: #f08fb8;
+    --shadow: rgba(0, 0, 0, .5);
   }
 }
 :root[data-theme="dark"] {
-  --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%231e1e2e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  --bg: #1e1e2e;
-  --bg-soft: #181825;
-  --fg: #cdd6f4;
-  --fg-muted: #a6adc8;
-  --border: #313244;
-  --accent: #89b4fa;
-  --accent-fg: #1e1e2e;
-  --add-bg: #343e40;
-  --add-num: #475950;
-  --del-bg: #402f42;
-  --del-num: #5e3f53;
-  --hunk-bg: #2b3046;
-  --empty-bg: #181825;
-  --done: #a6e3a1;
-  --removed: #f38ba8;
-  --hl-keyword: #cba6f7;
-  --hl-string: #a6e3a1;
-  --hl-comment: #9399b2;
-  --hl-title: #89b4fa;
-  --hl-constant: #fab387;
-  --hl-type: #f9e2af;
-  --hl-tag: #89b4fa;
+  --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%231c1220' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --bg: #1c1220;
+  --bg-soft: #261a2a;
+  --fg: #f6eef5;
+  --fg-muted: #c9b7c6;
+  --border: #3d2c42;
+  --accent: #f08fb8;
+  --accent-fg: #2e0f20;
+  --accent-ink: #f08fb8;
+  --accent-edge: #a64b7a;
+  --add-bg: #1f2f28;
+  --add-num: #2b4537;
+  --del-bg: #3a1b28;
+  --del-num: #57283c;
+  --hunk-bg: #33243a;
+  --empty-bg: #170f1a;
+  --done: #9cd8ab;
+  --removed: #e66e6d;
+  --hl-keyword: #c9a7f5;
+  --hl-string: #a8dcb0;
+  --hl-comment: #9a8797;
+  --hl-title: #a9c4f5;
+  --hl-constant: #f5b38a;
+  --hl-type: #f0d58c;
+  --hl-tag: #f08fb8;
+  --shadow: rgba(0, 0, 0, .5);
 }
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 html { scroll-padding-top: calc(var(--header-height, 0px) + 16px); }
-/* The page loads nothing from the network, so type is the system's own. */
+/* The page loads nothing from the network: Callie's Nunito when installed,
+   else the system's own type. */
 :root {
-  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-ui: "Nunito", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-code: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
   --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6 3.5 10.5 8 6 12.5' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
@@ -122,9 +133,9 @@ body {
   color: var(--fg);
   font: 14px/1.5 var(--font-ui);
 }
-a { color: var(--accent); }
+a { color: var(--accent-ink); }
 code, pre, .diff { font-family: var(--font-code); font-size: 12.5px; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 button {
   font: inherit; font-size: 12px; color: var(--fg); background: var(--bg);
   border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px; cursor: pointer;
@@ -138,6 +149,8 @@ nav {
   position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
   border-right: 1px solid var(--border); background: var(--bg-soft); padding: 22px 18px;
 }
+.brand { display: flex; align-items: center; gap: 8px; margin: -4px 0 18px; font-weight: 700; font-size: 15px; color: var(--fg); }
+.brand svg { width: 24px; height: 24px; flex: none; }
 nav h2 { font-size: 13px; font-weight: 600; color: var(--fg); margin: 0 0 10px; }
 nav ol { list-style: none; margin: 0; padding: 0; }
 nav .progress { margin: -6px 0 12px; color: var(--fg-muted); font-size: 12px; }
@@ -224,12 +237,12 @@ header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-hei
 .agent-text > .markdown { min-width: 0; flex: 1; }
 .agent-mark { flex: none; }
 .tour-note {
-  border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 6px; background: var(--bg);
+  border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 11px; background: var(--bg);
   margin: 6px 0; padding: 4px 12px; font-family: var(--font-ui); font-size: 13px; white-space: normal;
 }
 .tour-note-label { font-size: 12px; font-weight: 600; color: var(--hl-keyword); padding-top: 2px; }
 .finding {
-  border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 6px; background: var(--bg);
+  border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 11px; background: var(--bg);
   margin: 6px 0; padding: 6px 12px; font-family: var(--font-ui); font-size: 13px; white-space: normal;
 }
 .finding-required { border-left-color: var(--removed); }
@@ -246,7 +259,7 @@ header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-hei
 .thread-index li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; min-width: 0; }
 .thread-index code { font-size: 12px; }
 .thread-state { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; color: var(--fg-muted); flex: none; }
-.thread-state-open { color: var(--accent); border-color: var(--accent); }
+.thread-state-open { color: var(--accent-ink); border-color: var(--accent-ink); }
 .thread-state-resolved { color: var(--done); border-color: var(--done); }
 .thread-excerpt { color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .markdown { overflow-wrap: anywhere; }
@@ -285,7 +298,7 @@ section.step { margin-bottom: 40px; }
 .step-head label { color: var(--fg-muted); white-space: nowrap; cursor: pointer; }
 /* The card clips its own corners, so its header can stick square-cornered
    without the code showing past it. */
-.file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px; overflow: clip; }
+.file { border: 1px solid var(--border); border-radius: 11px; margin-bottom: 16px; overflow: clip; }
 .file > summary {
   list-style: none; cursor: pointer; display: flex; gap: 8px; align-items: center;
   padding: 8px 12px; background: var(--bg-soft); position: sticky; top: calc(var(--header-height, 0px) - 1px); z-index: 1;
@@ -317,7 +330,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .verdict { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 999px; padding: 0 8px; margin-bottom: 4px; border: 1px solid var(--border); }
 .verdict-approved { color: var(--done); border-color: var(--done); }
 .verdict-changes_requested { color: var(--removed); border-color: var(--removed); }
-.thread { border: 1px solid var(--border); border-radius: 6px; background: var(--bg); margin: 6px 0; padding: 4px 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; white-space: normal; }
+.thread { border: 1px solid var(--border); border-radius: 11px; background: var(--bg); margin: 6px 0; padding: 4px 12px; font-family: var(--font-ui); font-size: 13px; white-space: normal; }
 .thread.resolved > summary { cursor: pointer; color: var(--fg-muted); padding: 4px 0; display: flex; align-items: center; }
 .comment { padding: 6px 0; }
 .comment + .comment { border-top: 1px solid var(--border); }
@@ -333,13 +346,15 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .outdated > summary { cursor: pointer; color: var(--fg-muted); font-size: 12px; padding: 4px 0; display: flex; align-items: center; }
 .thread-hunk { margin: 4px 0; padding: 6px 8px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
 td.num.commentable { cursor: pointer; }
-td.num.commentable:hover { color: var(--accent); text-decoration: underline; }
-.editor { margin: 6px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; white-space: normal; }
-.editor textarea, .review-panel textarea { width: 100%; font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; resize: vertical; }
+td.num.commentable:hover { color: var(--accent-ink); text-decoration: underline; }
+.editor { margin: 6px 0; font-family: var(--font-ui); white-space: normal; }
+.editor textarea, .review-panel textarea { width: 100%; font: 13px/1.5 var(--font-ui); color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; resize: vertical; }
 .editor-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+/* Pink buttons sit on a deeper edge, like Callie's stickers. */
+button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 0 var(--accent-edge); }
 .thread.pending { border-style: dashed; }
-.pending-label { font-size: 12px; font-weight: 600; color: var(--accent); }
+.pending-label { font-size: 12px; font-weight: 600; color: var(--accent-ink); }
 .draft-body { white-space: pre-wrap; padding: 4px 0 6px; }
 .review-button {
   background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
@@ -350,7 +365,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .draft-count { background: var(--accent-fg); color: var(--accent); border-radius: 999px; padding: 0 7px; font-size: 12px; }
 .review-panel {
   position: fixed; top: 16px; right: 16px; z-index: 10; width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto;
-  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: 0 8px 24px rgba(0, 0, 0, .2);
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 14px; padding: 16px; box-shadow: 0 10px 30px var(--shadow);
 }
 .review-panel h2 { font-size: 16px; margin: 0 0 8px; }
 .review-events { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0; }
@@ -363,7 +378,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .action-status.failed { color: var(--removed); }
 .comment-box { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
 .chapter-nav { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding-top: 16px; }
-.chapter-nav a { color: var(--accent); text-decoration: none; }
+.chapter-nav a { color: var(--accent-ink); text-decoration: none; }
 .chapter-nav a:last-child { text-align: right; }
 .chapter-nav a:hover { text-decoration: underline; }
 .hljs-keyword, .hljs-meta .hljs-keyword, .hljs-template-tag, .hljs-type.hljs-keyword, .hljs-variable.language_ { color: var(--hl-keyword); }
@@ -1599,9 +1614,14 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     return el("div", { class: "intro" }, parts);
   }
 
+  var LOGO = '<svg viewBox="0 0 64 64" aria-hidden="true"><rect x="7" y="16" width="37" height="12" rx="6" fill="#cc6699"/><rect x="20" y="36" width="37" height="12" rx="6" fill="#cc6699"/></svg>';
+
   function renderNav() {
     var nav = document.getElementById("nav");
     nav.textContent = "";
+    var brand = el("div", { class: "brand" }, ["git-stk tour"]);
+    brand.insertAdjacentHTML("afterbegin", LOGO);
+    nav.appendChild(brand);
     if (data.chapters.length > 1) renderStackNav(nav);
     nav.appendChild(el("h2", { text: "Steps" }));
     nav.appendChild(el("div", { class: "progress", id: "progress" }));
