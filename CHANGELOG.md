@@ -19,7 +19,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   and can expand the unchanged lines around each hunk. The description is
   rendered as Markdown, and the review's discussion is shown with it: review
   outcomes and comments, threads under their lines, and outdated threads with
-  the code they were left on. Reviewed steps are remembered per head commit. A
+  the code they were left on. Line comments can be drafted on the page and
+  submitted as one review (comment, approve, or request changes) once the
+  terminal running the tour confirms what will be posted. Reviewed steps are
+  remembered per head commit. A
   review in a stack is toured with the rest of its stack, branches included,
   one review at a time; the stack is found from review bases, so stacks not
   made with git-stk work too (`--no-stack` tours one review). The page header

@@ -247,6 +247,13 @@ Each review's discussion comes with it: review outcomes and comments on the revi
 threads under the lines they are on, and comments on whole files, on lines the diff does not show, or on an
 earlier version above the file. Resolved threads start collapsed.
 
+You can review from the page too. Click a line number on a line of the diff to leave a comment on it; comments
+wait as pending (kept in the browser, so a reload keeps them) until you open Review, add a summary, pick an
+outcome (comment, approve, or request changes; GitLab offers comment and approve), and submit. The terminal
+running the tour shows exactly what will be posted and asks before anything is sent, and the whole review is
+posted at once. A review whose head has moved since the tour started is refused, since its comments were
+written against the old diff; restart the tour to review the new commits.
+
 The step sidebar can be hidden, and the sun/moon button switches between light and dark themes (the page
 follows the system theme until one is chosen). The tour is served from a local address only this machine
 can reach, behind a token generated for each run, and opened in your browser (`--no-open` just prints the

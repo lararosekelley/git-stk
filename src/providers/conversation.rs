@@ -90,3 +90,52 @@ impl Side {
         }
     }
 }
+
+/// A review to post: an outcome, a summary, and comments on lines of the
+/// diff at `commit`.
+#[derive(Debug)]
+pub struct Submission {
+    pub event: ReviewEvent,
+    pub body: String,
+    pub comments: Vec<DraftComment>,
+    /// The head the comments' lines belong to.
+    pub commit: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ReviewEvent {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+impl ReviewEvent {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "comment" => Some(Self::Comment),
+            "approve" => Some(Self::Approve),
+            "request_changes" => Some(Self::RequestChanges),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Comment => "comment",
+            Self::Approve => "approve",
+            Self::RequestChanges => "request_changes",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DraftComment {
+    pub path: String,
+    /// The path before a rename, for a comment on the old side.
+    pub old_path: String,
+    pub anchor: Anchor,
+    /// For an unchanged line, its number on the other side, which GitLab
+    /// needs to place the comment.
+    pub paired_line: Option<u32>,
+    pub body: String,
+}

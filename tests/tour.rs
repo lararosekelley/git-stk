@@ -189,41 +189,104 @@ fn http(url: &str, method: &str, path: &str, body: &str) -> (u16, String) {
     (status, body)
 }
 
-#[test]
-fn tour_serves_the_page_until_its_last_tab_closes() {
-    use std::io::BufRead;
-    use std::process::{Command, Stdio};
+/// A served tour of `target`, with its address, stdin for answering the
+/// terminal prompt, and the rest of its output.
+struct Served {
+    child: std::process::Child,
+    url: String,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
 
-    let (repo, _origin) = repo_with_review("refs/pull/12/head");
-    repo.git(["config", "stk.provider", "github"]);
-    let fake = FakeProvider::new()
+impl Served {
+    fn start(repo: &TestRepo, fake: &common::FakeProviderEnv, target: &str) -> Self {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin("git-stk"));
+        TestRepo::isolate_git_config(&mut command);
+        let mut child = command
+            .args(["tour", target, "--no-open"])
+            .current_dir(repo.path())
+            .env("PATH", &fake.path)
+            .env("STK_FAKE_SPEC", &fake.spec)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut first_line = String::new();
+        stdout.read_line(&mut first_line).unwrap();
+        let url = first_line
+            .split_whitespace()
+            .find(|word| word.starts_with("http://127.0.0.1:"))
+            .unwrap_or_else(|| panic!("no address in {first_line:?}"))
+            .to_owned();
+        let stdin = child.stdin.take().unwrap();
+        Self {
+            child,
+            url,
+            stdin,
+            stdout,
+        }
+    }
+
+    /// Close the page's tab and wait for the server to stop, returning what
+    /// it printed after its address.
+    fn close(mut self) -> String {
+        use std::io::Read;
+        assert_eq!(http(&self.url, "POST", "api/alive", r#""tab""#).0, 200);
+        assert_eq!(http(&self.url, "POST", "api/closed", r#""tab""#).0, 200);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success(), "{status}");
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                self.child.kill().unwrap();
+                panic!("the server outlived its last tab");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let mut rest = String::new();
+        self.stdout.read_to_string(&mut rest).unwrap();
+        rest
+    }
+
+    /// Submit `review` from the page, answering the terminal's prompt with
+    /// `answer`.
+    fn submit(&mut self, review: &str, answer: &str) -> (u16, Value) {
+        use std::io::Write;
+        let url = self.url.clone();
+        let review = review.to_owned();
+        let request = std::thread::spawn(move || http(&url, "POST", "api/submit", &review));
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        self.stdin.write_all(answer.as_bytes()).unwrap();
+        self.stdin.flush().unwrap();
+        let (status, body) = request.join().unwrap();
+        (status, serde_json::from_str(&body).unwrap())
+    }
+}
+
+fn github_tour_fake() -> FakeProvider {
+    FakeProvider::new()
         .on("pr view 12 --json body", r#"{"body":""}"#)
         .on("pr view 12 --json", GITHUB_REVIEW)
         .on("pr list", "[]")
         .on("repo view", GITHUB_REPO)
         .on("api graphql", GITHUB_DISCUSSION)
+}
+
+#[test]
+fn tour_serves_the_page_until_its_last_tab_closes() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = github_tour_fake()
         .fallback_fail("unexpected provider call")
         .install(&repo);
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin("git-stk"));
-    TestRepo::isolate_git_config(&mut command);
-    let mut server = command
-        .args(["tour", "12", "--no-open"])
-        .current_dir(repo.path())
-        .env("PATH", &fake.path)
-        .env("STK_FAKE_SPEC", &fake.spec)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut first_line = String::new();
-    std::io::BufReader::new(server.stdout.take().unwrap())
-        .read_line(&mut first_line)
-        .unwrap();
-    let url = first_line
-        .split_whitespace()
-        .find(|word| word.starts_with("http://127.0.0.1:"))
-        .unwrap_or_else(|| panic!("no address in {first_line:?}"))
-        .to_owned();
+    let served = Served::start(&repo, &fake, "12");
+    let url = served.url.clone();
 
     let (status, page) = http(&url, "GET", "", "");
     assert_eq!(status, 200);
@@ -244,21 +307,86 @@ fn tour_serves_the_page_until_its_last_tab_closes() {
         + "/";
     assert_eq!(http(&origin_only, "GET", "", "").0, 404);
 
-    // The server stops once its last tab closes.
-    assert_eq!(http(&url, "POST", "api/alive", r#""tab""#).0, 200);
-    assert_eq!(http(&url, "POST", "api/closed", r#""tab""#).0, 200);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        if let Some(status) = server.try_wait().unwrap() {
-            assert!(status.success(), "{status}");
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            server.kill().unwrap();
-            panic!("the server outlived its last tab");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    served.close();
+}
+
+const A_REVIEW: &str = r#"{"chapter":0,"event":"approve","body":"Ship it","comments":[{"path":"src/lib.rs","oldPath":"src/lib.rs","side":"new","line":2,"pairedLine":null,"body":"Name it two?"}]}"#;
+
+#[test]
+fn tour_posts_a_review_once_the_terminal_confirms_it() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = github_tour_fake()
+        .record(
+            "api --method POST repos/owner/repo/pulls/12/reviews --input -",
+            "posted",
+            r#"{"html_url":"https://github.com/owner/repo/pull/12#pullrequestreview-1"}"#,
+        )
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+
+    let (status, answer) = served.submit(A_REVIEW, "y\n");
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        answer["url"],
+        "https://github.com/owner/repo/pull/12#pullrequestreview-1"
+    );
+    let terminal = served.close();
+    assert!(
+        terminal.contains("review of Add two (#12): approve, with 1 comment"),
+        "{terminal}"
+    );
+    assert!(terminal.contains("  summary: Ship it"), "{terminal}");
+    assert!(
+        terminal.contains("  src/lib.rs:2  Name it two?"),
+        "{terminal}"
+    );
+    assert!(repo.path().join("posted").exists(), "the review was posted");
+}
+
+#[test]
+fn tour_posts_nothing_when_the_terminal_declines() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = github_tour_fake()
+        .record("pulls/12/reviews", "posted", "{}")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+
+    let (status, answer) = served.submit(A_REVIEW, "n\n");
+    assert_eq!(status, 409, "{answer}");
+    assert_eq!(answer["error"], "not posted: declined in the terminal");
+    served.close();
+    assert!(!repo.path().join("posted").exists());
+}
+
+#[test]
+fn tour_refuses_a_review_of_a_head_that_has_moved() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = github_tour_fake()
+        .record("pulls/12/reviews", "posted", "{}")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+    // A new commit lands on the review after the tour started.
+    repo.git(["switch", "-c", "later", "FETCH_HEAD"]);
+    repo.commit_file("later.txt", "later\n", "later");
+    repo.git(["push", "-f", "origin", "later:refs/pull/12/head"]);
+
+    let (status, answer) = served.submit(A_REVIEW, "");
+    assert_eq!(status, 422, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("#12 has new commits since this tour started"),
+        "{answer}"
+    );
+    served.close();
+    assert!(!repo.path().join("posted").exists());
 }
 
 #[test]
@@ -727,6 +855,203 @@ fn tour_still_writes_a_review_whose_discussion_it_cannot_read() {
             .unwrap()
             .contains("HTTP 502")
     );
+}
+
+/// A GitLab fake for MR !34 at `head`, recording what a review submits.
+fn gitlab_review_fake(head: &str, existing_drafts: &str) -> FakeProvider {
+    gitlab_review_fake_after(FakeProvider::new(), head, existing_drafts)
+}
+
+/// [`gitlab_review_fake`] after `first`'s rules, which win where both match.
+fn gitlab_review_fake_after(
+    first: FakeProvider,
+    head: &str,
+    existing_drafts: &str,
+) -> FakeProvider {
+    let mr = format!(
+        r##"{{"iid":34,"state":"opened","target_branch":"main","source_branch":"contrib","web_url":"https://gitlab.com/group/repo/-/merge_requests/34","title":"Add two","description":"","sha":"{head}","diff_refs":{{"base_sha":"base","start_sha":"start","head_sha":"{head}"}}}}"##
+    );
+    first
+        .on("mr view 34 --output json", &mr)
+        .on("mr list", "[]")
+        .on("merge_requests/34/discussions", "[]")
+        .on("merge_requests/34/approvals", r#"{"approved_by":[]}"#)
+        .on(
+            "api --method GET projects/:id/merge_requests/34/draft_notes",
+            existing_drafts,
+        )
+        .record_append("draft_notes/bulk_publish", "published", "{}")
+        .record_append(
+            "merge_requests/34/draft_notes --input -",
+            "drafted",
+            r#"{"id":5}"#,
+        )
+        .record("merge_requests/34/approve", "approved", "{}")
+}
+
+#[test]
+fn tour_posts_a_gitlab_review_as_published_drafts() {
+    let (repo, _origin) = repo_with_review("refs/merge-requests/34/head");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let head = repo.git(["ls-remote", "origin", "refs/merge-requests/34/head"]);
+    let fake = gitlab_review_fake(&head[..40], "[]")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "!34");
+
+    let (status, answer) = served.submit(A_REVIEW, "y\n");
+    assert_eq!(status, 200, "{answer}");
+    served.close();
+    let drafted = fs::read_to_string(repo.path().join("drafted")).unwrap();
+    assert_eq!(
+        drafted.lines().count(),
+        2,
+        "the comment and the summary: {drafted}"
+    );
+    assert!(repo.path().join("published").exists());
+    assert!(repo.path().join("approved").exists());
+}
+
+#[test]
+fn tour_will_not_publish_someone_elses_gitlab_drafts() {
+    let (repo, _origin) = repo_with_review("refs/merge-requests/34/head");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let head = repo.git(["ls-remote", "origin", "refs/merge-requests/34/head"]);
+    let fake = gitlab_review_fake(&head[..40], r#"[{"id":9,"note":"left in GitLab"}]"#)
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "!34");
+
+    let (status, answer) = served.submit(A_REVIEW, "y\n");
+    assert_eq!(status, 422, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("unpublished draft comments on !34"),
+        "{answer}"
+    );
+    served.close();
+    assert!(!repo.path().join("drafted").exists());
+    assert!(!repo.path().join("published").exists());
+}
+
+#[test]
+fn tour_posts_a_gitea_review() {
+    let repo = TestRepo::new();
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    repo.commit_file("src/lib.rs", "fn one() {}\n", "add lib");
+    // An origin whose path ends in owner/repo, which tea names the repository by.
+    let remote = tempfile::tempdir().unwrap();
+    let bare = remote.path().join("owner").join("repo");
+    fs::create_dir_all(&bare).unwrap();
+    // Forward slashes, which git takes on Windows too, keep the path's
+    // owner/repo end readable as a slug.
+    let bare = bare.to_str().unwrap().replace('\\', "/");
+    repo.git(["init", "--bare", "--initial-branch", "main", &bare]);
+    repo.git(["remote", "add", "origin", &bare]);
+    repo.git(["push", "-u", "origin", "main"]);
+    repo.git(["switch", "-c", "contrib"]);
+    repo.write("src/lib.rs", "fn one() {}\nfn two() {}\n");
+    repo.git(["commit", "-am", "add two"]);
+    repo.git(["push", "origin", "contrib:refs/pull/12/head"]);
+    repo.git(["switch", "main"]);
+    repo.git(["config", "stk.provider", "gitea"]);
+    let pull = r##"{"number":12,"state":"open","merged":false,"head":{"ref":"contrib","sha":"x"},"base":{"ref":"main"},"html_url":"https://gitea.test/owner/repo/pulls/12","title":"Add two","body":""}"##;
+    let fake = FakeProvider::new()
+        .commands(&["tea"])
+        .record(
+            "api --method POST repos/owner/repo/pulls/12/reviews --data",
+            "posted",
+            r#"{"html_url":"https://gitea.test/owner/repo/pulls/12#review"}"#,
+        )
+        .on("repos/owner/repo/pulls/12/reviews", "[]")
+        .on("repos/owner/repo/issues/12/comments", "[]")
+        .on("repos/owner/repo/pulls?state=open", "[]")
+        .on("repos/owner/repo/pulls/12", pull)
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+
+    let (status, answer) = served.submit(A_REVIEW, "y\n");
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        answer["url"],
+        "https://gitea.test/owner/repo/pulls/12#review"
+    );
+    served.close();
+    let posted = fs::read_to_string(repo.path().join("posted")).unwrap();
+    assert!(posted.contains(r#""event":"APPROVED""#), "{posted}");
+    assert!(posted.contains(r#""new_position":2"#), "{posted}");
+}
+
+#[test]
+fn tour_discards_its_gitlab_drafts_when_one_fails() {
+    let (repo, _origin) = repo_with_review("refs/merge-requests/34/head");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let head = repo.git(["ls-remote", "origin", "refs/merge-requests/34/head"]);
+    // The comment's draft is made; the summary's then fails.
+    let fake = gitlab_review_fake_after(
+        FakeProvider::new()
+            .fail_after(
+                "merge_requests/34/draft_notes --input -",
+                "drafted",
+                "HTTP 500",
+            )
+            .record("draft_notes/5", "discarded", ""),
+        &head[..40],
+        "[]",
+    )
+    .fallback_fail("unexpected provider call")
+    .install(&repo);
+    let mut served = Served::start(&repo, &fake, "!34");
+
+    let (status, answer) = served.submit(A_REVIEW, "y\n");
+    assert_eq!(status, 422, "{answer}");
+    let terminal = served.close();
+    let discarded = fs::read_to_string(repo.path().join("discarded")).unwrap_or_else(|_| {
+        panic!("nothing was discarded; the page was told {answer}, the terminal said {terminal}")
+    });
+    assert!(
+        discarded.contains("--method DELETE projects/:id/merge_requests/34/draft_notes/5"),
+        "{discarded}"
+    );
+    assert!(!repo.path().join("published").exists());
+    assert!(!repo.path().join("approved").exists());
+}
+
+#[test]
+fn tour_posts_nothing_when_gitlab_refuses_the_approval() {
+    let (repo, _origin) = repo_with_review("refs/merge-requests/34/head");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let head = repo.git(["ls-remote", "origin", "refs/merge-requests/34/head"]);
+    let fake = gitlab_review_fake_after(
+        FakeProvider::new()
+            .fail(
+                "merge_requests/34/approve",
+                "HTTP 401: author cannot approve",
+            )
+            .record_append("draft_notes/5", "discarded", ""),
+        &head[..40],
+        "[]",
+    )
+    .fallback_fail("unexpected provider call")
+    .install(&repo);
+    let mut served = Served::start(&repo, &fake, "!34");
+
+    let (status, answer) = served.submit(A_REVIEW, "y\n");
+    assert_eq!(status, 422, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("author cannot approve"),
+        "{answer}"
+    );
+    served.close();
+    let discarded = fs::read_to_string(repo.path().join("discarded")).unwrap();
+    assert_eq!(discarded.lines().count(), 2, "both drafts: {discarded}");
+    assert!(!repo.path().join("published").exists());
 }
 
 #[test]

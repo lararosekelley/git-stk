@@ -221,6 +221,28 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .note-label { font-size: 12px; color: var(--fg-muted); margin-top: 6px; }
 .outdated > summary { cursor: pointer; color: var(--fg-muted); font-size: 12px; padding: 4px 0; }
 .thread-hunk { margin: 4px 0; padding: 6px 8px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
+td.num.commentable { cursor: pointer; }
+td.num.commentable:hover { color: var(--accent); text-decoration: underline; }
+.editor { margin: 6px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; white-space: normal; }
+.editor textarea, .review-panel textarea { width: 100%; font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; resize: vertical; }
+.editor-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+.thread.pending { border-style: dashed; }
+.pending-label { font-size: 12px; font-weight: 600; color: var(--accent); }
+.draft-body { white-space: pre-wrap; padding: 4px 0 6px; }
+.review-button { margin-left: auto; }
+.draft-count:empty { display: none; }
+.draft-count { background: var(--accent); color: #ffffff; border-radius: 999px; padding: 0 6px; margin-left: 2px; }
+.review-panel {
+  position: fixed; top: 16px; right: 16px; z-index: 10; width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: 0 8px 24px rgba(0, 0, 0, .2);
+}
+.review-panel h2 { font-size: 16px; margin: 0 0 8px; }
+.review-events { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0; }
+.review-comments { margin: 4px 0 8px; padding-left: 18px; font-size: 13px; }
+.review-status { margin-top: 8px; color: var(--fg-muted); }
+.review-status.failed { color: var(--removed); }
+.review-status.posted { color: var(--done); }
 .chapter-nav { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding-top: 16px; }
 .chapter-nav a { color: var(--accent); text-decoration: none; }
 .chapter-nav a:last-child { text-align: right; }
@@ -474,7 +496,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
   // Rows for the current threads on a line, each shown once.
   FileView.prototype.threadRows = function (oldNum, newNum) {
     var view = this;
-    return this.threads.filter(function (thread, index) {
+    var rows = this.threads.filter(function (thread, index) {
       if (thread.outdated || thread.line === null || view.placed[index]) return false;
       var here = thread.side === "old" ? thread.line === oldNum : thread.line === newNum;
       if (here) view.placed[index] = true;
@@ -482,6 +504,26 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     }).map(function (thread) {
       return el("tr", { class: "thread-row" }, [el("td", { colspan: "4" }, [renderThread(thread)])]);
     });
+    draftsOnFile(this.file).filter(function (draft) {
+      return draft.side === "old" ? draft.line === oldNum : draft.line === newNum;
+    }).forEach(function (draft) {
+      var tr = el("tr", { class: "thread-row" });
+      tr.appendChild(el("td", { colspan: "4" }, [view.renderDraft(draft, tr)]));
+      rows.push(tr);
+    });
+    return rows;
+  };
+
+  FileView.prototype.renderDraft = function (draft, tr) {
+    var view = this;
+    var edit = el("button", { type: "button", text: "Edit" });
+    var remove = el("button", { type: "button", text: "Delete" });
+    edit.addEventListener("click", function () { view.openEditor(tr, draft); });
+    remove.addEventListener("click", function () { deleteDraft(draft.id); view.render(); });
+    return el("div", { class: "thread pending" }, [
+      el("div", { class: "comment-meta" }, [el("span", { class: "pending-label", text: "Pending" }), " ", edit, " ", remove]),
+      el("div", { class: "draft-body", text: draft.body }),
+    ]);
   };
 
   // What the diff cannot show inline: comments on the whole file, on lines
@@ -532,6 +574,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
           kind: line[0],
           oldNum: line[0] === "+" ? null : oldNum++,
           newNum: line[0] === "-" ? null : newNum++,
+          inDiff: true,
         });
       });
     });
@@ -592,6 +635,43 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     return el("td", { class: "num " + cls, text: number === null || number === undefined ? "" : String(number) });
   }
 
+  // A line-number cell that starts a comment on its side of the line. Only
+  // lines inside the diff can carry one: forges refuse the rest.
+  FileView.prototype.commentCell = function (cell, row, side, tr) {
+    var line = side === "old" ? row.oldNum : row.newNum;
+    if (!data.served || !row.inDiff || line === null || line === undefined) return cell;
+    var view = this;
+    cell.classList.add("commentable");
+    cell.title = "Comment on this line";
+    cell.addEventListener("click", function () {
+      var paired = row.kind === " " ? (side === "old" ? row.newNum : row.oldNum) : null;
+      view.openEditor(tr(), { path: view.file.path, oldPath: view.file.oldPath, side: side, line: line, pairedLine: paired, body: "" });
+    });
+    return cell;
+  };
+
+  FileView.prototype.openEditor = function (after, draft) {
+    var view = this;
+    var existing = after.parentNode.querySelector("tr.editor-row");
+    if (existing) existing.remove();
+    var text = el("textarea", { rows: "4", placeholder: "Leave a comment" });
+    text.value = draft.body;
+    var save = el("button", { type: "button", class: "primary", text: draft.id ? "Update comment" : "Add comment" });
+    var cancel = el("button", { type: "button", text: "Cancel" });
+    var row = el("tr", { class: "editor-row" }, [el("td", { colspan: "4" }, [
+      el("div", { class: "editor" }, [text, el("div", { class: "editor-actions" }, [cancel, save])]),
+    ])]);
+    after.parentNode.insertBefore(row, after.nextSibling);
+    text.focus();
+    cancel.addEventListener("click", function () { row.remove(); });
+    save.addEventListener("click", function () {
+      if (!text.value.trim()) return;
+      draft.body = text.value;
+      saveDraft(draft);
+      view.render();
+    });
+  };
+
   function lineClass(kind) {
     return kind === "+" ? "add" : kind === "-" ? "del" : "";
   }
@@ -606,12 +686,15 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       }
       var cls = lineClass(row.kind);
       var html = row.kind === "-" ? view.sides.old.line(row.oldNum) : view.sides.new.line(row.newNum);
-      body.appendChild(el("tr", {}, [
-        numCell(row.oldNum, cls),
-        numCell(row.newNum, cls),
+      var tr = el("tr");
+      var self = function () { return tr; };
+      [
+        view.commentCell(numCell(row.oldNum, cls), row, "old", self),
+        view.commentCell(numCell(row.newNum, cls), row, "new", self),
         el("td", { class: "sign " + cls, text: row.kind === " " ? "" : row.kind }),
         codeCell(html, cls),
-      ]));
+      ].forEach(function (cell) { tr.appendChild(cell); });
+      body.appendChild(tr);
       view.threadRows(row.oldNum, row.newNum).forEach(function (tr) { body.appendChild(tr); });
     });
     var cols = el("colgroup", {}, [el("col", { class: "num" }), el("col", { class: "num" }), el("col", { class: "sign" }), el("col")]);
@@ -627,12 +710,15 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       for (var index = 0; index < Math.max(deleted.length, added.length); index++) {
         var left = deleted[index];
         var right = added[index];
-        body.appendChild(el("tr", {}, [
-          numCell(left ? left.oldNum : null, left ? "del" : "empty"),
+        var tr = el("tr");
+        var self = function () { return tr; };
+        [
+          left ? view.commentCell(numCell(left.oldNum, "del"), left, "old", self) : numCell(null, "empty"),
           codeCell(left ? view.sides.old.line(left.oldNum) : "", left ? "del" : "empty"),
-          numCell(right ? right.newNum : null, right ? "add" : "empty"),
+          right ? view.commentCell(numCell(right.newNum, "add"), right, "new", self) : numCell(null, "empty"),
           codeCell(right ? view.sides.new.line(right.newNum) : "", right ? "add" : "empty"),
-        ]));
+        ].forEach(function (cell) { tr.appendChild(cell); });
+        body.appendChild(tr);
         view.threadRows(left ? left.oldNum : null, right ? right.newNum : null).forEach(function (tr) { body.appendChild(tr); });
       }
       deleted = [];
@@ -649,12 +735,15 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
         added.push(row);
       } else {
         flush();
-        body.appendChild(el("tr", {}, [
-          numCell(row.oldNum, ""),
+        var tr = el("tr");
+        var self = function () { return tr; };
+        [
+          view.commentCell(numCell(row.oldNum, ""), row, "old", self),
           codeCell(view.sides.old.line(row.oldNum), ""),
-          numCell(row.newNum, ""),
+          view.commentCell(numCell(row.newNum, ""), row, "new", self),
           codeCell(view.sides.new.line(row.newNum), ""),
-        ]));
+        ].forEach(function (cell) { tr.appendChild(cell); });
+        body.appendChild(tr);
         view.threadRows(row.oldNum, row.newNum).forEach(function (tr) { body.appendChild(tr); });
       }
     });
@@ -665,6 +754,114 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 
   function discussion() {
     return chapter.conversation || { verdicts: [], comments: [], threads: [] };
+  }
+
+  // Comments waiting to go out with the next review, kept per head so they
+  // survive a reload but not new commits.
+  function draftsKey() {
+    return "git-stk-tour-drafts:" + chapter.headSha;
+  }
+
+  function drafts() {
+    var stored = readStorage(draftsKey(), []);
+    return Array.isArray(stored) ? stored : [];
+  }
+
+  function draftsOnFile(file) {
+    return drafts().filter(function (draft) { return draft.path === file.path; });
+  }
+
+  function saveDraft(draft) {
+    var all = drafts();
+    if (!draft.id) {
+      draft.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      all.push(draft);
+    } else {
+      all = all.map(function (other) { return other.id === draft.id ? draft : other; });
+    }
+    writeStorage(draftsKey(), all);
+    showDraftCount();
+  }
+
+  function deleteDraft(id) {
+    writeStorage(draftsKey(), drafts().filter(function (draft) { return draft.id !== id; }));
+    showDraftCount();
+  }
+
+  function showDraftCount() {
+    var badge = document.getElementById("draft-count");
+    if (badge) badge.textContent = drafts().length ? String(drafts().length) : "";
+  }
+
+  var EVENTS = { comment: "Comment", approve: "Approve", request_changes: "Request changes" };
+
+  function openReview() {
+    var existing = document.getElementById("review-panel");
+    if (existing) { existing.remove(); return; }
+    var pending = drafts();
+    var summary = el("textarea", { rows: "4", placeholder: "Summary (optional)" });
+    summary.value = readStorage(draftsKey() + ":summary", "");
+    summary.addEventListener("input", function () { writeStorage(draftsKey() + ":summary", summary.value); });
+    var choices = el("div", { class: "review-events" }, (data.reviewEvents || ["comment"]).map(function (event, index) {
+      var input = el("input", { type: "radio", name: "review-event", value: event });
+      if (index === 0) input.checked = true;
+      return el("label", {}, [input, " " + (EVENTS[event] || event)]);
+    }));
+    var list = el("ul", { class: "review-comments" }, pending.map(function (draft) {
+      return el("li", {}, [el("code", { text: draft.path + ":" + draft.line + (draft.side === "old" ? " (old)" : "") }), " " + draft.body.split("\n")[0].slice(0, 80)]);
+    }));
+    var status = el("div", { class: "review-status" });
+    var submit = el("button", { type: "button", class: "primary", text: "Submit review" });
+    var close = el("button", { type: "button", text: "Close" });
+    var panel = el("div", { id: "review-panel", class: "review-panel", role: "dialog", "aria-label": "Submit a review" }, [
+      el("h2", { text: "Review " + chapter.review.id }),
+      summary,
+      choices,
+      el("div", { class: "note-label", text: pending.length ? pending.length + (pending.length === 1 ? " pending comment" : " pending comments") : "No pending comments; click a line number in the diff to add one." }),
+      list,
+      el("div", { class: "editor-actions" }, [close, submit]),
+      status,
+    ]);
+    close.addEventListener("click", function () { panel.remove(); });
+    submit.addEventListener("click", function () {
+      var event = (panel.querySelector("input[name=review-event]:checked") || {}).value || "comment";
+      var shown = chapterIndex;
+      // The review's own drafts, however the page has moved on by the time
+      // the terminal answers.
+      var key = draftsKey();
+      submit.disabled = true;
+      status.className = "review-status";
+      status.textContent = "Confirm in your terminal to post this review.";
+      fetch("api/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chapter: shown, event: event, body: summary.value, comments: drafts() }),
+      }).then(function (response) {
+        return response.json().then(function (answer) { return { ok: response.ok, answer: answer }; });
+      }).then(function (result) {
+        submit.disabled = false;
+        if (!result.ok) {
+          status.className = "review-status failed";
+          status.textContent = result.answer.error || "The review was not posted.";
+          return;
+        }
+        writeStorage(key, []);
+        writeStorage(key + ":summary", "");
+        status.className = "review-status posted";
+        status.textContent = "";
+        status.appendChild(document.createTextNode("Posted. "));
+        if (result.answer.url) status.appendChild(el("a", { href: result.answer.url, target: "_blank", rel: "noopener", text: "View the review" }));
+        showDraftCount();
+        var refresh = document.querySelector(".conversation .panel-head button");
+        if (refresh) refresh.click();
+      }).catch(function () {
+        submit.disabled = false;
+        status.className = "review-status failed";
+        status.textContent = "The tour server did not answer; it may have stopped.";
+      });
+    });
+    document.body.appendChild(panel);
+    summary.focus();
   }
 
   function threadsOnFile(file) {
@@ -838,6 +1035,11 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       return button;
     });
     var toolbar = el("div", { class: "toolbar", id: "toolbar" }, ["View:"].concat(buttons));
+    if (data.served) {
+      var reviewButton = el("button", { type: "button", class: "review-button" }, ["Review ", el("span", { id: "draft-count", class: "draft-count" })]);
+      reviewButton.addEventListener("click", openReview);
+      toolbar.appendChild(reviewButton);
+    }
     var top = el("div", { class: "header-top" }, [
       navButton(),
       el("h1", { text: review.title || review.id }),
@@ -1071,6 +1273,9 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     if (chapterNav) main.appendChild(chapterNav);
     renderNav();
     renderLazily();
+    showDraftCount();
+    var stale = document.getElementById("review-panel");
+    if (stale) stale.remove();
     var review = chapter.review;
     document.title = "Tour of " + (review.title ? review.title + " (" + review.id + ")" : review.id);
   }

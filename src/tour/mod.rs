@@ -49,6 +49,8 @@ pub struct Tour {
     chapters: Vec<Chapter>,
     current: usize,
     warnings: Vec<String>,
+    /// The outcomes a review can be submitted with on this forge.
+    events: Vec<&'static str>,
 }
 
 /// One review's commits and changes.
@@ -196,6 +198,11 @@ impl Tour {
             chapters,
             current: current_chapter,
             warnings,
+            events: provider
+                .review_events()
+                .iter()
+                .map(|event| event.as_str())
+                .collect(),
         })
     }
 
@@ -237,6 +244,13 @@ impl Tour {
         )
     }
 
+    /// A chapter's review and the head the tour shows of it.
+    pub fn chapter_review(&self, chapter: usize) -> Option<(&ReviewRequest, &str)> {
+        self.chapters
+            .get(chapter)
+            .map(|chapter| (&chapter.review, chapter.head_sha.as_str()))
+    }
+
     /// A chapter's discussion as it stands now, for a page refreshing it.
     pub fn conversation(&self, provider: &dyn ReviewProvider, chapter: usize) -> Result<Value> {
         let chapter = self
@@ -249,6 +263,7 @@ impl Tour {
     fn data(&self, served: bool) -> Value {
         json!({
             "served": served,
+            "reviewEvents": self.events,
             "current": self.current,
             "chapters": self.chapters.iter().map(Chapter::data).collect::<Vec<_>>(),
         })
@@ -430,6 +445,16 @@ fn settle_same_named(
         return None;
     };
     heads.iter().position(|head| head.as_ref() == Some(tip))
+}
+
+/// Whether `review` has moved on from `head` on the remote, so comments
+/// written against `head`'s diff could land on the wrong lines.
+pub fn head_moved(kind: ProviderKind, review: &ReviewRequest, head: &str) -> Result<bool> {
+    let Some(head_ref) = head_ref(kind, review.id_value()) else {
+        return Ok(false);
+    };
+    let current = git::remote_commits(&settings::remote()?, &[head_ref])?;
+    Ok(current.first().and_then(Option::as_deref) != Some(head))
 }
 
 /// The tip of each review's base branch and its head commit, fetched from the

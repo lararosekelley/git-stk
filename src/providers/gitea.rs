@@ -8,9 +8,9 @@ use super::json::{
 };
 use super::{
     Anchor, CHECK_GRACE_POLLS, CheckStatus, Comment, Conversation, IssueState, MergeBlocker,
-    ReviewProvider, ReviewRequest, ReviewState, ReviewSummary, Side, Thread, Verdict, VerdictState,
-    WaitOutcome, check_poll_interval, checks_timed_out, command_output, merge_with_resettle,
-    review_merged_out_of_band,
+    ReviewEvent, ReviewProvider, ReviewRequest, ReviewState, ReviewSummary, Side, Submission,
+    Thread, Verdict, VerdictState, WaitOutcome, check_poll_interval, checks_timed_out,
+    command_output, merge_with_resettle, review_merged_out_of_band,
 };
 
 pub(super) struct GiteaProvider;
@@ -146,6 +146,17 @@ impl ReviewProvider for GiteaProvider {
             &issue_comments,
             &head,
         ))
+    }
+
+    fn submit_review(&self, review: &ReviewRequest, submission: &Submission) -> Result<String> {
+        let endpoint = format!("repos/{}/pulls/{}/reviews", repo_slug()?, review.id_value());
+        let data = gitea_review_request(submission).to_string();
+        let value: Value = serde_json::from_str(&command_output(
+            "tea",
+            &["api", "--method", "POST", &endpoint, "--data", &data],
+        )?)
+        .context("failed to parse gitea review JSON")?;
+        Ok(optional_string(&value, "html_url"))
     }
 
     fn issue_state(&self, number: u64) -> Result<IssueState> {
@@ -375,6 +386,29 @@ fn state_rank(state: &ReviewState) -> u8 {
         ReviewState::Closed => 2,
         ReviewState::Unknown(_) => 3,
     }
+}
+
+/// The body of a create-review request. Gitea places a comment by one line
+/// number on one side, so a multi-line comment sits on its last line.
+fn gitea_review_request(submission: &Submission) -> Value {
+    serde_json::json!({
+        "commit_id": submission.commit,
+        "body": submission.body,
+        "event": match submission.event {
+            ReviewEvent::Comment => "COMMENT",
+            ReviewEvent::Approve => "APPROVED",
+            ReviewEvent::RequestChanges => "REQUEST_CHANGES",
+        },
+        "comments": submission.comments.iter().map(|comment| {
+            let mut value = serde_json::json!({ "path": comment.path, "body": comment.body });
+            let key = match comment.anchor.side {
+                Side::New => "new_position",
+                Side::Old => "old_position",
+            };
+            value[key] = comment.anchor.line.into();
+            value
+        }).collect::<Vec<_>>(),
+    })
 }
 
 /// How many reviews or comments one conversation listing asks for; a full
@@ -642,6 +676,49 @@ fn slug_from_url(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gitea_review_request_places_comments_by_side() {
+        let submission = Submission {
+            event: ReviewEvent::Approve,
+            body: String::new(),
+            comments: vec![
+                super::super::DraftComment {
+                    path: "a.rs".into(),
+                    old_path: "a.rs".into(),
+                    anchor: Anchor {
+                        side: Side::Old,
+                        line: 2,
+                        start_line: None,
+                    },
+                    paired_line: None,
+                    body: "old".into(),
+                },
+                super::super::DraftComment {
+                    path: "a.rs".into(),
+                    old_path: "a.rs".into(),
+                    anchor: Anchor {
+                        side: Side::New,
+                        line: 5,
+                        start_line: Some(3),
+                    },
+                    paired_line: None,
+                    body: "new".into(),
+                },
+            ],
+            commit: "head".into(),
+        };
+        assert_eq!(
+            gitea_review_request(&submission),
+            serde_json::json!({
+                "commit_id": "head", "body": "", "event": "APPROVED",
+                "comments": [
+                    {"path": "a.rs", "body": "old", "old_position": 2},
+                    {"path": "a.rs", "body": "new", "new_position": 5},
+                ],
+            })
+        );
+    }
 
     #[test]
     fn gitea_conversation_groups_review_comments_by_line() {

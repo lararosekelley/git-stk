@@ -11,9 +11,9 @@ use super::json::{
 };
 use super::{
     Anchor, CheckStatus, Comment, Conversation, IssueState, MergeBlocker, NativeStack,
-    NativeStackLayer, ReviewAnnotation, ReviewProvider, ReviewRequest, ReviewState, ReviewSummary,
-    Side, StackPosition, Thread, Verdict, VerdictState, WaitOutcome, command_output,
-    generic_annotate, merge_with_retry,
+    NativeStackLayer, ReviewAnnotation, ReviewEvent, ReviewProvider, ReviewRequest, ReviewState,
+    ReviewSummary, Side, StackPosition, Submission, Thread, Verdict, VerdictState, WaitOutcome,
+    command_output, command_output_with_input, generic_annotate, merge_with_retry,
 };
 use crate::settings;
 
@@ -435,6 +435,19 @@ impl ReviewProvider for GitHubProvider {
         parse_github_conversation(&output)
     }
 
+    fn submit_review(&self, review: &ReviewRequest, submission: &Submission) -> Result<String> {
+        let (owner, repo) = repo_owner_name_result()?;
+        let path = format!("repos/{owner}/{repo}/pulls/{}/reviews", review.id_value());
+        let output = command_output_with_input(
+            "gh",
+            &["api", "--method", "POST", &path, "--input", "-"],
+            &github_review_request(submission).to_string(),
+        )?;
+        let value: serde_json::Value =
+            serde_json::from_str(&output).context("failed to parse gh review JSON")?;
+        Ok(optional_string(&value, "html_url"))
+    }
+
     fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
         // gh pages through the API itself; a repository under the limit costs
         // a single request.
@@ -805,6 +818,37 @@ fn parse_base_merge_queue(json: &str) -> bool {
                 .map(|queue| !queue.is_null())
         })
         .unwrap_or(false)
+}
+
+/// The body of a create-review request: one review carrying every comment,
+/// so the pull request's people are notified once.
+fn github_review_request(submission: &Submission) -> serde_json::Value {
+    let side = |side: Side| match side {
+        Side::Old => "LEFT",
+        Side::New => "RIGHT",
+    };
+    serde_json::json!({
+        "commit_id": submission.commit,
+        "body": submission.body,
+        "event": match submission.event {
+            ReviewEvent::Comment => "COMMENT",
+            ReviewEvent::Approve => "APPROVE",
+            ReviewEvent::RequestChanges => "REQUEST_CHANGES",
+        },
+        "comments": submission.comments.iter().map(|comment| {
+            let mut value = serde_json::json!({
+                "path": comment.path,
+                "body": comment.body,
+                "line": comment.anchor.line,
+                "side": side(comment.anchor.side),
+            });
+            if let Some(start) = comment.anchor.start_line {
+                value["start_line"] = start.into();
+                value["start_side"] = side(comment.anchor.side).into();
+            }
+            value
+        }).collect::<Vec<_>>(),
+    })
 }
 
 /// A pull request's discussion in one request. Each listing stops at 100,
@@ -1702,6 +1746,42 @@ fn count_latest_reviews(reviews: Option<&serde_json::Value>) -> ReviewSummary {
 mod tests {
     use super::*;
     use crate::providers::{CheckStatus, ReviewRequest, ReviewState};
+
+    fn submission(event: ReviewEvent) -> Submission {
+        Submission {
+            event,
+            body: "Summary".into(),
+            comments: vec![super::super::DraftComment {
+                path: "src/a.rs".into(),
+                old_path: "src/a.rs".into(),
+                anchor: Anchor {
+                    side: Side::Old,
+                    line: 9,
+                    start_line: Some(7),
+                },
+                paired_line: None,
+                body: "Why?".into(),
+            }],
+            commit: "abc".into(),
+        }
+    }
+
+    #[test]
+    fn github_review_request_carries_every_comment() {
+        let request = github_review_request(&submission(ReviewEvent::RequestChanges));
+        assert_eq!(
+            request,
+            serde_json::json!({
+                "commit_id": "abc",
+                "body": "Summary",
+                "event": "REQUEST_CHANGES",
+                "comments": [{
+                    "path": "src/a.rs", "body": "Why?", "line": 9, "side": "LEFT",
+                    "start_line": 7, "start_side": "LEFT",
+                }],
+            })
+        );
+    }
 
     #[test]
     fn github_conversation_reads_threads_reviews_and_comments() {

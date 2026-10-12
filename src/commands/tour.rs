@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
 use std::cell::RefCell;
+use std::sync::Mutex;
 use std::thread;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::ArgAction;
 use clap_complete::engine::ArgValueCompleter;
 
@@ -12,7 +13,11 @@ use crate::commands::Run;
 use crate::completions;
 use crate::git;
 use crate::progress::Progress;
-use crate::providers::{ReviewProvider, ReviewRef, detect_review_provider};
+use crate::prompt;
+use crate::providers::{
+    Anchor, DraftComment, ProviderKind, ReviewEvent, ReviewProvider, ReviewRef, ReviewRequest,
+    Side, Submission, detect_review_provider,
+};
 use crate::settings;
 use crate::style;
 use crate::tour::server::{Request, Response, Server};
@@ -137,7 +142,7 @@ fn write_tour(
     );
 
     let Some(path) = output else {
-        return serve(&tour, review_provider, &summary, open);
+        return serve(&tour, review_provider, provider.kind, &summary, open);
     };
     if let Some(parent) = path
         .parent()
@@ -162,6 +167,7 @@ fn write_tour(
 fn serve(
     tour: &ReviewTour,
     provider: &dyn ReviewProvider,
+    kind: ProviderKind,
     summary: &str,
     open: bool,
 ) -> Result<()> {
@@ -175,9 +181,19 @@ fn serve(
         anstream::eprintln!("could not open a browser ({error:#}); open the address above instead");
     }
     let page = tour.render(true);
+    // One terminal prompt at a time, however many tabs submit at once.
+    let prompting = Mutex::new(());
     server.run(
         &|request: Request| match (request.method.as_str(), request.path.as_str()) {
             ("GET", "") => Response::html(page.clone()),
+            ("POST", "api/submit") => match submit(tour, provider, kind, &request.body, &prompting)
+            {
+                Ok(Posted::Done(link)) => Response::json(&serde_json::json!({ "url": link })),
+                Ok(Posted::Declined) => {
+                    Response::error(409, "not posted: declined in the terminal")
+                }
+                Err(error) => Response::error(422, &format!("{error:#}")),
+            },
             ("GET", "api/conversation") => {
                 match request
                     .param("chapter")
@@ -193,4 +209,146 @@ fn serve(
             _ => Response::error(404, "not found"),
         },
     )
+}
+
+enum Posted {
+    Done(String),
+    Declined,
+}
+
+/// Post the review a page submitted, once the terminal confirms it. The page
+/// sends `{chapter, event, body, comments: [{path, oldPath, side, line,
+/// startLine, pairedLine, body}]}`.
+fn submit(
+    tour: &ReviewTour,
+    provider: &dyn ReviewProvider,
+    kind: ProviderKind,
+    request: &[u8],
+    prompting: &Mutex<()>,
+) -> Result<Posted> {
+    let request: serde_json::Value =
+        serde_json::from_slice(request).context("the review is not JSON")?;
+    let chapter = request["chapter"]
+        .as_u64()
+        .and_then(|chapter| usize::try_from(chapter).ok())
+        .context("which review?")?;
+    let (review, head) = tour
+        .chapter_review(chapter)
+        .context("no such review in this tour")?;
+    let event = request["event"]
+        .as_str()
+        .and_then(ReviewEvent::parse)
+        .filter(|event| provider.review_events().contains(event))
+        .context("that outcome is not available here")?;
+    let comments = request["comments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(draft_comment)
+        .collect::<Result<Vec<_>>>()?;
+    let body = request["body"].as_str().unwrap_or_default().to_owned();
+    if event == ReviewEvent::Comment && comments.is_empty() && body.trim().is_empty() {
+        bail!("there is nothing to post");
+    }
+    if tour::head_moved(kind, review, head)? {
+        bail!(
+            "{} has new commits since this tour started; restart the tour to review them",
+            review.id
+        );
+    }
+    let submission = Submission {
+        event,
+        body,
+        comments,
+        commit: head.to_owned(),
+    };
+
+    let _turn = prompting
+        .lock()
+        .map_err(|_| anyhow!("the terminal prompt failed"))?;
+    anstream::println!();
+    anstream::println!("{}", describe(review, &submission));
+    if !prompt::confirm(&format!("post this review to {}? [y/N] ", review.id))? {
+        anstream::println!("not posted");
+        return Ok(Posted::Declined);
+    }
+    let link = provider.submit_review(review, &submission)?;
+    anstream::println!("posted a review on {} {}", review.id, style::dim(&link));
+    Ok(Posted::Done(link))
+}
+
+fn draft_comment(value: &serde_json::Value) -> Result<DraftComment> {
+    let line = |key: &str| {
+        value[key]
+            .as_u64()
+            .and_then(|line| u32::try_from(line).ok())
+            .filter(|&line| line > 0)
+    };
+    let text = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
+    let body = text("body");
+    if body.trim().is_empty() {
+        bail!("a comment is empty");
+    }
+    Ok(DraftComment {
+        path: text("path"),
+        old_path: text("oldPath"),
+        anchor: Anchor {
+            side: if value["side"] == "old" {
+                Side::Old
+            } else {
+                Side::New
+            },
+            line: line("line").context("a comment has no line")?,
+            start_line: line("startLine"),
+        },
+        paired_line: line("pairedLine"),
+        body,
+    })
+}
+
+/// What a submission will post, for the terminal to confirm.
+fn describe(review: &ReviewRequest, submission: &Submission) -> String {
+    let first_line = |text: &str| {
+        let line = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+        if line.chars().count() > 72 {
+            format!("{}...", line.chars().take(69).collect::<String>())
+        } else {
+            line.to_owned()
+        }
+    };
+    let count = submission.comments.len();
+    let mut lines = vec![format!(
+        "review of {}: {}{}",
+        review.label(),
+        match submission.event {
+            ReviewEvent::Comment => "comment",
+            ReviewEvent::Approve => "approve",
+            ReviewEvent::RequestChanges => "request changes",
+        },
+        match count {
+            0 => String::new(),
+            1 => ", with 1 comment".to_owned(),
+            count => format!(", with {count} comments"),
+        }
+    )];
+    if !submission.body.trim().is_empty() {
+        lines.push(format!("  summary: {}", first_line(&submission.body)));
+    }
+    for comment in &submission.comments {
+        let side = if comment.anchor.side == Side::Old {
+            " (old)"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "  {}:{}{side}  {}",
+            comment.path,
+            comment.anchor.line,
+            first_line(&comment.body)
+        ));
+    }
+    lines.join("\n")
 }
