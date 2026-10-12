@@ -310,7 +310,8 @@ Everything is optional; defaults shown below:
     ; <repo>-worktrees directory beside the repo.
     worktreeDir = ~/code/myrepo-worktrees
     ; How `git stk tour` lays out a review: standard groups files by role;
-    ; agentTour has the tour agent plan the steps. Default: standard.
+    ; agentTour has the tour agent plan the steps; agentReview has it
+    ; review the changes too. Default: standard.
     tourStyle = agentTour
     ; The command an agent tour is planned with - your own harness, which
     ; holds its own credentials, so git-stk holds none. Default: none.

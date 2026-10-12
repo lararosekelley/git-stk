@@ -201,7 +201,7 @@ git stk config
 git stk status [branch]
 git stk review [branch | number | url]
 git stk view [branch | number | url]
-git stk tour [branch | number | url] [--style standard|agentTour] [--agent <command>] [--plan <file>]
+git stk tour [branch | number | url] [--style standard|agentTour|agentReview] [--agent <command>] [--plan <file>]
              [--refresh-plan] [--no-stack] [--no-open] [-o <path>]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
@@ -276,6 +276,14 @@ different command asks again, and without a terminal to ask at, the tour stops i
 review head under `.git/stk/tours/plans/`, so a tour of the same commits plans nothing new; `--refresh-plan`
 asks again. `--plan <file>` follows a plan written ahead of time, by a harness for example, for the review
 asked for.
+
+An agent review (`--style agentReview`) is an agent tour whose agent also reviews the changes. Each finding
+sits on a line of the diff with a severity (required, recommended, or optional), a category (bug, security,
+performance, design, tests, docs, or style), an explanation, and optionally replacement code for its lines.
+Findings are listed most severe first under the overview, counted on each file, and shown on their lines;
+findings off the diff are dropped with a warning. Add to review turns a finding into a drafted line comment,
+with its replacement code as a suggestion on GitHub, to edit or submit with the rest of the review. Plans
+with findings are saved apart from plans without them.
 
 The step sidebar can be hidden, and the sun/moon button switches between light and dark themes (the page
 follows the system theme until one is chosen). The tour is served from a local address only this machine

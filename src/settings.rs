@@ -95,6 +95,9 @@ pub enum TourStyle {
     /// Steps, an overview, and notes planned by the tour agent.
     #[value(name = "agentTour")]
     AgentTour,
+    /// An agent tour, with review findings from the agent too.
+    #[value(name = "agentReview")]
+    AgentReview,
 }
 
 /// The tour style `stk.tourStyle` sets, standard when unset.
@@ -103,7 +106,10 @@ pub fn tour_style() -> Result<TourStyle> {
         None | Some("") => Ok(TourStyle::Standard),
         Some(value) if value.eq_ignore_ascii_case("standard") => Ok(TourStyle::Standard),
         Some(value) if value.eq_ignore_ascii_case("agentTour") => Ok(TourStyle::AgentTour),
-        Some(other) => bail!("{TOUR_STYLE_KEY} is {other:?}; it takes standard or agentTour"),
+        Some(value) if value.eq_ignore_ascii_case("agentReview") => Ok(TourStyle::AgentReview),
+        Some(other) => {
+            bail!("{TOUR_STYLE_KEY} is {other:?}; it takes standard, agentTour, or agentReview")
+        }
     }
 }
 

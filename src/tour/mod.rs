@@ -57,6 +57,8 @@ pub struct Tour {
     events: Vec<&'static str>,
     /// Whether this forge resolves threads.
     resolves: bool,
+    /// The forge, for writing a comment in its own Markdown.
+    forge: ProviderKind,
 }
 
 /// One review's commits and changes.
@@ -79,6 +81,7 @@ struct Chapter {
 struct PlanInfo {
     overview: String,
     notes: Vec<plan::Note>,
+    findings: Vec<plan::Finding>,
     reported: plan::Reported,
     /// The agent command that wrote it, or None for a plan given as a file.
     command: Option<String>,
@@ -93,6 +96,8 @@ pub struct Planner {
     pub plan_file: Option<String>,
     /// Ask the agent again rather than use plans saved from before.
     pub refresh: bool,
+    /// Ask for review findings with the plan (`agentReview`).
+    pub review: bool,
 }
 
 /// Changesets planned at once.
@@ -245,6 +250,7 @@ impl Tour {
                 .map(|event| event.as_str())
                 .collect(),
             resolves: provider.resolves_threads(),
+            forge: kind,
         })
     }
 
@@ -307,6 +313,7 @@ impl Tour {
             "served": served,
             "reviewEvents": self.events,
             "resolvesThreads": self.resolves,
+            "forge": self.forge.to_string(),
             "current": self.current,
             "chapters": self.chapters.iter().map(Chapter::data).collect::<Vec<_>>(),
         })
@@ -378,6 +385,19 @@ impl Chapter {
                     "line": note.line,
                     "bodyHtml": markdown::to_html(&note.body),
                 })).collect::<Vec<_>>(),
+                "findings": plan.findings.iter().map(|finding| json!({
+                    "path": finding.path,
+                    "side": finding.side.as_str(),
+                    "line": finding.line,
+                    "startLine": finding.start_line,
+                    "severity": finding.severity.as_str(),
+                    "category": finding.category.map(plan::Category::as_str),
+                    "title": finding.title,
+                    // The Markdown too, for turning a finding into a comment.
+                    "body": finding.body,
+                    "bodyHtml": markdown::to_html(&finding.body),
+                    "suggestion": finding.suggestion,
+                })).collect::<Vec<_>>(),
             })),
             "baseSha": self.base_sha,
             "headSha": self.head_sha,
@@ -418,7 +438,7 @@ fn plan_chapters(
                 continue;
             }
             let saved = (!planner.refresh)
-                .then(|| plan_cache(chapter, agent).ok())
+                .then(|| plan_cache(chapter, agent, planner.review).ok())
                 .flatten()
                 .and_then(|path| std::fs::read_to_string(path).ok());
             match saved {
@@ -428,7 +448,7 @@ fn plan_chapters(
         }
         let prompts: Vec<(usize, String)> = to_ask
             .iter()
-            .map(|&index| (index, plan_request(chapters, index).prompt()))
+            .map(|&index| (index, plan_request(chapters, index).prompt(planner.review)))
             .collect();
         let cached = answers
             .iter()
@@ -454,8 +474,11 @@ fn plan_chapters(
                 .map_or_else(String::new, |agent| format!("`{}`", agent.display()))
         };
         let applied = answer.and_then(|answer| {
-            let parsed = plan::parse(&answer)?;
+            let mut parsed = plan::parse(&answer)?;
             plan::check(&parsed, &chapter.steps)?;
+            if !planner.review && !from_file {
+                parsed.findings.clear();
+            }
             let steps = std::mem::take(&mut chapter.steps);
             Ok((plan::apply(parsed, steps), answer))
         });
@@ -464,7 +487,7 @@ fn plan_chapters(
                 if !from_file
                     && !cached
                     && let Some(agent) = &planner.agent
-                    && let Ok(path) = plan_cache(chapter, agent)
+                    && let Ok(path) = plan_cache(chapter, agent, planner.review)
                 {
                     let _ = path
                         .parent()
@@ -482,6 +505,7 @@ fn plan_chapters(
                 chapter.plan = Some(PlanInfo {
                     overview: applied.overview,
                     notes: applied.notes,
+                    findings: applied.findings,
                     reported: applied.reported,
                     command: (!from_file)
                         .then(|| planner.agent.as_ref().map(Agent::display))
@@ -567,10 +591,10 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
 /// Where a chapter's plan from `agent` is saved: per review, head, agent
 /// command, and the instructions and plan version it was asked with, so any
 /// of those changing asks again.
-fn plan_cache(chapter: &Chapter, agent: &Agent) -> Result<std::path::PathBuf> {
+fn plan_cache(chapter: &Chapter, agent: &Agent, review: bool) -> Result<std::path::PathBuf> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (agent.display(), plan::VERSION, plan::INSTRUCTIONS).hash(&mut hasher);
+    (agent.display(), plan::VERSION, plan::instructions(review)).hash(&mut hasher);
     let short = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
     Ok(
         git::git_common_path_absolute("stk/tours/plans")?.join(format!(

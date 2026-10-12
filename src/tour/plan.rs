@@ -23,13 +23,119 @@ const MAX_REQUEST_DIFF_BYTES: usize = 120_000;
 const MAX_FILE_LINES: usize = 400;
 /// Notes kept from one plan.
 const MAX_NOTES: usize = 20;
+/// Findings kept from one plan, the most severe first.
+const MAX_FINDINGS: usize = 25;
 
 pub struct Plan {
     pub overview: String,
     pub steps: Vec<PlanStep>,
     pub notes: Vec<Note>,
+    /// Review findings, asked for by an `agentReview` tour.
+    pub findings: Vec<RawFinding>,
     /// What the agent says it is, which git-stk cannot check.
     pub reported: Reported,
+}
+
+/// How much a finding matters, by what to do about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Should block merging: a bug, a security hole, lost data.
+    Required,
+    /// Worth fixing before merging, without blocking it.
+    Recommended,
+    /// Take it or leave it.
+    Optional,
+}
+
+impl Severity {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "required" => Some(Self::Required),
+            "recommended" => Some(Self::Recommended),
+            "optional" => Some(Self::Optional),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Recommended => "recommended",
+            Self::Optional => "optional",
+        }
+    }
+}
+
+/// What kind of problem a finding is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Bug,
+    Security,
+    Performance,
+    Design,
+    Tests,
+    Docs,
+    Style,
+}
+
+impl Category {
+    const ALL: [Self; 7] = [
+        Self::Bug,
+        Self::Security,
+        Self::Performance,
+        Self::Design,
+        Self::Tests,
+        Self::Docs,
+        Self::Style,
+    ];
+
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.as_str().eq_ignore_ascii_case(value))
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bug => "bug",
+            Self::Security => "security",
+            Self::Performance => "performance",
+            Self::Design => "design",
+            Self::Tests => "tests",
+            Self::Docs => "docs",
+            Self::Style => "style",
+        }
+    }
+}
+
+/// A finding as the agent wrote it, before it is checked.
+pub struct RawFinding {
+    pub path: String,
+    pub side: Side,
+    pub line: Option<u32>,
+    pub start_line: Option<u32>,
+    pub severity: String,
+    pub category: String,
+    pub title: String,
+    pub body: String,
+    pub suggestion: String,
+}
+
+/// A checked finding: on lines the diff shows, with a known severity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    pub path: String,
+    pub side: Side,
+    pub line: u32,
+    /// The first line of a finding about a range of lines.
+    pub start_line: Option<u32>,
+    pub severity: Severity,
+    pub category: Option<Category>,
+    pub title: String,
+    /// Markdown.
+    pub body: String,
+    /// Replacement text for the lines, when the agent has one.
+    pub suggestion: Option<String>,
 }
 
 pub struct PlanStep {
@@ -57,6 +163,8 @@ pub struct Applied {
     pub overview: String,
     pub steps: Vec<Step>,
     pub notes: Vec<Note>,
+    /// Most severe first.
+    pub findings: Vec<Finding>,
     pub reported: Reported,
     /// What the plan got wrong that was set right, for warnings.
     pub corrections: Vec<String>,
@@ -122,11 +230,44 @@ pub fn parse(answer: &str) -> Result<Plan> {
             })
         })
         .collect();
+    let number = |value: &Value, key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|line| u32::try_from(line).ok())
+    };
+    let findings = value
+        .get("findings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|finding| RawFinding {
+            path: text(finding, "path"),
+            side: if text(finding, "side") == "old" {
+                Side::Old
+            } else {
+                Side::New
+            },
+            line: number(finding, "line"),
+            start_line: number(finding, "startLine"),
+            severity: text(finding, "severity"),
+            category: text(finding, "category"),
+            title: text(finding, "title"),
+            body: text(finding, "body"),
+            // Replacement code keeps its own indentation.
+            suggestion: finding
+                .get("suggestion")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        })
+        .collect();
     let agent = value.get("agent").cloned().unwrap_or_default();
     Ok(Plan {
         overview: text(&value, "overview"),
         steps,
         notes,
+        findings,
         reported: Reported {
             provider: text(&agent, "provider"),
             model: text(&agent, "model"),
@@ -265,10 +406,63 @@ pub fn apply(plan: Plan, steps: Vec<Step>) -> Applied {
             notes.push(note);
         }
     }
+    let mut findings = Vec::new();
+    for raw in plan.findings {
+        let shows = |line: u32| {
+            lines_by_path
+                .iter()
+                .any(|(path, lines)| *path == raw.path && lines.contains(&(raw.side, line)))
+        };
+        let Some(line) = raw.line.filter(|&line| shows(line)) else {
+            corrections.push(format!(
+                "found something at {}:{}, which the diff does not show",
+                raw.path,
+                raw.line
+                    .map_or_else(|| "?".to_owned(), |line| line.to_string())
+            ));
+            continue;
+        };
+        if raw.title.is_empty() && raw.body.is_empty() {
+            corrections.push(format!("left a finding at {}:{line} empty", raw.path));
+            continue;
+        }
+        let severity = Severity::parse(&raw.severity).unwrap_or_else(|| {
+            corrections.push(format!(
+                "gave the finding at {}:{line} the unknown severity {:?}, so it is optional",
+                raw.path, raw.severity
+            ));
+            Severity::Optional
+        });
+        // A range must run down to `line`, through lines the diff shows.
+        let start_line = raw
+            .start_line
+            .filter(|&start| start < line && (start..line).all(shows));
+        findings.push(Finding {
+            path: raw.path,
+            side: raw.side,
+            line,
+            start_line,
+            severity,
+            category: Category::parse(&raw.category),
+            title: raw.title,
+            body: raw.body,
+            suggestion: Some(raw.suggestion).filter(|suggestion| !suggestion.trim().is_empty()),
+        });
+    }
+    findings.sort_by_key(|finding| finding.severity);
+    if findings.len() > MAX_FINDINGS {
+        corrections.push(format!(
+            "found {} things; the {MAX_FINDINGS} most severe are kept",
+            findings.len()
+        ));
+        findings.truncate(MAX_FINDINGS);
+    }
+
     Applied {
         overview: plan.overview,
         steps: planned,
         notes,
+        findings,
         reported: plan.reported,
         corrections,
     }
@@ -326,8 +520,9 @@ pub struct Request<'a> {
 }
 
 impl Request<'_> {
-    /// The prompt for the agent: what to write, then the review as JSON.
-    pub fn prompt(&self) -> String {
+    /// The prompt for the agent: what to write - with review findings when
+    /// `review` - then the changeset as JSON.
+    pub fn prompt(&self, review: bool) -> String {
         let mut budget = MAX_REQUEST_DIFF_BYTES;
         let files: Vec<Value> = self
             .steps
@@ -357,7 +552,7 @@ impl Request<'_> {
                 entry
             })
             .collect();
-        let review = json!({
+        let changeset = json!({
             "id": self.review.id,
             "title": self.review.title,
             "branch": self.review.branch,
@@ -367,7 +562,10 @@ impl Request<'_> {
             "stackedOn": self.below,
             "files": files,
         });
-        format!("{INSTRUCTIONS}\n\nThe changeset:\n\n{review}\n")
+        format!(
+            "{}\n\nThe changeset:\n\n{changeset}\n",
+            instructions(review)
+        )
     }
 }
 
@@ -395,9 +593,29 @@ fn patch_text(file: &FileDiff) -> String {
     lines.join("\n")
 }
 
+/// What the agent is asked to write: a plan, and with `review` findings too.
+pub fn instructions(review: bool) -> String {
+    if review {
+        format!("{INSTRUCTIONS}\n\n{REVIEW_INSTRUCTIONS}")
+    } else {
+        INSTRUCTIONS.to_owned()
+    }
+}
+
+const REVIEW_INSTRUCTIONS: &str = r#"Also review the changeset. Add a "findings" array to the same JSON object, each entry shaped like this:
+
+{"path": "path/of/a/changed/file", "side": "new", "line": 42, "startLine": 40, "severity": "required", "category": "bug", "title": "A short title", "body": "Markdown: what is wrong, why it matters, and how to fix it.", "suggestion": "Replacement text for lines startLine through line, or empty"}
+
+Review rules:
+- "severity" is one of: "required" (should block merging: a bug, a security hole, data loss, a broken build), "recommended" (worth fixing before merging, without blocking it), or "optional" (take it or leave it).
+- "category" is one of: "bug", "security", "performance", "design", "tests", "docs", "style".
+- Put each finding on a line that appears in the diff; "startLine" is optional, for a finding about a range ending at "line". Use "side" "old" for removed lines and "new" otherwise.
+- Give a "suggestion" only when it is the exact replacement for those lines, with their indentation.
+- Report real problems, most important first, at most fifteen; an empty array is a fine answer. Do not repeat what the steps and notes already say."#;
+
 // The agent reads "changeset" for what git-stk calls a review, so its
 // instructions never ask for a review of a review.
-pub const INSTRUCTIONS: &str = r#"You are planning a guided tour of one changeset, for a reader who will go through it step by step. Read the changeset below and answer with only a JSON object, no other text, shaped like this:
+const INSTRUCTIONS: &str = r#"You are planning a guided tour of one changeset, for a reader who will go through it step by step. Read the changeset below and answer with only a JSON object, no other text, shaped like this:
 
 {
   "version": 1,
@@ -530,6 +748,56 @@ diff --git a/Cargo.lock b/Cargo.lock
     }
 
     #[test]
+    fn findings_are_checked_against_the_diff_and_ranked() {
+        let plan = parse(
+            r#"{"steps":[{"title":"T","files":["src/a.rs","tests/a.rs","Cargo.lock"]}],
+              "findings":[
+                {"path":"src/a.rs","side":"new","line":2,"startLine":1,"severity":"optional",
+                 "category":"style","title":"Name","body":"B","suggestion":"    fn d() {}\n"},
+                {"path":"tests/a.rs","side":"new","line":2,"severity":"Required",
+                 "category":"tests","title":"Assert","body":"B"},
+                {"path":"src/a.rs","side":"old","line":2,"startLine":2,"severity":"blocker",
+                 "category":"vibes","title":"Gone","body":"B"},
+                {"path":"src/a.rs","side":"new","line":9,"severity":"required","title":"Nowhere"},
+                {"path":"src/a.rs","side":"new","line":1,"severity":"required"}]}"#,
+        )
+        .unwrap();
+        let applied = apply(plan, steps_for(PATCH));
+        let shape: Vec<_> = applied
+            .findings
+            .iter()
+            .map(|finding| {
+                (
+                    finding.title.as_str(),
+                    finding.severity,
+                    finding.category,
+                    finding.start_line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("Assert", Severity::Required, Some(Category::Tests), None),
+                ("Name", Severity::Optional, Some(Category::Style), Some(1)),
+                ("Gone", Severity::Optional, None, None),
+            ]
+        );
+        assert_eq!(
+            applied.findings[1].suggestion.as_deref(),
+            Some("    fn d() {}\n")
+        );
+        assert_eq!(
+            applied.corrections,
+            [
+                "gave the finding at src/a.rs:2 the unknown severity \"blocker\", so it is optional",
+                "found something at src/a.rs:9, which the diff does not show",
+                "left a finding at src/a.rs:1 empty",
+            ]
+        );
+    }
+
+    #[test]
     fn a_long_list_of_files_left_out_is_cut_short() {
         let plan = parse(r#"{"steps":[{"title":"T","files":["src/a.rs"]}]}"#).unwrap();
         let mut steps = steps_for(PATCH);
@@ -574,7 +842,7 @@ diff --git a/Cargo.lock b/Cargo.lock
             steps: &steps,
             below: vec!["Base work (#6)".into()],
         }
-        .prompt();
+        .prompt(false);
         assert!(prompt.starts_with(INSTRUCTIONS));
         let review: Value =
             serde_json::from_str(prompt.rsplit_once("The changeset:").unwrap().1.trim()).unwrap();

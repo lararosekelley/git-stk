@@ -1425,6 +1425,93 @@ fn an_agent_tour_follows_the_agents_plan_and_saves_it() {
     assert_eq!(asked.lines().count(), 2, "{asked}");
 }
 
+/// A plan with review findings, for an `agentReview` tour.
+const AGENT_REVIEW: &str = r#"{"version":1,
+ "agent":{"provider":"Fake Labs","model":"fake-1","effort":"low"},
+ "overview":"Adds `two`.",
+ "steps":[{"title":"The new function","summary":"S","files":["src/lib.rs"]}],
+ "findings":[
+   {"path":"tests/lib_test.rs","side":"new","line":2,"severity":"optional","category":"tests",
+    "title":"Name the test","body":"Say what it checks.","suggestion":"fn two_runs() {}"},
+   {"path":"src/lib.rs","side":"new","line":2,"severity":"required","category":"bug",
+    "title":"Unused","body":"`two` is never called."},
+   {"path":"src/lib.rs","side":"new","line":40,"severity":"required","title":"Off the diff"}]}"#;
+
+#[test]
+fn an_agent_review_shows_its_findings_most_severe_first() {
+    let (repo, _origin, fake) =
+        agent_tour_repo(|fake| fake.record_append("--print", "asked", AGENT_REVIEW));
+    repo.git(["config", "stk.tourStyle", "agentReview"]);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "tour.html"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "found something at src/lib.rs:40, which the diff does not show",
+        ));
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    assert_eq!(data["forge"], "github");
+    let findings = data["chapters"][0]["plan"]["findings"].as_array().unwrap();
+    let shape: Vec<_> = findings
+        .iter()
+        .map(|finding| {
+            (
+                finding["path"].as_str().unwrap(),
+                finding["severity"].as_str().unwrap(),
+                finding["category"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("src/lib.rs", "required", "bug"),
+            ("tests/lib_test.rs", "optional", "tests")
+        ]
+    );
+    assert_eq!(
+        findings[0]["bodyHtml"],
+        "<p><code>two</code> is never called.</p>\n"
+    );
+    assert_eq!(findings[1]["suggestion"], "fn two_runs() {}");
+
+    // A plan without findings is saved apart from one with them.
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "agentTour",
+            "--no-open",
+            "--output",
+            "plan.html",
+        ])
+        .assert()
+        .success();
+    let plan = tour_data(&fs::read_to_string(repo.path().join("plan.html")).unwrap());
+    assert_eq!(
+        plan["chapters"][0]["plan"]["findings"],
+        serde_json::json!([]),
+        "an agentTour shows no findings"
+    );
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "again.html"])
+        .assert()
+        .success();
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(asked.lines().count(), 2, "{asked}");
+    let again = tour_data(&fs::read_to_string(repo.path().join("again.html")).unwrap());
+    assert_eq!(again["chapters"][0]["plan"]["cached"], true);
+    assert_eq!(
+        again["chapters"][0]["plan"]["findings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
 #[test]
 fn an_agent_tour_takes_its_style_from_config_and_the_flag_overrides_it() {
     let (repo, _origin, fake) = agent_tour_repo(|fake| fake.record("--print", "asked", AGENT_PLAN));
