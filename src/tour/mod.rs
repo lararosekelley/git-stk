@@ -594,7 +594,14 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
 fn plan_cache(chapter: &Chapter, agent: &Agent, review: bool) -> Result<std::path::PathBuf> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (agent.display(), plan::VERSION, plan::instructions(review)).hash(&mut hasher);
+    // The base too: a retargeted review keeps its head but changes its diff.
+    (
+        &chapter.base_sha,
+        agent.display(),
+        plan::VERSION,
+        plan::instructions(review),
+    )
+        .hash(&mut hasher);
     let short = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
     Ok(
         git::git_common_path_absolute("stk/tours/plans")?.join(format!(
