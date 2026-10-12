@@ -257,10 +257,16 @@ impl Served {
     /// Submit `review` from the page, answering the terminal's prompt with
     /// `answer`.
     fn submit(&mut self, review: &str, answer: &str) -> (u16, Value) {
+        self.post_confirmed("api/submit", review, answer)
+    }
+
+    /// Post `body` to `path` from the page, answering the terminal's prompt
+    /// with `answer`.
+    fn post_confirmed(&mut self, path: &str, body: &str, answer: &str) -> (u16, Value) {
         use std::io::Write;
         let url = self.url.clone();
-        let review = review.to_owned();
-        let request = std::thread::spawn(move || http(&url, "POST", "api/submit", &review));
+        let (path, body) = (path.to_owned(), body.to_owned());
+        let request = std::thread::spawn(move || http(&url, "POST", &path, &body));
         std::thread::sleep(std::time::Duration::from_millis(500));
         self.stdin.write_all(answer.as_bytes()).unwrap();
         self.stdin.flush().unwrap();
@@ -270,7 +276,13 @@ impl Served {
 }
 
 fn github_tour_fake() -> FakeProvider {
-    FakeProvider::new()
+    github_tour_fake_after(FakeProvider::new())
+}
+
+/// A GitHub fake for PR #12, after `first`'s rules, which win where both
+/// match.
+fn github_tour_fake_after(first: FakeProvider) -> FakeProvider {
+    first
         .on("pr view 12 --json body", r#"{"body":""}"#)
         .on("pr view 12 --json", GITHUB_REVIEW)
         .on("pr list", "[]")
@@ -936,12 +948,12 @@ fn tour_will_not_publish_someone_elses_gitlab_drafts() {
     assert!(!repo.path().join("published").exists());
 }
 
-#[test]
-fn tour_posts_a_gitea_review() {
+/// A Gitea repository with PR #12 published under `refs/pull/12/head`, on an
+/// origin whose path ends in owner/repo, which tea names the repository by.
+fn gitea_review_repo() -> (TestRepo, tempfile::TempDir) {
     let repo = TestRepo::new();
     fs::create_dir_all(repo.path().join("src")).unwrap();
     repo.commit_file("src/lib.rs", "fn one() {}\n", "add lib");
-    // An origin whose path ends in owner/repo, which tea names the repository by.
     let remote = tempfile::tempdir().unwrap();
     let bare = remote.path().join("owner").join("repo");
     fs::create_dir_all(&bare).unwrap();
@@ -957,8 +969,13 @@ fn tour_posts_a_gitea_review() {
     repo.git(["push", "origin", "contrib:refs/pull/12/head"]);
     repo.git(["switch", "main"]);
     repo.git(["config", "stk.provider", "gitea"]);
+    (repo, remote)
+}
+
+/// A tea fake for PR #12, after `first`'s rules, which win where both match.
+fn gitea_tour_fake_after(first: FakeProvider) -> FakeProvider {
     let pull = r##"{"number":12,"state":"open","merged":false,"head":{"ref":"contrib","sha":"x"},"base":{"ref":"main"},"html_url":"https://gitea.test/owner/repo/pulls/12","title":"Add two","body":""}"##;
-    let fake = FakeProvider::new()
+    first
         .commands(&["tea"])
         .record(
             "api --method POST repos/owner/repo/pulls/12/reviews --data",
@@ -969,6 +986,12 @@ fn tour_posts_a_gitea_review() {
         .on("repos/owner/repo/issues/12/comments", "[]")
         .on("repos/owner/repo/pulls?state=open", "[]")
         .on("repos/owner/repo/pulls/12", pull)
+}
+
+#[test]
+fn tour_posts_a_gitea_review() {
+    let (repo, _remote) = gitea_review_repo();
+    let fake = gitea_tour_fake_after(FakeProvider::new())
         .fallback_fail("unexpected provider call")
         .install(&repo);
     let mut served = Served::start(&repo, &fake, "12");
@@ -1052,6 +1075,209 @@ fn tour_posts_nothing_when_gitlab_refuses_the_approval() {
     let discarded = fs::read_to_string(repo.path().join("discarded")).unwrap();
     assert_eq!(discarded.lines().count(), 2, "both drafts: {discarded}");
     assert!(!repo.path().join("published").exists());
+}
+
+const A_THREAD: &str = r#"{"id":"T1","path":"src/lib.rs","side":"new","line":2,"outdated":false}"#;
+
+#[test]
+fn tour_replies_comments_and_resolves_on_github() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = github_tour_fake_after(
+        FakeProvider::new()
+            .record(
+                "addPullRequestReviewThreadReply",
+                "replied",
+                r#"{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"C9"}}}}"#,
+            )
+            .record(
+                "resolveReviewThread",
+                "resolved",
+                r#"{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}"#,
+            )
+            .record("pr comment 12 --body", "commented", ""),
+    )
+    .fallback_fail("unexpected provider call")
+    .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+
+    let reply = format!(r#"{{"chapter":0,"thread":{A_THREAD},"body":"Agreed"}}"#);
+    let (status, answer) = served.post_confirmed("api/reply", &reply, "y\n");
+    assert_eq!(status, 200, "{answer}");
+    let (status, answer) =
+        served.post_confirmed("api/comment", r#"{"chapter":0,"body":"Thanks!"}"#, "y\n");
+    assert_eq!(status, 200, "{answer}");
+    // Resolving posts nothing, so nothing is asked.
+    let resolve = format!(r#"{{"chapter":0,"thread":{A_THREAD},"resolved":true}}"#);
+    assert_eq!(http(&served.url, "POST", "api/resolve", &resolve).0, 200);
+
+    let terminal = served.close();
+    assert!(
+        terminal.contains("reply on Add two (#12) at src/lib.rs:2:\n  Agreed"),
+        "{terminal}"
+    );
+    assert!(
+        terminal.contains("comment on Add two (#12):\n  Thanks!"),
+        "{terminal}"
+    );
+    assert!(
+        terminal.contains("resolved a thread on #12 at src/lib.rs"),
+        "{terminal}"
+    );
+    let replied = fs::read_to_string(repo.path().join("replied")).unwrap();
+    assert!(
+        replied.contains("id=T1") && replied.contains("body=Agreed"),
+        "{replied}"
+    );
+    assert!(repo.path().join("resolved").exists());
+    assert!(repo.path().join("commented").exists());
+}
+
+#[test]
+fn tour_reports_a_reply_github_refuses() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = github_tour_fake_after(FakeProvider::new().on(
+        "addPullRequestReviewThreadReply",
+        r#"{"data":null,"errors":[{"message":"Could not resolve to a node"}]}"#,
+    ))
+    .fallback_fail("unexpected provider call")
+    .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+
+    let reply = format!(r#"{{"chapter":0,"thread":{A_THREAD},"body":"Agreed"}}"#);
+    let (status, answer) = served.post_confirmed("api/reply", &reply, "y\n");
+    assert_eq!(status, 422);
+    assert_eq!(
+        answer["error"],
+        "GitHub refused it: Could not resolve to a node"
+    );
+    served.close();
+}
+
+#[test]
+fn tour_replies_and_resolves_on_gitlab() {
+    let (repo, _origin) = repo_with_review("refs/merge-requests/34/head");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let head = repo.git(["ls-remote", "origin", "refs/merge-requests/34/head"]);
+    let fake = gitlab_review_fake_after(
+        FakeProvider::new()
+            .record("merge_requests/34/discussions/d1/notes", "replied", "{}")
+            .record(
+                "merge_requests/34/discussions/d1?resolved=false",
+                "reopened",
+                "{}",
+            ),
+        &head[..40],
+        "[]",
+    )
+    .fallback_fail("unexpected provider call")
+    .install(&repo);
+    let mut served = Served::start(&repo, &fake, "!34");
+
+    let thread = r#"{"id":"d1","path":"src/lib.rs","side":"new","line":2,"outdated":false}"#;
+    let (status, answer) = served.post_confirmed(
+        "api/reply",
+        &format!(r#"{{"chapter":0,"thread":{thread},"body":"Agreed"}}"#),
+        "y\n",
+    );
+    assert_eq!(status, 200, "{answer}");
+    let reopen = format!(r#"{{"chapter":0,"thread":{thread},"resolved":false}}"#);
+    assert_eq!(http(&served.url, "POST", "api/resolve", &reopen).0, 200);
+    served.close();
+    assert!(repo.path().join("replied").exists());
+    assert!(repo.path().join("reopened").exists());
+}
+
+#[test]
+fn tour_replies_on_gitea_by_line() {
+    let (repo, _remote) = gitea_review_repo();
+    let fake = gitea_tour_fake_after(FakeProvider::new())
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+
+    let thread = r#"{"id":"40","path":"src/lib.rs","side":"new","line":2,"outdated":false}"#;
+    let (status, answer) = served.post_confirmed(
+        "api/reply",
+        &format!(r#"{{"chapter":0,"thread":{thread},"body":"Agreed"}}"#),
+        "y\n",
+    );
+    assert_eq!(status, 200, "{answer}");
+    served.close();
+    // Gitea has no reply call: the reply is a one-comment review on the
+    // thread's line at the toured head.
+    let posted = fs::read_to_string(repo.path().join("posted")).unwrap();
+    let head = repo.git(["ls-remote", "origin", "refs/pull/12/head"]);
+    assert!(posted.contains(r#""event":"COMMENT""#), "{posted}");
+    assert!(
+        posted.contains(r#""body":"","#),
+        "a reply is no review summary: {posted}"
+    );
+    assert!(
+        posted.contains(r#"{"body":"Agreed","new_position":2,"path":"src/lib.rs"}"#),
+        "{posted}"
+    );
+    assert!(
+        posted.contains(&format!(r#""commit_id":"{}""#, &head[..40])),
+        "{posted}"
+    );
+}
+
+#[test]
+fn tour_will_not_reply_to_an_outdated_gitea_thread() {
+    let (repo, _remote) = gitea_review_repo();
+    let fake = gitea_tour_fake_after(FakeProvider::new())
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+
+    let thread = r#"{"id":"40","path":"src/lib.rs","side":"new","line":2,"outdated":true}"#;
+    let (status, answer) = served.post_confirmed(
+        "api/reply",
+        &format!(r#"{{"chapter":0,"thread":{thread},"body":"Agreed"}}"#),
+        "y\n",
+    );
+    assert_eq!(status, 422, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("Gitea can only reply to a conversation on a line of the current diff"),
+        "{answer}"
+    );
+    served.close();
+    assert!(!repo.path().join("posted").exists());
+}
+
+#[test]
+fn tour_will_not_reply_on_gitea_after_the_head_moves() {
+    let (repo, _remote) = gitea_review_repo();
+    let fake = gitea_tour_fake_after(FakeProvider::new())
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+    // A new commit lands on the review after the tour started.
+    repo.git(["switch", "-c", "later", "FETCH_HEAD"]);
+    repo.commit_file("later.txt", "later\n", "later");
+    repo.git(["push", "-f", "origin", "later:refs/pull/12/head"]);
+
+    let thread = r#"{"id":"40","path":"src/lib.rs","side":"new","line":2,"outdated":false}"#;
+    let (status, answer) = served.post_confirmed(
+        "api/reply",
+        &format!(r#"{{"chapter":0,"thread":{thread},"body":"Agreed"}}"#),
+        "",
+    );
+    assert_eq!(status, 422, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("#12 has new commits since this tour started"),
+        "{answer}"
+    );
+    served.close();
+    assert!(!repo.path().join("posted").exists());
 }
 
 #[test]
