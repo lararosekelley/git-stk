@@ -29,17 +29,17 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   (`--no-stack` tours one review). The page header stays in view, the step
   sidebar can be hidden, and the page follows the system theme or a choice
   from its toggle between light and dark palettes borrowed from the Callie
-  calendar, under the git-stk logo. An agent tour (`--style
-  agentTour` or `stk.tourStyle`) has your own agent command (`stk.tourAgent`
-  or `--agent`, such as `claude -p`) plan each review into explained steps
-  with line notes, given the repository's AGENTS.md, CLAUDE.md, and
-  CONTRIBUTING.md guidance, the review's discussion so far, and smaller
-  changed files whole, shows which command and model planned it, asks once per
-  repository and command before sending anything, and saves plans per head;
-  `--plan` follows a plan written ahead of time. An agent review (`--style
-  agentReview`) adds the agent's findings, each on a line with a severity
-  (required, recommended, or optional), a category, and optional replacement
-  code, and any of them can be added to your review as a drafted comment.
+  calendar, under the git-stk logo. An agent tour (`--style agentTour` or
+  `stk.tourStyle`) has your own agent command (`stk.tourAgent` or `--agent`,
+  such as `claude -p`) plan each review into explained steps with line notes,
+  given the repository's AGENTS.md, CLAUDE.md, and CONTRIBUTING.md guidance,
+  the review's discussion so far, and smaller changed files whole, shows which
+  command and model planned it, asks once per repository and command before
+  sending anything, and saves plans per head; `--plan` follows a plan written
+  ahead of time. An agent review (`--style agentReview`) adds the agent's
+  findings, each on a line with a severity (required, recommended, or
+  optional), a category, and optional replacement code, and any of them can be
+  added to your review as a drafted comment.
 - **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
   URL as well as a branch, so `git stk view 12` opens a review whose branch is
   not checked out. A URL for another repository's review is refused rather
