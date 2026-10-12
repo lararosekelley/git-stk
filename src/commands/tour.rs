@@ -12,9 +12,10 @@ use crate::commands::Run;
 use crate::completions;
 use crate::git;
 use crate::progress::Progress;
-use crate::providers::{ReviewRef, detect_review_provider};
+use crate::providers::{ReviewProvider, ReviewRef, detect_review_provider};
 use crate::settings;
 use crate::style;
+use crate::tour::server::{Request, Response, Server};
 use crate::tour::{self, Tour as ReviewTour};
 
 /// Open a step-by-step tour of a review's changes in the browser
@@ -28,11 +29,11 @@ pub struct Tour {
     /// Tour only this review, not the stack of reviews around it.
     #[arg(long, action = ArgAction::SetTrue)]
     no_stack: bool,
-    /// Write the tour without opening it.
+    /// Print the tour's address without opening a browser.
     #[arg(long, action = ArgAction::SetTrue)]
     no_open: bool,
-    /// Write the tour to this file instead of under the repository's git
-    /// directory.
+    /// Write a read-only snapshot of the tour to this file instead of
+    /// serving it.
     #[arg(long, short = 'o', value_name = "PATH")]
     output: Option<PathBuf>,
 }
@@ -119,10 +120,24 @@ fn write_tour(
         None => tour::stack::Stack::single(review),
     };
     let tour = ReviewTour::load(provider.kind, review_provider, stack, &progress)?;
-    progress.set("writing the tour");
-    let path = match output {
-        Some(path) => path,
-        None => git::git_common_path_absolute("stk/tours")?.join(tour.file_name()),
+    drop(progress);
+    for warning in warnings.borrow().iter().chain(tour.warnings()) {
+        anstream::eprintln!("{}", style::warn(&format!("warning: {warning}")));
+    }
+    let files = tour.file_count();
+    let reviews = tour.review_count();
+    let summary = format!(
+        "{label} ({files} {}{})",
+        if files == 1 { "file" } else { "files" },
+        if reviews > 1 {
+            format!(", in a stack of {reviews} reviews")
+        } else {
+            String::new()
+        }
+    );
+
+    let Some(path) = output else {
+        return serve(&tour, review_provider, &summary, open);
     };
     if let Some(parent) = path
         .parent()
@@ -131,27 +146,51 @@ fn write_tour(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    std::fs::write(&path, tour.render())
+    std::fs::write(&path, tour.render(false))
         .with_context(|| format!("failed to write {}", path.display()))?;
-
-    drop(progress);
-    for warning in warnings.borrow().iter().chain(tour.warnings()) {
-        anstream::eprintln!("{}", style::warn(&format!("warning: {warning}")));
-    }
-    let files = tour.file_count();
-    let reviews = tour.review_count();
-    let stack = if reviews > 1 {
-        format!(", in a stack of {reviews} reviews")
-    } else {
-        String::new()
-    };
     anstream::println!(
-        "wrote a tour of {label} ({files} {}{stack}) to {}",
-        if files == 1 { "file" } else { "files" },
+        "wrote a tour of {summary} to {}",
         style::dim(&path.display().to_string())
     );
     if open && let Err(error) = browser::open(&path) {
         anstream::eprintln!("could not open a browser ({error:#}); open the file above instead");
     }
     Ok(())
+}
+
+/// Serve the tour until the last tab showing it closes.
+fn serve(
+    tour: &ReviewTour,
+    provider: &dyn ReviewProvider,
+    summary: &str,
+    open: bool,
+) -> Result<()> {
+    let server = Server::bind()?;
+    let url = server.url();
+    anstream::println!(
+        "touring {summary} at {}\nclose the page or press Ctrl-C to stop",
+        style::dim(&url)
+    );
+    if open && let Err(error) = browser::open(&url) {
+        anstream::eprintln!("could not open a browser ({error:#}); open the address above instead");
+    }
+    let page = tour.render(true);
+    server.run(
+        &|request: Request| match (request.method.as_str(), request.path.as_str()) {
+            ("GET", "") => Response::html(page.clone()),
+            ("GET", "api/conversation") => {
+                match request
+                    .param("chapter")
+                    .and_then(|chapter| chapter.parse().ok())
+                {
+                    Some(chapter) => match tour.conversation(provider, chapter) {
+                        Ok(found) => Response::json(&found),
+                        Err(error) => Response::error(502, &format!("{error:#}")),
+                    },
+                    None => Response::error(400, "which review?"),
+                }
+            }
+            _ => Response::error(404, "not found"),
+        },
+    )
 }

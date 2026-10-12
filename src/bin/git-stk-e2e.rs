@@ -324,13 +324,13 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
         return Err(format!("list showed no review ids:\n{listed}"));
     }
 
-    review_lookup_and_tour(provider, slug, work)?;
-
     // `comment` posts through each host's own CLI. A flag-shaped body checks
     // it reaches the host verbatim rather than being parsed as a flag.
     let body = "--- e2e comment";
     stk(work, &["comment", "--branch", "feat/a", body])?;
     wait_for_review_comment(provider, slug, "feat/a", body)?;
+
+    review_lookup_and_tour(provider, slug, work, body)?;
 
     // --title retitles an existing review through each host's own CLI flag,
     // which only a live run exercises.
@@ -363,9 +363,15 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
 }
 
 /// `review` finds a review by number, by `#N`/`!N`, and by URL, and `tour`
-/// fetches the stack's review heads and descriptions by number - the lookups
-/// and fetches only a real host can answer.
-fn review_lookup_and_tour(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
+/// fetches the stack's review heads, descriptions, and discussions by number -
+/// the lookups and fetches only a real host can answer. `comment` is already
+/// on feat/a's review.
+fn review_lookup_and_tour(
+    provider: Provider,
+    slug: &str,
+    work: &Path,
+    comment: &str,
+) -> Result<(), String> {
     let review = open_review(provider, slug, "feat/b")?
         .ok_or_else(|| "no open review for feat/b".to_owned())?;
     let (number, url, sigil) = match provider {
@@ -413,6 +419,28 @@ fn review_lookup_and_tour(provider: Provider, slug: &str, work: &Path) -> Result
         return Err(format!(
             "tour chapters were {branches:?} at {}, wanted feat/a then feat/b at 1",
             data["current"]
+        ));
+    }
+    let discussion = &data["chapters"][0]["conversation"];
+    if let Some(error) = discussion["error"].as_str() {
+        return Err(format!(
+            "the tour could not read feat/a's discussion: {error}"
+        ));
+    }
+    let wanted = comment.trim_start_matches('-').trim();
+    let shown = discussion["comments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|shown| {
+            shown["bodyHtml"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(wanted)
+        });
+    if !shown {
+        return Err(format!(
+            "the tour did not show the comment on feat/a: {discussion}"
         ));
     }
     Ok(())

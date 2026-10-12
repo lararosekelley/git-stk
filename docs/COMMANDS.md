@@ -243,9 +243,15 @@ reach. Open reviews are listed page by page; in a repository with more than the 
 GitHub and GitLab, 2,500 on Gitea), the tour warns that the stack may be missing some. `--no-stack` tours just
 the one review.
 
-The step sidebar can be hidden, and the sun/moon button switches between light and dark themes
-(the page follows the system theme until one is chosen). The page is saved under
-`.git/stk/tours/` unless `--output` names a file, and `--no-open` skips the browser.
+Each review's discussion comes with it: review outcomes and comments on the review in a conversation panel,
+threads under the lines they are on, and comments on whole files, on lines the diff does not show, or on an
+earlier version above the file. Resolved threads start collapsed.
+
+The step sidebar can be hidden, and the sun/moon button switches between light and dark themes (the page
+follows the system theme until one is chosen). The tour is served from a local address only this machine
+can reach, behind a token generated for each run, and opened in your browser (`--no-open` just prints the
+address). It refreshes the discussion on request, and stops when the last tab showing it closes, or on
+Ctrl-C. `--output` instead writes a read-only snapshot of the page to a file and exits.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider
 CLI - handy for a review bot that answers a mention: `git stk comment "@claude review"`.

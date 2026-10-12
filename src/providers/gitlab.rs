@@ -9,9 +9,124 @@ use super::json::{
     parse_state, required_string,
 };
 use super::{
-    CheckStatus, IssueState, MergeBlocker, ReviewProvider, ReviewRequest, ReviewSummary,
-    WaitOutcome, command_output, merge_with_resettle, merge_with_retry,
+    Anchor, CheckStatus, Comment, Conversation, IssueState, MergeBlocker, ReviewProvider,
+    ReviewRequest, ReviewSummary, Side, Thread, Verdict, VerdictState, WaitOutcome, command_output,
+    merge_with_resettle, merge_with_retry,
 };
+
+/// The discussion from an MR's discussions and approvals listings. A thread
+/// left on another head than `head` is outdated: GitLab keeps its position on
+/// the version it was written against. System notes (pushes, label changes)
+/// are not discussion and are left out.
+fn parse_gitlab_conversation(
+    discussions: &str,
+    approvals: Option<&str>,
+    head: &str,
+    web_url: &str,
+) -> Result<Conversation> {
+    let discussions: serde_json::Value =
+        serde_json::from_str(discussions).context("failed to parse glab discussions JSON")?;
+    let comment = |note: &serde_json::Value| {
+        let id = note
+            .get("id")
+            .map(|id| id.to_string().trim_matches('"').to_owned())
+            .unwrap_or_default();
+        Comment {
+            url: format!("{web_url}#note_{id}"),
+            id,
+            author: note
+                .pointer("/author/username")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            body: optional_string(note, "body"),
+            created_at: optional_string(note, "created_at"),
+        }
+    };
+    let mut conversation = Conversation::default();
+    for discussion in discussions.as_array().into_iter().flatten() {
+        let notes: Vec<&serde_json::Value> = discussion
+            .get("notes")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|note| !optional_bool(note, "system"))
+            .collect();
+        let Some(first) = notes.first() else {
+            continue;
+        };
+        let Some(position) = first.get("position").filter(|position| !position.is_null()) else {
+            conversation
+                .comments
+                .extend(notes.iter().map(|note| comment(note)));
+            continue;
+        };
+        let line = |key: &str| {
+            position
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|line| u32::try_from(line).ok())
+        };
+        let anchor = match (line("new_line"), line("old_line")) {
+            _ if optional_string(position, "position_type") == "file" => None,
+            (Some(line), _) => Some(Anchor {
+                side: Side::New,
+                line,
+                start_line: position
+                    .pointer("/line_range/start/new_line")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|start| u32::try_from(start).ok())
+                    .filter(|&start| start != line),
+            }),
+            (None, Some(line)) => Some(Anchor {
+                side: Side::Old,
+                line,
+                start_line: position
+                    .pointer("/line_range/start/old_line")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|start| u32::try_from(start).ok())
+                    .filter(|&start| start != line),
+            }),
+            (None, None) => None,
+        };
+        let path = match optional_string(position, "new_path") {
+            path if path.is_empty() => optional_string(position, "old_path"),
+            path => path,
+        };
+        conversation.threads.push(Thread {
+            id: optional_string(discussion, "id"),
+            path,
+            anchor,
+            outdated: optional_string(position, "head_sha") != head,
+            resolved: optional_bool(first, "resolvable").then(|| optional_bool(first, "resolved")),
+            diff_hunk: None,
+            comments: notes.iter().map(|note| comment(note)).collect(),
+        });
+    }
+    if let Some(approvals) = approvals
+        && let Ok(approvals) = serde_json::from_str::<serde_json::Value>(approvals)
+    {
+        conversation.verdicts.extend(
+            approvals
+                .get("approved_by")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|approval| Verdict {
+                    author: approval
+                        .pointer("/user/username")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    state: VerdictState::Approved,
+                    body: String::new(),
+                    submitted_at: String::new(),
+                    url: web_url.to_owned(),
+                }),
+        );
+    }
+    Ok(conversation)
+}
 
 /// GitLab keeps draft state in the MR title rather than a flag. `Draft:` is the
 /// current marker; `WIP:` is the legacy spelling GitLab still honors.
@@ -132,6 +247,34 @@ impl ReviewProvider for GitLabProvider {
             &["mr", "view", review.id_value(), "--output", "json"],
         )?;
         parse_body_field(&output, "description")
+    }
+
+    fn conversation(&self, review: &ReviewRequest) -> Result<Conversation> {
+        let iid = review.id_value();
+        let mr = command_output("glab", &["mr", "view", iid, "--output", "json"])?;
+        let head = parse_body_field(&mr, "sha")?;
+        // `--method GET` keeps it a read; `--paginate` joins every page into
+        // one array.
+        let discussions = command_output(
+            "glab",
+            &[
+                "api",
+                "--method",
+                "GET",
+                "--paginate",
+                &format!("projects/:id/merge_requests/{iid}/discussions?per_page=100"),
+            ],
+        )?;
+        // Approvals live on a separate endpoint that not every plan serves.
+        let approvals = command_output(
+            "glab",
+            &[
+                "api",
+                &format!("projects/:id/merge_requests/{iid}/approvals"),
+            ],
+        )
+        .ok();
+        parse_gitlab_conversation(&discussions, approvals.as_deref(), &head, &review.url)
     }
 
     fn issue_state(&self, number: u64) -> Result<IssueState> {
@@ -597,6 +740,57 @@ fn classify_gitlab_merge(json: &str) -> MergeBlocker {
 mod tests {
     use super::*;
     use crate::providers::{CheckStatus, ReviewRequest, ReviewState};
+
+    #[test]
+    fn gitlab_conversation_reads_discussions_and_approvals() {
+        let discussions = r#"[
+            {"id":"d1","individual_note":true,"notes":[{"id":1,"system":false,"body":"General","author":{"username":"ann"},"created_at":"t1","position":null}]},
+            {"id":"d2","individual_note":true,"notes":[{"id":2,"system":true,"body":"added 1 commit","author":{"username":"ann"},"created_at":"t2"}]},
+            {"id":"d3","individual_note":false,"notes":[
+                {"id":3,"type":"DiffNote","system":false,"body":"Here","author":{"username":"bo"},"created_at":"t3","resolvable":true,"resolved":false,
+                 "position":{"head_sha":"HEAD","position_type":"text","new_path":"src/a.rs","old_path":"src/a.rs","new_line":7,"old_line":null,
+                   "line_range":{"start":{"new_line":5},"end":{"new_line":7}}}},
+                {"id":4,"type":"DiffNote","system":false,"body":"Reply","author":{"username":"ann"},"created_at":"t4","resolvable":true,"resolved":false}]},
+            {"id":"d4","individual_note":false,"notes":[
+                {"id":5,"type":"DiffNote","system":false,"body":"Old side","author":{"username":"bo"},"created_at":"t5","resolvable":true,"resolved":true,
+                 "position":{"head_sha":"EARLIER","position_type":"text","new_path":"src/b.rs","old_path":"src/b.rs","new_line":null,"old_line":3}}]}
+        ]"#;
+        let approvals = r#"{"approved_by":[{"user":{"username":"cy"}}]}"#;
+        let conversation =
+            parse_gitlab_conversation(discussions, Some(approvals), "HEAD", "https://gl/mr/1")
+                .unwrap();
+        assert_eq!(
+            conversation.comments.len(),
+            1,
+            "system notes are not discussion"
+        );
+        assert_eq!(conversation.comments[0].url, "https://gl/mr/1#note_1");
+        assert_eq!(conversation.verdicts[0].author, "cy");
+        assert_eq!(conversation.verdicts[0].state, VerdictState::Approved);
+        let [current, earlier] = &conversation.threads[..] else {
+            panic!("two threads");
+        };
+        assert_eq!(
+            current.anchor,
+            Some(Anchor {
+                side: Side::New,
+                line: 7,
+                start_line: Some(5)
+            })
+        );
+        assert_eq!(current.comments.len(), 2);
+        assert!(!current.outdated);
+        assert_eq!(
+            earlier.anchor,
+            Some(Anchor {
+                side: Side::Old,
+                line: 3,
+                start_line: None
+            })
+        );
+        assert!(earlier.outdated);
+        assert_eq!(earlier.resolved, Some(true));
+    }
 
     #[test]
     fn parse_gitlab_review_reads_snake_case_fields() {

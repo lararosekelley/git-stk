@@ -39,6 +39,9 @@ from the release, so a failing live run blocks a release rather than a merge.
 - **Shelling out:** only `src/git.rs` runs `git`, only `src/providers/` runs `gh` / `glab` /
   `tea`, and only `src/browser.rs` launches the system opener. A new `std::process::Command`
   anywhere else is a violation - route it through the existing helper, or add one there.
+- **Listening:** only `src/tour/server.rs` opens a socket. It binds 127.0.0.1, puts every path behind a
+  per-run token, checks the Host header, and takes POSTs only as same-origin JSON; a route that writes to
+  the provider must not loosen any of that.
 - **Config:** user-facing knobs are `stk.*` git-config keys declared in the `SETTINGS` table in
   `src/settings.rs`. Never read behavior off a bespoke environment variable.
 - **Command layout:** subcommands live in `src/commands/<name>.rs` and implement `Run`; stack

@@ -86,7 +86,7 @@ try {
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
-html { scroll-padding-top: 16px; }
+html { scroll-padding-top: calc(var(--header-height, 0px) + 16px); }
 body {
   margin: 0;
   background: var(--bg);
@@ -131,11 +131,16 @@ nav .chapter-id { color: var(--fg-muted); }
 nav .chapter-progress { color: var(--fg-muted); font-size: 12px; }
 nav .chapter-progress.done { color: var(--done); }
 nav .chapters-base { color: var(--fg-muted); font-size: 12px; margin: 0 0 20px 10px; }
-main { padding: 24px 32px 64px; min-width: 0; }
+main { padding: 0 32px 64px; min-width: 0; }
+main > header {
+  position: sticky; top: 0; z-index: 3; background: var(--bg);
+  padding: 24px 0 12px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+}
 .header-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 4px; }
 header h1 { font-size: 24px; margin: 0; overflow-wrap: anywhere; flex: 1; }
 .icon-button { padding: 5px; line-height: 0; color: var(--fg-muted); }
 .icon-button:hover { color: var(--fg); }
+.nav-toggle { margin-top: 4px; }
 .meta { color: var(--fg-muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
 .state { border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; font-size: 12px; }
 .toolbar { display: flex; gap: 6px; align-items: center; margin-top: 12px; color: var(--fg-muted); }
@@ -168,7 +173,7 @@ section.step { margin-bottom: 40px; }
 .file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px; }
 .file > summary {
   list-style: none; cursor: pointer; display: flex; gap: 8px; align-items: center;
-  padding: 8px 12px; background: var(--bg-soft); position: sticky; top: 0; z-index: 1;
+  padding: 8px 12px; background: var(--bg-soft); position: sticky; top: var(--header-height, 0px); z-index: 1;
   border-radius: 6px;
 }
 .file[open] > summary { border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
@@ -196,6 +201,26 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 .diff tr.hunk span { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note { padding: 12px; color: var(--fg-muted); }
 .next { display: inline-block; margin-top: 4px; }
+.comment-count { font-size: 12px; color: var(--fg-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.panel-head h2 { margin: 0; }
+.timeline-item { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
+.verdict { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 999px; padding: 0 8px; margin-bottom: 4px; border: 1px solid var(--border); }
+.verdict-approved { color: var(--done); border-color: var(--done); }
+.verdict-changes_requested { color: var(--removed); border-color: var(--removed); }
+.thread { border: 1px solid var(--border); border-radius: 6px; background: var(--bg); margin: 6px 0; padding: 4px 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; white-space: normal; }
+.thread.resolved > summary { cursor: pointer; color: var(--fg-muted); padding: 4px 0; }
+.comment { padding: 6px 0; }
+.comment + .comment { border-top: 1px solid var(--border); }
+.comment-meta { color: var(--fg-muted); font-size: 12px; margin-bottom: 2px; }
+.comment-meta strong { color: var(--fg); }
+.comment-meta a { color: var(--fg-muted); }
+.diff tr.thread-row td { background: var(--bg-soft); padding: 4px 8px; }
+.file-notes:empty { display: none; }
+.file-notes { padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-soft); }
+.note-label { font-size: 12px; color: var(--fg-muted); margin-top: 6px; }
+.outdated > summary { cursor: pointer; color: var(--fg-muted); font-size: 12px; padding: 4px 0; }
+.thread-hunk { margin: 4px 0; padding: 6px 8px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
 .chapter-nav { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding-top: 16px; }
 .chapter-nav a { color: var(--accent); text-decoration: none; }
 .chapter-nav a:last-child { text-align: right; }
@@ -213,7 +238,8 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 @media (max-width: 800px) {
   .layout { display: block; }
   nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
-  main { padding: 16px; }
+  main { padding: 0 16px 16px; }
+  main > header { padding-top: 16px; }
   .diff col.num { width: 40px; }
 }
 </style>
@@ -364,6 +390,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
 
   function FileView(file, stepIndex, fileIndex, collapsed) {
     this.file = file;
+    this.threads = threadsOnFile(file);
     this.anchor = stepAnchor(stepIndex) + "-file-" + fileIndex;
     this.sides = null;
     this.gaps = null;
@@ -382,6 +409,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       file.status !== "modified" ? el("span", { class: "file-status", text: file.status }) : null,
       el("span", { class: "count-add", text: "+" + file.additions }),
       el("span", { class: "count-del", text: "-" + file.deletions }),
+      this.threads.length ? el("span", { class: "comment-count", title: "Comment threads", text: this.threads.length + " " + (this.threads.length === 1 ? "thread" : "threads") }) : null,
     ]);
     this.body = el("div");
     var details = el("details", { class: "file", id: this.anchor }, [summary, this.body]);
@@ -420,13 +448,16 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     var file = this.file;
     this.rendered = true;
     this.body.textContent = "";
+    this.placed = [];
     if (file.binary) {
       this.body.appendChild(el("div", { class: "note", text: "Binary file not shown." }));
+      this.body.appendChild(this.fileNotes());
       return;
     }
     if (!file.hunks.length) {
       var reason = file.status === "renamed" ? "Renamed without changes." : "No content changes.";
       this.body.appendChild(el("div", { class: "note", text: reason }));
+      this.body.appendChild(this.fileNotes());
       return;
     }
     if (!this.sides) {
@@ -434,7 +465,49 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       this.gaps = this.buildGaps();
     }
     var rows = this.rows();
-    this.body.appendChild(layout === "split" ? this.splitTable(rows) : this.unifiedTable(rows));
+    var table = layout === "split" ? this.splitTable(rows) : this.unifiedTable(rows);
+    // Built after the table, which takes the threads it can show inline.
+    this.body.appendChild(this.fileNotes());
+    this.body.appendChild(table);
+  };
+
+  // Rows for the current threads on a line, each shown once.
+  FileView.prototype.threadRows = function (oldNum, newNum) {
+    var view = this;
+    return this.threads.filter(function (thread, index) {
+      if (thread.outdated || thread.line === null || view.placed[index]) return false;
+      var here = thread.side === "old" ? thread.line === oldNum : thread.line === newNum;
+      if (here) view.placed[index] = true;
+      return here;
+    }).map(function (thread) {
+      return el("tr", { class: "thread-row" }, [el("td", { colspan: "4" }, [renderThread(thread)])]);
+    });
+  };
+
+  // What the diff cannot show inline: comments on the whole file, on lines
+  // not shown, and on earlier versions.
+  FileView.prototype.fileNotes = function () {
+    var view = this;
+    var notes = el("div", { class: "file-notes" });
+    var unplaced = [];
+    var outdated = [];
+    this.threads.forEach(function (thread, index) {
+      if (thread.outdated) outdated.push(thread);
+      else if (!view.placed[index]) unplaced.push(thread);
+    });
+    unplaced.forEach(function (thread) {
+      var where = thread.line === null ? "On this file" : "On line " + thread.line + (thread.side === "old" ? " of the old file" : "") + ", not shown";
+      notes.appendChild(el("div", { class: "note-label", text: where }));
+      notes.appendChild(renderThread(thread));
+    });
+    if (outdated.length) {
+      var list = el("details", { class: "outdated" }, [
+        el("summary", { text: outdated.length + " outdated " + (outdated.length === 1 ? "thread" : "threads") + " on an earlier version" }),
+      ]);
+      outdated.forEach(function (thread) { list.appendChild(renderThread(thread)); });
+      notes.appendChild(list);
+    }
+    return notes;
   };
 
   // The file as a list of hunk headers and lines, with revealed context.
@@ -539,6 +612,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
         el("td", { class: "sign " + cls, text: row.kind === " " ? "" : row.kind }),
         codeCell(html, cls),
       ]));
+      view.threadRows(row.oldNum, row.newNum).forEach(function (tr) { body.appendChild(tr); });
     });
     var cols = el("colgroup", {}, [el("col", { class: "num" }), el("col", { class: "num" }), el("col", { class: "sign" }), el("col")]);
     return el("table", { class: "diff" }, [cols, body]);
@@ -559,6 +633,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
           numCell(right ? right.newNum : null, right ? "add" : "empty"),
           codeCell(right ? view.sides.new.line(right.newNum) : "", right ? "add" : "empty"),
         ]));
+        view.threadRows(left ? left.oldNum : null, right ? right.newNum : null).forEach(function (tr) { body.appendChild(tr); });
       }
       deleted = [];
       added = [];
@@ -580,12 +655,146 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
           numCell(row.newNum, ""),
           codeCell(view.sides.new.line(row.newNum), ""),
         ]));
+        view.threadRows(row.oldNum, row.newNum).forEach(function (tr) { body.appendChild(tr); });
       }
     });
     flush();
     var cols = el("colgroup", {}, [el("col", { class: "num" }), el("col"), el("col", { class: "num" }), el("col")]);
     return el("table", { class: "diff split" }, [cols, body]);
   };
+
+  function discussion() {
+    return chapter.conversation || { verdicts: [], comments: [], threads: [] };
+  }
+
+  function threadsOnFile(file) {
+    return (discussion().threads || []).filter(function (thread) {
+      return thread.path === file.path || (thread.side === "old" && thread.path === file.oldPath);
+    });
+  }
+
+  // Rendered Markdown, with its links opening in a new tab: leaving the page
+  // would close the tour.
+  function setMarkdown(node, html) {
+    node.innerHTML = html || "";
+    Array.prototype.forEach.call(node.querySelectorAll("a[href]"), function (link) {
+      if (link.getAttribute("href").charAt(0) === "#") return;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    });
+  }
+
+  function when(at) {
+    var date = at ? new Date(at) : null;
+    return date && !isNaN(date) ? date.toLocaleString() : "";
+  }
+
+  // Bodies are rendered from Markdown by git-stk, with raw HTML removed.
+  function renderComment(comment) {
+    var body = el("div", { class: "markdown comment-body" });
+    setMarkdown(body, comment.bodyHtml);
+    var meta = el("div", { class: "comment-meta" }, [
+      el("strong", { text: comment.author || "unknown" }),
+      " ",
+      comment.url ? el("a", { href: comment.url, target: "_blank", rel: "noopener", text: when(comment.at) || "link" }) : el("span", { text: when(comment.at) }),
+    ]);
+    return el("div", { class: "comment" }, [meta, body]);
+  }
+
+  function renderThread(thread) {
+    var parts = [];
+    if (thread.outdated) {
+      var where = thread.line === null ? "" : " line " + thread.line;
+      parts.push(el("div", { class: "note-label", text: thread.path + where + ", on an earlier version" }));
+      if (thread.diffHunk) parts.push(el("pre", { class: "thread-hunk", text: thread.diffHunk }));
+    }
+    thread.comments.forEach(function (comment) { parts.push(renderComment(comment)); });
+    if (thread.resolved) {
+      var first = thread.comments[0];
+      return el("details", { class: "thread resolved" }, [
+        el("summary", { text: "Resolved thread" + (first ? " started by " + first.author : "") }),
+      ].concat(parts));
+    }
+    return el("div", { class: "thread" }, parts);
+  }
+
+  var VERDICTS = {
+    approved: "Approved",
+    changes_requested: "Changes requested",
+    commented: "Reviewed",
+    dismissed: "Dismissed",
+  };
+
+  // The review's discussion that is not on a line of this diff: outcomes,
+  // comments on the review, and threads on files the diff does not show.
+  function renderConversation() {
+    var conversation = discussion();
+    var panel = el("div", { class: "panel conversation" });
+    var heading = el("div", { class: "panel-head" }, [el("h2", { text: "Conversation" })]);
+    if (data.served) {
+      var refresh = el("button", { type: "button", text: "Refresh" });
+      refresh.addEventListener("click", function () { refreshConversation(refresh); });
+      heading.appendChild(refresh);
+    }
+    panel.appendChild(heading);
+    if (conversation.error) {
+      panel.appendChild(el("div", { class: "note", text: "The discussion could not be loaded: " + conversation.error }));
+      return panel;
+    }
+    var items = (conversation.verdicts || []).map(function (verdict) {
+      return { at: verdict.at, node: el("div", { class: "timeline-item" }, [
+        el("span", { class: "verdict verdict-" + verdict.state, text: VERDICTS[verdict.state] || verdict.state }),
+        renderComment(verdict),
+      ]) };
+    }).concat((conversation.comments || []).map(function (comment) {
+      return { at: comment.at, node: el("div", { class: "timeline-item" }, [renderComment(comment)]) };
+    }));
+    items.sort(function (a, b) { return (a.at || "").localeCompare(b.at || ""); });
+    var paths = {};
+    chapter.steps.forEach(function (step) {
+      step.files.forEach(function (file) { paths[file.path] = true; if (file.oldPath) paths[file.oldPath] = true; });
+    });
+    var elsewhere = (conversation.threads || []).filter(function (thread) { return !paths[thread.path]; });
+    if (!items.length && !elsewhere.length && !(conversation.threads || []).length) {
+      panel.appendChild(el("div", { class: "note", text: "No comments yet." }));
+    }
+    items.forEach(function (item) { panel.appendChild(item.node); });
+    elsewhere.forEach(function (thread) {
+      panel.appendChild(el("div", { class: "note-label", text: "On " + thread.path + ", which this diff does not change" }));
+      panel.appendChild(renderThread(thread));
+    });
+    if (conversation.incomplete) {
+      panel.appendChild(el("div", { class: "note" }, ["Some of the discussion was left out; ", el("a", { href: chapter.review.url, target: "_blank", rel: "noopener", text: "open the review" }), " to see all of it."]));
+    }
+    return panel;
+  }
+
+  function refreshConversation(button) {
+    button.disabled = true;
+    button.textContent = "Refreshing";
+    var shown = chapterIndex;
+    fetch("api/conversation?chapter=" + shown, { cache: "no-store" })
+      .then(function (response) {
+        return response.json().then(function (answer) {
+          // A failed refresh keeps the discussion already shown.
+          if (!response.ok || answer.error) throw new Error(answer.error || "refresh failed");
+          return answer;
+        });
+      })
+      .then(function (conversation) {
+        data.chapters[shown].conversation = conversation;
+        if (chapterIndex === shown) {
+          var scroll = window.scrollY;
+          renderChapter(shown);
+          window.scrollTo(0, scroll);
+        }
+      })
+      .catch(function (error) {
+        button.disabled = false;
+        button.textContent = "Refresh failed; retry";
+        button.title = error.message;
+      });
+  }
 
   function stepAnchor(stepIndex) {
     return "c" + chapterIndex + "-step-" + stepIndex;
@@ -611,7 +820,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       ? el("span", { text: "review " + (chapterIndex + 1) + " of " + data.chapters.length + " in the stack" })
       : null;
     var meta = el("div", { class: "meta" }, [
-      el("a", { href: review.url, text: review.id }),
+      el("a", { href: review.url, target: "_blank", rel: "noopener noreferrer", text: review.id }),
       el("span", { class: "state", text: review.state }),
       el("span", {}, [el("code", { text: review.branch }), " into ", el("code", { text: review.base })]),
       stacked,
@@ -652,6 +861,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
   function navButton() {
     var layoutElement = document.getElementById("layout");
     var button = iconButton("sidebar", function () { showNav(layoutElement.classList.contains("nav-hidden")); });
+    button.classList.add("nav-toggle");
     button.setAttribute("aria-controls", "nav");
     function showNav(shown) {
       layoutElement.classList.toggle("nav-hidden", !shown);
@@ -705,7 +915,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     if (chapter.review.bodyHtml) {
       // Rendered from Markdown by git-stk with raw HTML and script links removed.
       var body = el("div", { class: "markdown" });
-      body.innerHTML = chapter.review.bodyHtml;
+      setMarkdown(body, chapter.review.bodyHtml);
       panels.push(el("div", { class: "panel" }, [el("h2", { text: "Description" }), body]));
     }
     if (chapter.commits.length) {
@@ -716,6 +926,7 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
         })),
       ]));
     }
+    panels.push(renderConversation());
     return el("div", { class: "intro" }, panels);
   }
 
@@ -849,7 +1060,9 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     if (observer) observer.disconnect();
     views = [];
     main.textContent = "";
-    main.appendChild(renderHeader());
+    var header = renderHeader();
+    main.appendChild(header);
+    trackHeaderHeight(header);
     main.appendChild(renderIntro());
     chapter.steps.forEach(function (step, stepIndex) {
       main.appendChild(renderStep(step, stepIndex));
@@ -860,6 +1073,21 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
     renderLazily();
     var review = chapter.review;
     document.title = "Tour of " + (review.title ? review.title + " (" + review.id + ")" : review.id);
+  }
+
+  // The pinned header's height, so file headers stick below it and links
+  // land clear of it.
+  var headerObserver = null;
+  function trackHeaderHeight(header) {
+    function measure() {
+      document.documentElement.style.setProperty("--header-height", header.offsetHeight + "px");
+    }
+    if (headerObserver) headerObserver.disconnect();
+    if ("ResizeObserver" in window) {
+      headerObserver = new ResizeObserver(measure);
+      headerObserver.observe(header);
+    }
+    measure();
   }
 
   // The review a link points into: "#c2" or "#c2-step-0-file-1".
@@ -881,6 +1109,26 @@ table.diff { border-collapse: collapse; width: 100%; table-layout: fixed; }
       if (target) target.scrollIntoView();
       else window.scrollTo(0, 0);
     }
+  }
+
+  // While the page is open, the tour server stays up; it stops once the last
+  // tab closes or stops checking in.
+  if (data.served) {
+    var tab = JSON.stringify(Math.random().toString(36).slice(2) + Date.now().toString(36));
+    var beat = function () {
+      fetch("api/alive", { method: "POST", headers: { "Content-Type": "application/json" }, body: tab })
+        .catch(function () {});
+    };
+    beat();
+    setInterval(beat, 5000);
+    // A hidden tab's timers are slowed; check in as soon as it shows again.
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible") beat();
+    });
+    window.addEventListener("pagehide", function () {
+      fetch("api/closed", { method: "POST", headers: { "Content-Type": "application/json" }, body: tab, keepalive: true })
+        .catch(function () {});
+    });
   }
 
   if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener("change", function () { showTheme(); });

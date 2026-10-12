@@ -10,9 +10,10 @@ use super::json::{
     parse_state, required_string,
 };
 use super::{
-    CheckStatus, IssueState, MergeBlocker, NativeStack, NativeStackLayer, ReviewAnnotation,
-    ReviewProvider, ReviewRequest, ReviewState, ReviewSummary, StackPosition, WaitOutcome,
-    command_output, generic_annotate, merge_with_retry,
+    Anchor, CheckStatus, Comment, Conversation, IssueState, MergeBlocker, NativeStack,
+    NativeStackLayer, ReviewAnnotation, ReviewProvider, ReviewRequest, ReviewState, ReviewSummary,
+    Side, StackPosition, Thread, Verdict, VerdictState, WaitOutcome, command_output,
+    generic_annotate, merge_with_retry,
 };
 use crate::settings;
 
@@ -410,6 +411,30 @@ impl ReviewProvider for GitHubProvider {
         parse_github_reviews(&output)
     }
 
+    fn conversation(&self, review: &ReviewRequest) -> Result<Conversation> {
+        let (owner, repo) = repo_owner_name_result()?;
+        let owner_arg = format!("owner={owner}");
+        let repo_arg = format!("name={repo}");
+        let number_arg = format!("number={}", review.id_value());
+        let query_arg = format!("query={CONVERSATION_QUERY}");
+        let output = command_output(
+            "gh",
+            &[
+                "api",
+                "graphql",
+                "-f",
+                &owner_arg,
+                "-f",
+                &repo_arg,
+                "-F",
+                &number_arg,
+                "-f",
+                &query_arg,
+            ],
+        )?;
+        parse_github_conversation(&output)
+    }
+
     fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
         // gh pages through the API itself; a repository under the limit costs
         // a single request.
@@ -780,6 +805,122 @@ fn parse_base_merge_queue(json: &str) -> bool {
                 .map(|queue| !queue.is_null())
         })
         .unwrap_or(false)
+}
+
+/// A pull request's discussion in one request. Each listing stops at 100,
+/// and the counts say whether anything was left out.
+const CONVERSATION_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){\
+repository(owner:$owner,name:$name){pullRequest(number:$number){\
+comments(first:100){totalCount nodes{id author{login} body createdAt url}}\
+reviews(first:100){totalCount nodes{author{login} state body submittedAt url}}\
+reviewThreads(first:100){totalCount nodes{id isResolved isOutdated path line originalLine \
+startLine originalStartLine diffSide subjectType \
+comments(first:100){totalCount nodes{id author{login} body createdAt url diffHunk}}}}}}}";
+
+/// The discussion from a [`CONVERSATION_QUERY`] response. Pending reviews are
+/// drafts only their author can see, and are left out.
+fn parse_github_conversation(output: &str) -> Result<Conversation> {
+    let value: serde_json::Value =
+        serde_json::from_str(output).context("failed to parse gh GraphQL JSON")?;
+    let pr = value
+        .pointer("/data/repository/pullRequest")
+        .filter(|pr| !pr.is_null())
+        .context("gh GraphQL response has no pull request")?;
+    let mut incomplete = false;
+    let mut nodes = |listing: &serde_json::Value| -> Vec<serde_json::Value> {
+        let nodes = listing
+            .get("nodes")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let total = listing
+            .get("totalCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        incomplete |= total > nodes.len() as u64;
+        nodes
+    };
+    let comment = |node: &serde_json::Value| Comment {
+        id: optional_string(node, "id"),
+        author: node
+            .pointer("/author/login")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("ghost")
+            .to_owned(),
+        body: optional_string(node, "body"),
+        created_at: optional_string(node, "createdAt"),
+        url: optional_string(node, "url"),
+    };
+
+    let comments = nodes(&pr["comments"]).iter().map(comment).collect();
+    let verdicts = nodes(&pr["reviews"])
+        .iter()
+        .filter_map(|node| {
+            let state = match node.get("state").and_then(serde_json::Value::as_str)? {
+                "APPROVED" => VerdictState::Approved,
+                "CHANGES_REQUESTED" => VerdictState::ChangesRequested,
+                "COMMENTED" => VerdictState::Commented,
+                "DISMISSED" => VerdictState::Dismissed,
+                _ => return None,
+            };
+            Some(Verdict {
+                author: comment(node).author,
+                state,
+                body: optional_string(node, "body"),
+                submitted_at: optional_string(node, "submittedAt"),
+                url: optional_string(node, "url"),
+            })
+        })
+        .collect();
+    let threads = nodes(&pr["reviewThreads"])
+        .iter()
+        .map(|node| {
+            let outdated = optional_bool(node, "isOutdated");
+            let number = |key: &str| {
+                node.get(key)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|line| u32::try_from(line).ok())
+            };
+            // An outdated thread keeps only its line on the version it was
+            // left on.
+            let (line, start_line) = if outdated {
+                (number("originalLine"), number("originalStartLine"))
+            } else {
+                (number("line"), number("startLine"))
+            };
+            let side = match node.get("diffSide").and_then(serde_json::Value::as_str) {
+                Some("LEFT") => Side::Old,
+                _ => Side::New,
+            };
+            let file_level =
+                node.get("subjectType").and_then(serde_json::Value::as_str) == Some("FILE");
+            let comments: Vec<Comment> = nodes(&node["comments"]).iter().map(comment).collect();
+            let diff_hunk = node
+                .pointer("/comments/nodes/0/diffHunk")
+                .and_then(serde_json::Value::as_str)
+                .filter(|hunk| !hunk.is_empty())
+                .map(str::to_owned);
+            Thread {
+                id: optional_string(node, "id"),
+                path: optional_string(node, "path"),
+                anchor: line.filter(|_| !file_level).map(|line| Anchor {
+                    side,
+                    line,
+                    start_line,
+                }),
+                outdated,
+                resolved: Some(optional_bool(node, "isResolved")),
+                diff_hunk,
+                comments,
+            }
+        })
+        .collect();
+    Ok(Conversation {
+        verdicts,
+        comments,
+        threads,
+        incomplete,
+    })
 }
 
 /// `mergeQueueEntry` exposes merge-queue membership, but only over GraphQL -
@@ -1561,6 +1702,55 @@ fn count_latest_reviews(reviews: Option<&serde_json::Value>) -> ReviewSummary {
 mod tests {
     use super::*;
     use crate::providers::{CheckStatus, ReviewRequest, ReviewState};
+
+    #[test]
+    fn github_conversation_reads_threads_reviews_and_comments() {
+        let output = r#"{"data":{"repository":{"pullRequest":{
+            "comments":{"totalCount":1,"nodes":[{"id":"IC1","author":{"login":"ann"},"body":"Looks good","createdAt":"2026-10-11T01:00:00Z","url":"u1"}]},
+            "reviews":{"totalCount":3,"nodes":[
+                {"author":{"login":"bo"},"state":"CHANGES_REQUESTED","body":"Fix it","submittedAt":"2026-10-11T02:00:00Z","url":"u2"},
+                {"author":null,"state":"PENDING","body":"","submittedAt":null,"url":"u3"}]},
+            "reviewThreads":{"totalCount":3,"nodes":[
+                {"id":"T1","isResolved":false,"isOutdated":false,"path":"src/a.rs","line":12,"originalLine":10,"startLine":10,"originalStartLine":8,"diffSide":"LEFT","subjectType":"LINE",
+                 "comments":{"totalCount":1,"nodes":[{"id":"C1","author":{"login":"bo"},"body":"Why?","createdAt":"t","url":"u4","diffHunk":"@@ -1 +1 @@"}]}},
+                {"id":"T2","isResolved":true,"isOutdated":true,"path":"src/b.rs","line":null,"originalLine":4,"startLine":null,"originalStartLine":null,"diffSide":"RIGHT","subjectType":"LINE",
+                 "comments":{"totalCount":1,"nodes":[{"id":"C2","author":{"login":"ann"},"body":"Old","createdAt":"t","url":"u5","diffHunk":""}]}},
+                {"id":"T3","isResolved":false,"isOutdated":false,"path":"README.md","line":null,"originalLine":null,"startLine":null,"originalStartLine":null,"diffSide":"RIGHT","subjectType":"FILE",
+                 "comments":{"totalCount":1,"nodes":[{"id":"C3","author":{"login":"ann"},"body":"File","createdAt":"t","url":"u6","diffHunk":""}]}}]}}}}}"#;
+        let conversation = parse_github_conversation(output).unwrap();
+        assert!(
+            conversation.incomplete,
+            "a review count above what came back"
+        );
+        assert_eq!(conversation.comments[0].author, "ann");
+        assert_eq!(
+            conversation.verdicts.len(),
+            1,
+            "a pending review is a draft"
+        );
+        assert_eq!(
+            conversation.verdicts[0].state,
+            VerdictState::ChangesRequested
+        );
+        let [current, outdated, file] = &conversation.threads[..] else {
+            panic!("three threads");
+        };
+        assert_eq!(
+            current.anchor,
+            Some(Anchor {
+                side: Side::Old,
+                line: 12,
+                start_line: Some(10)
+            })
+        );
+        assert_eq!(current.resolved, Some(false));
+        assert_eq!(current.diff_hunk.as_deref(), Some("@@ -1 +1 @@"));
+        assert!(outdated.outdated);
+        assert_eq!(outdated.anchor.map(|anchor| anchor.line), Some(4));
+        assert_eq!(outdated.resolved, Some(true));
+        assert_eq!(outdated.diff_hunk, None);
+        assert_eq!(file.anchor, None);
+    }
 
     #[test]
     fn parse_github_review_reads_first_array_item() {

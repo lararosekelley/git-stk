@@ -1,13 +1,14 @@
-//! Opening a local file with the platform's default handler - the one place
-//! git-stk launches the system opener.
+//! Opening a local file or URL with the platform's default handler - the one
+//! place git-stk launches the system opener.
 
-use std::path::Path;
+use std::ffi::OsStr;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-/// Open `path` in the default browser (or whatever handles its type).
-pub fn open(path: &Path) -> Result<()> {
+/// Open `target`, a file path or URL, in the default browser (or whatever
+/// handles its type).
+pub fn open(target: impl AsRef<OsStr>) -> Result<()> {
     let mut command = if cfg!(target_os = "macos") {
         Command::new("open")
     } else if cfg!(windows) {
@@ -19,7 +20,7 @@ pub fn open(path: &Path) -> Result<()> {
         Command::new("xdg-open")
     };
     let status = command
-        .arg(path)
+        .arg(target.as_ref())
         .status()
         .context("failed to launch the opener")?;
     if !status.success() {
