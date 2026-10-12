@@ -309,6 +309,16 @@ Everything is optional; defaults shown below:
     ; Where `new --worktree` puts a branch's worktree. Default: a
     ; <repo>-worktrees directory beside the repo.
     worktreeDir = ~/code/myrepo-worktrees
+    ; How `git stk tour` lays out a review: standard groups files by role;
+    ; agentTour has the tour agent plan the steps. Default: standard.
+    tourStyle = agentTour
+    ; The command an agent tour is planned with - your own harness, which
+    ; holds its own credentials, so git-stk holds none. Default: none.
+    tourAgent = claude -p
+    ; The agent command you agreed, at the first agent tour in a repository,
+    ; to send its reviews to; recorded in that repository's own config, and
+    ; a different command asks again. Default: none.
+    tourAgentAllowed = claude -p
 ```
 
 The tool also manages per-branch metadata: `branch.<name>.stkParent` (the stack parent),

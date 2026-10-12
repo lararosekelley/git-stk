@@ -41,6 +41,30 @@ impl StepKind {
 pub struct Step {
     pub kind: StepKind,
     pub files: Vec<FileDiff>,
+    /// What a tour plan calls the step, in place of its kind's name.
+    pub label: Option<StepLabel>,
+}
+
+pub struct StepLabel {
+    /// Stable for a plan, for remembering the step as reviewed.
+    pub id: String,
+    pub title: String,
+    /// Markdown on what the step's files do.
+    pub summary: String,
+}
+
+impl Step {
+    pub fn id(&self) -> &str {
+        self.label
+            .as_ref()
+            .map_or(self.kind.id(), |label| label.id.as_str())
+    }
+
+    pub fn title(&self) -> &str {
+        self.label
+            .as_ref()
+            .map_or(self.kind.title(), |label| label.title.as_str())
+    }
 }
 
 /// Files in step order, each step sorted by path. `is_generated` reports a
@@ -66,6 +90,7 @@ pub fn group(files: Vec<FileDiff>, is_generated: impl Fn(&str) -> bool) -> Vec<S
             _ => steps.push(Step {
                 kind,
                 files: vec![file],
+                label: None,
             }),
         }
     }

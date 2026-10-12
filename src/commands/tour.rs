@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use std::cell::RefCell;
+use std::io::IsTerminal;
+use std::path::Path;
 use std::sync::Mutex;
 use std::thread;
 
@@ -8,6 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::ArgAction;
 use clap_complete::engine::ArgValueCompleter;
 
+use crate::agent::Agent;
 use crate::browser;
 use crate::commands::Run;
 use crate::completions;
@@ -18,10 +21,10 @@ use crate::providers::{
     Anchor, DraftComment, ProviderKind, ReviewEvent, ReviewProvider, ReviewRef, ReviewRequest,
     Side, Submission, Thread, detect_review_provider,
 };
-use crate::settings;
+use crate::settings::{self, TourStyle};
 use crate::style;
 use crate::tour::server::{Request, Response, Server};
-use crate::tour::{self, Tour as ReviewTour};
+use crate::tour::{self, Planner, Tour as ReviewTour};
 
 /// Open a step-by-step tour of a review's changes in the browser
 /// (experimental).
@@ -34,6 +37,21 @@ pub struct Tour {
     /// Tour only this review, not the stack of reviews around it.
     #[arg(long, action = ArgAction::SetTrue)]
     no_stack: bool,
+    /// How to lay out the tour: `standard` groups files by role; `agentTour`
+    /// has the tour agent plan its steps (overrides stk.tourStyle).
+    #[arg(long, value_name = "STYLE")]
+    style: Option<TourStyle>,
+    /// The command an agent tour is planned with, such as `claude -p` - your
+    /// own harness, which holds its own credentials (overrides stk.tourAgent).
+    #[arg(long, value_name = "COMMAND")]
+    agent: Option<String>,
+    /// Follow this plan, written ahead of time, for the review asked for
+    /// instead of asking the agent. Implies `--style agentTour`.
+    #[arg(long, value_name = "FILE")]
+    plan: Option<PathBuf>,
+    /// Ask the agent again rather than use plans saved from earlier tours.
+    #[arg(long, action = ArgAction::SetTrue)]
+    refresh_plan: bool,
     /// Print the tour's address without opening a browser.
     #[arg(long, action = ArgAction::SetTrue)]
     no_open: bool,
@@ -45,11 +63,18 @@ pub struct Tour {
 
 impl Run for Tour {
     fn run(self) -> Result<()> {
+        let planner = planner(
+            self.style,
+            self.agent.as_deref(),
+            self.plan.as_deref(),
+            self.refresh_plan,
+        )?;
         write_tour(
             self.target.as_deref(),
             self.output,
             !self.no_open,
             !self.no_stack,
+            planner.as_ref(),
         )
     }
 }
@@ -59,6 +84,7 @@ fn write_tour(
     output: Option<PathBuf>,
     open: bool,
     stack: bool,
+    planner: Option<&Planner>,
 ) -> Result<()> {
     let (provider, review_provider) = detect_review_provider()?;
     let target = ReviewRef::parse(target, provider.kind)?;
@@ -124,7 +150,7 @@ fn write_tour(
         }
         None => tour::stack::Stack::single(review),
     };
-    let tour = ReviewTour::load(provider.kind, review_provider, stack, &progress)?;
+    let tour = ReviewTour::load(provider.kind, review_provider, stack, planner, &progress)?;
     drop(progress);
     for warning in warnings.borrow().iter().chain(tour.warnings()) {
         anstream::eprintln!("{}", style::warn(&format!("warning: {warning}")));
@@ -514,5 +540,85 @@ fn resolve(tour: &ReviewTour, provider: &dyn ReviewProvider, request: &[u8]) -> 
         review.id,
         thread.path
     );
+    Ok(())
+}
+
+/// How the tour is planned: None for a standard tour; for an agent tour, its
+/// agent and any plan given ahead of time. Asks, once per repository, before
+/// an agent is first sent this repository's reviews.
+fn planner(
+    style: Option<TourStyle>,
+    agent: Option<&str>,
+    plan: Option<&Path>,
+    refresh: bool,
+) -> Result<Option<Planner>> {
+    let style = match (style, plan) {
+        (Some(style), _) => style,
+        (None, Some(_)) => TourStyle::AgentTour,
+        (None, None) => settings::tour_style()?,
+    };
+    if style == TourStyle::Standard {
+        if plan.is_some() {
+            bail!("--plan lays out an agent tour; drop --style standard to use it");
+        }
+        return Ok(None);
+    }
+    let plan_file = plan
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read the plan {}", path.display()))
+        })
+        .transpose()?;
+    let command = match agent {
+        Some(command) => Some(command.to_owned()),
+        None => git::config_get(settings::TOUR_AGENT_KEY)?,
+    }
+    .filter(|command| !command.trim().is_empty());
+    let agent = command.as_deref().map(Agent::parse).transpose()?;
+    match &agent {
+        Some(agent) => allow_agent(agent)?,
+        None if plan_file.is_none() => bail!(
+            "an agent tour needs an agent to plan it: set {} (for example to `claude -p`) or pass --agent",
+            settings::TOUR_AGENT_KEY
+        ),
+        None => {}
+    }
+    Ok(Some(Planner {
+        agent,
+        plan_file,
+        refresh,
+    }))
+}
+
+/// Make sure the user has agreed to send this repository's reviews to
+/// `agent`, asking the first time and remembering the command agreed to: a
+/// different command, which may send them somewhere else, asks again.
+fn allow_agent(agent: &Agent) -> Result<()> {
+    let command = agent.display();
+    let allowed = git::config_get(settings::TOUR_AGENT_ALLOWED_KEY)?;
+    if allowed.as_deref().map(str::trim) == Some(command.as_str()) {
+        return Ok(());
+    }
+    let before = allowed
+        .filter(|before| !before.trim().is_empty())
+        .map(|before| format!(" Agent tours here were allowed with `{}`.", before.trim()))
+        .unwrap_or_default();
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "an agent tour sends each review's description, commits, and diff to `{command}`.{before} To allow that in this repository, run the tour once in a terminal or set `git config {} \"{command}\"`",
+            settings::TOUR_AGENT_ALLOWED_KEY
+        );
+    }
+    anstream::println!(
+        "An agent tour sends each review's description, commits, and diff to `{command}`, which may pass them to its model provider.{before}"
+    );
+    if !prompt::confirm(&format!(
+        "Allow agent tours with `{command}` in this repository? [y/N] "
+    ))? {
+        bail!(
+            "no agent tour without your agreement; run with --style standard for a tour by file role"
+        );
+    }
+    git::config_set(settings::TOUR_AGENT_ALLOWED_KEY, &command)?;
     Ok(())
 }

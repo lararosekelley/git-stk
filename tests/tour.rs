@@ -1301,3 +1301,319 @@ fn tour_reports_its_own_review_that_cannot_be_fetched() {
         .stderr(predicates::str::contains("refs/pull/13/head"))
         .stderr(predicates::str::contains("refs/pull/12/head").not());
 }
+
+/// A plan the fake tour agent answers with, wrapped in prose as agents do.
+const AGENT_PLAN: &str = r#"Here is the plan:
+```json
+{"version":1,
+ "agent":{"provider":"Fake Labs","model":"fake-1","effort":"low"},
+ "overview":"Adds `two` and tests it.",
+ "steps":[
+   {"title":"The new function","summary":"Adds `two` beside `one`.","files":["src/lib.rs"]},
+   {"title":"Its test","summary":"Checks it runs.","files":["tests/lib_test.rs"]}],
+ "notes":[{"path":"src/lib.rs","side":"new","line":2,"body":"The new function."}]}
+```"#;
+
+/// A GitHub repo with PR #12 and a fake `tour-agent` command, allowed to
+/// plan tours here.
+fn agent_tour_repo(
+    agent_rule: impl FnOnce(FakeProvider) -> FakeProvider,
+) -> (TestRepo, tempfile::TempDir, common::FakeProviderEnv) {
+    let (repo, origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.tourAgent", "tour-agent --print"]);
+    repo.git(["config", "stk.tourAgentAllowed", "tour-agent --print"]);
+    let fake = github_tour_fake_after(agent_rule(
+        FakeProvider::new().commands(&["gh", "tour-agent"]),
+    ))
+    .fallback_fail("unexpected provider call")
+    .install(&repo);
+    (repo, origin, fake)
+}
+
+#[test]
+fn an_agent_tour_follows_the_agents_plan_and_saves_it() {
+    let (repo, _origin, fake) =
+        agent_tour_repo(|fake| fake.record_append("--print", "asked", AGENT_PLAN));
+
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "agentTour",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("left out"));
+
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    let chapter = &data["chapters"][0];
+    let steps: Vec<(&str, &str)> = chapter["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| {
+            (
+                step["id"].as_str().unwrap(),
+                step["title"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("plan-1", "The new function"),
+            ("plan-2", "Its test"),
+            ("plan-rest", "Other changes")
+        ]
+    );
+    assert_eq!(
+        chapter["steps"][0]["summary"],
+        "<p>Adds <code>two</code> beside <code>one</code>.</p>\n"
+    );
+    let plan = &chapter["plan"];
+    assert_eq!(plan["source"], "agent");
+    assert_eq!(plan["command"], "tour-agent --print");
+    assert_eq!(
+        (&plan["provider"], &plan["model"], &plan["effort"]),
+        (
+            &Value::from("Fake Labs"),
+            &Value::from("fake-1"),
+            &Value::from("low")
+        )
+    );
+    assert_eq!(plan["cached"], false);
+    assert_eq!(plan["notes"][0]["line"], 2);
+
+    // The next tour of the same head uses the saved plan.
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "agentTour",
+            "--no-open",
+            "--output",
+            "again.html",
+        ])
+        .assert()
+        .success();
+    let again = tour_data(&fs::read_to_string(repo.path().join("again.html")).unwrap());
+    assert_eq!(again["chapters"][0]["plan"]["cached"], true);
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(asked.lines().count(), 1, "the agent is asked once: {asked}");
+
+    // Unless asked to plan again.
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "agentTour",
+            "--refresh-plan",
+            "--no-open",
+            "--output",
+            "fresh.html",
+        ])
+        .assert()
+        .success();
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(asked.lines().count(), 2, "{asked}");
+}
+
+#[test]
+fn an_agent_tour_takes_its_style_from_config_and_the_flag_overrides_it() {
+    let (repo, _origin, fake) = agent_tour_repo(|fake| fake.record("--print", "asked", AGENT_PLAN));
+    repo.git(["config", "stk.tourStyle", "agentTour"]);
+
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "standard",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .success();
+    assert!(
+        !repo.path().join("asked").exists(),
+        "a standard tour asks no agent"
+    );
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    assert_eq!(data["chapters"][0]["plan"], Value::Null);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "tour.html"])
+        .assert()
+        .success();
+    assert!(repo.path().join("asked").exists());
+
+    repo.git(["config", "stk.tourStyle", "fancy"]);
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "tour.html"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("stk.tourStyle is \"fancy\""));
+}
+
+#[test]
+fn an_agent_tour_asks_before_sending_a_repository_anywhere() {
+    let (repo, _origin, fake) = agent_tour_repo(|fake| fake.record("--print", "asked", AGENT_PLAN));
+    repo.git(["config", "--unset", "stk.tourAgentAllowed"]);
+
+    // Without a terminal to ask at, nothing is sent.
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "agentTour",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "set `git config stk.tourAgentAllowed \"tour-agent --print\"`",
+        ));
+    assert!(!repo.path().join("asked").exists());
+
+    // Agreeing to one command does not send the reviews to another.
+    repo.git(["config", "stk.tourAgentAllowed", "some-other-agent"]);
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "agentTour",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Agent tours here were allowed with `some-other-agent`",
+        ));
+    assert!(!repo.path().join("asked").exists());
+}
+
+#[test]
+fn an_agent_tour_follows_a_plan_given_as_a_file() {
+    let (repo, _origin, fake) = agent_tour_repo(|fake| fake);
+    repo.git(["config", "--unset", "stk.tourAgent"]);
+    repo.write("plan.json", AGENT_PLAN);
+
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--plan",
+            "plan.json",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .success();
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    let plan = &data["chapters"][0]["plan"];
+    assert_eq!(plan["source"], "file");
+    assert_eq!(plan["command"], Value::Null);
+    assert_eq!(data["chapters"][0]["steps"][0]["title"], "The new function");
+}
+
+#[test]
+fn a_review_its_agent_cannot_plan_is_toured_by_file_role() {
+    for (answer, failing) in [("I would rather not.", false), ("", true)] {
+        let (repo, _origin, fake) = agent_tour_repo(|fake| {
+            if failing {
+                fake.fail("--print", "model unavailable")
+            } else {
+                fake.on("--print", answer)
+            }
+        });
+
+        repo.stack_faked(&fake)
+            .args([
+                "tour",
+                "12",
+                "--style",
+                "agentTour",
+                "--no-open",
+                "--output",
+                "tour.html",
+            ])
+            .assert()
+            .success()
+            .stderr(predicates::str::contains(
+                "could not plan #12 with `tour-agent --print`, so it is toured by file role",
+            ));
+        let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+        assert_eq!(data["chapters"][0]["plan"], Value::Null);
+        assert_eq!(data["chapters"][0]["steps"][0]["id"], "config");
+    }
+}
+
+#[test]
+fn an_agent_tour_plans_every_changeset_in_a_stack() {
+    let (repo, _origin) = stacked_prs();
+    repo.git(["config", "stk.tourAgent", "tour-agent --print"]);
+    repo.git(["config", "stk.tourAgentAllowed", "tour-agent --print"]);
+    // One answer for every changeset: each places its own file, and the
+    // others' paths are set right.
+    let plan = r#"{"version":1,"overview":"O","steps":[{"title":"The part","summary":"S","files":["part-1.txt","part-2.txt","part-3.txt"]}]}"#;
+    let fake = stack_fake(Some(&stack_listing()))
+        .commands(&["gh", "tour-agent"])
+        .record_append("--print", "asked", plan)
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "13",
+            "--style",
+            "agentTour",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .success();
+
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    let planned: Vec<(&str, &str)> = data["chapters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|chapter| {
+            (
+                chapter["review"]["id"].as_str().unwrap(),
+                chapter["steps"][0]["title"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        planned,
+        [
+            ("#12", "The part"),
+            ("#13", "The part"),
+            ("#14", "The part")
+        ]
+    );
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(
+        asked.lines().count(),
+        3,
+        "one request per changeset: {asked}"
+    );
+}
