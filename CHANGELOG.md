@@ -13,9 +13,9 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   It takes a branch, review number, or URL, fetches the review's head from the
   remote so the branch need not be checked out, and groups files by role:
   configuration, schemas and types, implementation, tests, documentation, and
-  collapsed generated files. Diffs are syntax highlighted, switch between
-  unified and split views, and can expand the unchanged lines around each
-  hunk. The description is rendered as Markdown. Reviewed steps are
+  collapsed generated and vendored files. Diffs are syntax highlighted, switch
+  between unified and split views, and can expand the unchanged lines around
+  each hunk. The description is rendered as Markdown. Reviewed steps are
   remembered per head commit. A review in a stack is toured with the rest of
   its stack, branches included, one review at a time; the stack is found from
   review bases, so stacks not made with git-stk work too (`--no-stack` tours

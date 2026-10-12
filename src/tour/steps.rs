@@ -22,7 +22,7 @@ impl StepKind {
             Self::Source => "Implementation",
             Self::Tests => "Tests",
             Self::Docs => "Documentation",
-            Self::Generated => "Generated files",
+            Self::Generated => "Generated and vendored files",
         }
     }
 
@@ -124,6 +124,28 @@ const SCHEMA_EXTENSIONS: &[&str] = &[
     "sql", "proto", "graphql", "gql", "prisma", "avsc", "thrift", "xsd",
 ];
 
+/// Directories of third-party code, shown collapsed like generated files.
+const VENDOR_DIRS: &[&str] = &[
+    "vendor",
+    "vendored",
+    "third_party",
+    "third-party",
+    "thirdparty",
+    "node_modules",
+];
+
+/// Words that name a license or notice file, in the capitals such files use.
+const LEGAL_NAMES: &[&str] = &[
+    "LICENSE",
+    "LICENCE",
+    "COPYING",
+    "NOTICE",
+    "AUTHORS",
+    "CONTRIBUTORS",
+    "PATENTS",
+    "COPYRIGHT",
+];
+
 const DOC_EXTENSIONS: &[&str] = &["md", "mdx", "markdown", "rst", "adoc", "txt"];
 
 const TEST_DIRS: &[&str] = &[
@@ -147,6 +169,7 @@ fn classify(path: &str) -> StepKind {
     let extension = extension.to_ascii_lowercase();
 
     if LOCKFILES.contains(&name)
+        || dirs.iter().any(|dir| VENDOR_DIRS.contains(dir))
         || stem.ends_with(".min")
         || stem.ends_with(".pb")
         || stem.ends_with("_pb2")
@@ -160,9 +183,10 @@ fn classify(path: &str) -> StepKind {
     }
     if DOC_EXTENSIONS.contains(&extension.as_str())
         || dirs.iter().any(|dir| matches!(*dir, "docs" | "doc"))
-        || ["LICENSE", "LICENCE", "COPYING", "NOTICE"]
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
+        // LICENSE-MIT, highlight.js-LICENSE, NOTICE.txt
+        || name
+            .split(['-', '.', '_'])
+            .any(|word| LEGAL_NAMES.contains(&word))
     {
         return StepKind::Docs;
     }
@@ -232,6 +256,16 @@ mod tests {
             ("README.md", StepKind::Docs),
             ("docs/guide.html", StepKind::Docs),
             ("LICENSE-MIT", StepKind::Docs),
+            ("docs/highlight.js-LICENSE", StepKind::Docs),
+            ("NOTICE", StepKind::Docs),
+            ("AUTHORS.txt", StepKind::Docs),
+            ("src/license.rs", StepKind::Source),
+            (
+                "vendor/github.com/pkg/errors/errors.go",
+                StepKind::Generated,
+            ),
+            ("src/tour/vendor/highlight.js-LICENSE", StepKind::Generated),
+            ("third_party/zlib/zlib.h", StepKind::Generated),
             ("Cargo.lock", StepKind::Generated),
             ("web/pnpm-lock.yaml", StepKind::Generated),
             ("static/app.min.js", StepKind::Generated),

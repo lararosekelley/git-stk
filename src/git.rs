@@ -721,30 +721,39 @@ pub fn tour_diff(base: &str, head: &str) -> Result<String> {
     .with_context(|| format!("failed to diff {base}..{head}"))
 }
 
-/// The subset of `paths` marked `linguist-generated` by the `.gitattributes`
-/// in `commit`. Git before 2.40 cannot read attributes from a commit, so there
-/// the working tree's attributes answer instead.
+/// The subset of `paths` marked `linguist-generated` or `linguist-vendored`
+/// by the `.gitattributes` in `commit`. Git before 2.40 cannot read
+/// attributes from a commit, so there the working tree's attributes answer
+/// instead.
 pub fn generated_paths(paths: &[&str], commit: &str) -> Result<Vec<String>> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
     let input = paths.join("\0");
     let source = format!("--source={commit}");
-    let base = ["check-attr", "-z", "--stdin", "linguist-generated"];
+    let base = [
+        "check-attr",
+        "-z",
+        "--stdin",
+        "linguist-generated",
+        "linguist-vendored",
+    ];
     let output = output_with_stdin(
         &[&base[..1], &[source.as_str()], &base[1..]].concat(),
         &input,
     )
     .or_else(|_| output_with_stdin(&base, &input))
-    .context("failed to read linguist-generated attributes")?;
-    // NUL-separated triples: path, attribute, value.
+    .context("failed to read linguist attributes")?;
+    // NUL-separated triples: path, attribute, value, one per attribute.
     let fields: Vec<&str> = output.split('\0').collect();
     let (triples, _) = fields.as_chunks::<3>();
-    Ok(triples
+    let mut marked: Vec<String> = triples
         .iter()
         .filter(|[_, _, value]| matches!(*value, "set" | "true"))
         .map(|[path, _, _]| (*path).to_owned())
-        .collect())
+        .collect();
+    marked.dedup();
+    Ok(marked)
 }
 
 /// The text of each `<commit>:<path>` in `specs`, in order. None stands for a

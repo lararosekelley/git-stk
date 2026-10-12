@@ -222,8 +222,9 @@ exactly that name. A URL must point at this repository's reviews.
 in your browser. It fetches the review's head from the remote (`refs/pull/N/head`, or
 `refs/merge-requests/N/head` on GitLab), so it works on reviews whose branch you have never checked out,
 and diffs it against the merge base with the review's base branch. Files are grouped into steps by role:
-configuration and build, schemas and types, implementation, tests, documentation, and generated files
-(lockfiles, minified files, and paths marked `linguist-generated` in `.gitattributes`), which start
+configuration and build, schemas and types, implementation, tests, documentation (license and notice files
+included), and generated and vendored files (lockfiles, minified files, `vendor/` and `third_party/`
+directories, and paths marked `linguist-generated` or `linguist-vendored` in `.gitattributes`), which start
 collapsed. Diffs are syntax highlighted (with a bundled copy of highlight.js) and switch between unified and
 split views. Changed files up to 1 MB embed their full text (up to 16 MB per tour), so unchanged lines
 around each hunk can be expanded.
