@@ -446,7 +446,9 @@ pub fn apply(plan: Plan, steps: Vec<Step>) -> Applied {
             category: Category::parse(&raw.category),
             title: raw.title,
             body: raw.body,
-            suggestion: Some(raw.suggestion).filter(|suggestion| !suggestion.trim().is_empty()),
+            // Replacement code applies to the new side; a removed line has none.
+            suggestion: Some(raw.suggestion)
+                .filter(|suggestion| raw.side == Side::New && !suggestion.trim().is_empty()),
         });
     }
     findings.sort_by_key(|finding| finding.severity);
@@ -610,7 +612,7 @@ Review rules:
 - "severity" is one of: "required" (should block merging: a bug, a security hole, data loss, a broken build), "recommended" (worth fixing before merging, without blocking it), or "optional" (take it or leave it).
 - "category" is one of: "bug", "security", "performance", "design", "tests", "docs", "style".
 - Put each finding on a line that appears in the diff; "startLine" is optional, for a finding about a range ending at "line". Use "side" "old" for removed lines and "new" otherwise.
-- Give a "suggestion" only when it is the exact replacement for those lines, with their indentation.
+- Give a "suggestion" only on the "new" side, and only when it is the exact replacement for those lines, with their indentation.
 - Report real problems, most important first, at most fifteen; an empty array is a fine answer. Do not repeat what the steps and notes already say."#;
 
 // The agent reads "changeset" for what git-stk calls a review, so its
@@ -757,7 +759,7 @@ diff --git a/Cargo.lock b/Cargo.lock
                 {"path":"tests/a.rs","side":"new","line":2,"severity":"Required",
                  "category":"tests","title":"Assert","body":"B"},
                 {"path":"src/a.rs","side":"old","line":2,"startLine":2,"severity":"blocker",
-                 "category":"vibes","title":"Gone","body":"B"},
+                 "category":"vibes","title":"Gone","body":"B","suggestion":"fn b() {}"},
                 {"path":"src/a.rs","side":"new","line":9,"severity":"required","title":"Nowhere"},
                 {"path":"src/a.rs","side":"new","line":1,"severity":"required"}]}"#,
         )
@@ -786,6 +788,10 @@ diff --git a/Cargo.lock b/Cargo.lock
         assert_eq!(
             applied.findings[1].suggestion.as_deref(),
             Some("    fn d() {}\n")
+        );
+        assert_eq!(
+            applied.findings[2].suggestion, None,
+            "no suggestion on a removed line"
         );
         assert_eq!(
             applied.corrections,
