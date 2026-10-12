@@ -1023,8 +1023,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     var parts = [heading];
     if (finding.body) parts.push(finding.body);
     if (finding.suggestion) {
-      var fence = data.forge === "github" ? "```suggestion" : "```";
-      parts.push(fence + "\n" + finding.suggestion.replace(/\n$/, "") + "\n```");
+      // A fence longer than any backtick run in the code, so the code cannot close it.
+      var runs = finding.suggestion.match(/`+/g) || [];
+      var fence = "```";
+      runs.forEach(function (run) { if (run.length >= fence.length) fence = new Array(run.length + 2).join("`"); });
+      parts.push(fence + (data.forge === "github" ? "suggestion" : "") + "\n" + finding.suggestion.replace(/\n$/, "") + "\n" + fence);
     }
     return parts.join("\n\n");
   }
