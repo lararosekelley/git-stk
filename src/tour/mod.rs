@@ -619,7 +619,8 @@ const MAX_GUIDANCE_BYTES: usize = 48 * 1024;
 
 /// The guidance files at `chapter`'s head in the repository root and in each
 /// directory holding a changed file, root first, as (path, text). A file is
-/// cut short past a size, and once enough is gathered the rest are left out.
+/// cut short past a size, and past a total the files farthest from both the
+/// root and the changes are left out, since the nearest file wins.
 fn read_guidance(chapter: &Chapter) -> Vec<(String, String)> {
     let mut dirs = std::collections::BTreeSet::new();
     dirs.insert(String::new());
@@ -650,12 +651,22 @@ fn read_guidance(chapter: &Chapter) -> Vec<(String, String)> {
     let Ok(texts) = git::blob_texts(&specs, MAX_EMBEDDED_BYTES, MAX_EMBEDDED_BYTES) else {
         return Vec::new();
     };
+    let found: Vec<(String, String)> = paths
+        .into_iter()
+        .zip(texts)
+        .filter_map(|(path, text)| Some((path, text.filter(|text| !text.trim().is_empty())?)))
+        .collect();
+    within_guidance_budget(found)
+}
+
+/// `found` guidance, root first, cut down to its budget: the root's files are
+/// kept first, then those nearest the changes.
+fn within_guidance_budget(found: Vec<(String, String)>) -> Vec<(String, String)> {
+    let (root, nested): (Vec<_>, Vec<_>) =
+        found.into_iter().partition(|(path, _)| !path.contains('/'));
     let mut left = MAX_GUIDANCE_BYTES;
     let mut guidance = Vec::new();
-    for (path, text) in paths.into_iter().zip(texts) {
-        let Some(mut text) = text.filter(|text| !text.trim().is_empty()) else {
-            continue;
-        };
+    for (path, mut text) in root.into_iter().chain(nested.into_iter().rev()) {
         let room = MAX_GUIDANCE_FILE_BYTES.min(left);
         if room == 0 {
             break;
@@ -671,6 +682,8 @@ fn read_guidance(chapter: &Chapter) -> Vec<(String, String)> {
         left = left.saturating_sub(text.len());
         guidance.push((path, text));
     }
+    guidance
+        .sort_by(|(a, _), (b, _)| (a.matches('/').count(), a).cmp(&(b.matches('/').count(), b)));
     guidance
 }
 
@@ -1025,6 +1038,23 @@ fn escape_html(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guidance_past_its_budget_keeps_the_root_and_the_nearest() {
+        let big = "g".repeat(MAX_GUIDANCE_FILE_BYTES + 10);
+        let found = [
+            "AGENTS.md",
+            "a/AGENTS.md",
+            "a/b/AGENTS.md",
+            "a/b/c/AGENTS.md",
+        ]
+        .map(|path| (path.to_owned(), big.clone()))
+        .to_vec();
+        let kept = within_guidance_budget(found);
+        let paths: Vec<&str> = kept.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, ["AGENTS.md", "a/b/AGENTS.md", "a/b/c/AGENTS.md"]);
+        assert!(kept.iter().all(|(_, text)| text.ends_with("[cut short]")));
+    }
 
     #[test]
     fn reachable_from_root_drops_what_hangs_from_a_broken_review() {

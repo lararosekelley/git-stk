@@ -36,39 +36,69 @@ pub fn data(conversation: &Conversation) -> Value {
 }
 
 /// What reviewers have said, for the tour agent: Markdown as written,
-/// without resolved threads, each body cut to a few thousand characters.
+/// without resolved threads. Long bodies are cut short, and past a total the
+/// rest is left out: open threads first, then reviews, then the latest
+/// comments.
 pub fn for_agent(conversation: &Conversation) -> Value {
     const MAX_BODY_CHARS: usize = 2000;
+    const MAX_TOTAL_CHARS: usize = 30_000;
     const MAX_THREADS: usize = 40;
     const MAX_COMMENTS: usize = 30;
-    let clip = |body: &str| -> String {
-        match body.char_indices().nth(MAX_BODY_CHARS) {
+    let left = std::cell::Cell::new(MAX_TOTAL_CHARS);
+    let clip = |body: &str| -> Option<String> {
+        let room = MAX_BODY_CHARS.min(left.get());
+        if room == 0 {
+            return None;
+        }
+        let text = match body.char_indices().nth(room) {
             Some((at, _)) => format!("{} [cut short]", &body[..at]),
             None => body.to_owned(),
-        }
+        };
+        left.set(left.get().saturating_sub(text.chars().count()));
+        Some(text)
     };
-    let said = |comment: &Comment| json!({ "author": comment.author, "body": clip(&comment.body) });
-    let skipped = conversation.comments.len().saturating_sub(MAX_COMMENTS);
-    json!({
-        "reviews": conversation.verdicts.iter().filter(|verdict| {
+    let said = |comment: &Comment| {
+        clip(&comment.body).map(|body| json!({ "author": comment.author, "body": body }))
+    };
+    let threads: Vec<Value> = conversation
+        .threads
+        .iter()
+        .filter(|thread| thread.resolved != Some(true))
+        .take(MAX_THREADS)
+        .filter_map(|thread| {
+            let comments: Vec<Value> = thread.comments.iter().filter_map(said).collect();
+            (!comments.is_empty()).then(|| {
+                json!({
+                    "path": thread.path,
+                    "side": thread.anchor.map(|anchor| anchor.side.as_str()),
+                    "line": thread.anchor.map(|anchor| anchor.line),
+                    "outdated": thread.outdated,
+                    "comments": comments,
+                })
+            })
+        })
+        .collect();
+    let reviews: Vec<Value> = conversation
+        .verdicts
+        .iter()
+        .filter(|verdict| {
             verdict.state != VerdictState::Commented || !verdict.body.trim().is_empty()
-        }).map(|verdict| json!({
-            "author": verdict.author,
-            "state": verdict.state.as_str(),
-            "body": clip(&verdict.body),
-        })).collect::<Vec<_>>(),
-        "comments": conversation.comments[skipped..].iter().map(said).collect::<Vec<_>>(),
-        "openThreads": conversation.threads.iter()
-            .filter(|thread| thread.resolved != Some(true))
-            .take(MAX_THREADS)
-            .map(|thread| json!({
-                "path": thread.path,
-                "side": thread.anchor.map(|anchor| anchor.side.as_str()),
-                "line": thread.anchor.map(|anchor| anchor.line),
-                "outdated": thread.outdated,
-                "comments": thread.comments.iter().map(said).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>(),
-    })
+        })
+        .filter_map(|verdict| {
+            clip(&verdict.body).map(|body| {
+                json!({ "author": verdict.author, "state": verdict.state.as_str(), "body": body })
+            })
+        })
+        .collect();
+    let mut comments: Vec<Value> = conversation
+        .comments
+        .iter()
+        .rev()
+        .take(MAX_COMMENTS)
+        .filter_map(said)
+        .collect();
+    comments.reverse();
+    json!({ "reviews": reviews, "comments": comments, "openThreads": threads })
 }
 
 /// A discussion that could not be read, for the page to say so.
@@ -147,6 +177,21 @@ mod tests {
         assert!(
             long.ends_with(" [cut short]") && long.len() < 2100,
             "{long}"
+        );
+
+        let crowded = Conversation {
+            verdicts: Vec::new(),
+            comments: Vec::new(),
+            threads: (0..40)
+                .map(|n| thread(&format!("T{n}"), Some(false), &"y".repeat(2500)))
+                .collect(),
+            incomplete: false,
+        };
+        let said = for_agent(&crowded);
+        let size = said.to_string().len();
+        assert!(
+            said["openThreads"].as_array().unwrap().len() < 20 && size < 32_000,
+            "{size} bytes"
         );
     }
 
