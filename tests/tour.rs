@@ -30,7 +30,11 @@ fn repo_with_review(head_ref: &str) -> (TestRepo, tempfile::TempDir) {
     fs::create_dir_all(repo.path().join("tests")).unwrap();
     repo.write("tests/lib_test.rs", "#[test]\nfn t() {}\n");
     repo.write("src/gen.rs", "// generated\n");
-    repo.write(".gitattributes", "src/gen.rs linguist-generated\n");
+    repo.write("src/ext.rs", "// vendored\n");
+    repo.write(
+        ".gitattributes",
+        "src/gen.rs linguist-generated\nsrc/ext.rs linguist-vendored\n",
+    );
     repo.git(["mv", "old name.txt", "new name.txt"]);
     repo.git(["add", "-A"]);
     repo.git(["commit", "-m", "add two"]);
@@ -61,7 +65,7 @@ fn tour_walks_a_github_pr_in_role_order() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "wrote a tour of Add two (#12) (7 files)",
+            "wrote a tour of Add two (#12) (8 files)",
         ));
 
     let html = fs::read_to_string(repo.path().join("tour.html")).expect("tour written");
@@ -94,7 +98,7 @@ fn tour_walks_a_github_pr_in_role_order() {
             ("source", vec!["src/lib.rs"]),
             ("tests", vec!["tests/lib_test.rs"]),
             ("docs", vec!["new name.txt"]),
-            ("generated", vec!["Cargo.lock", "src/gen.rs"]),
+            ("generated", vec!["Cargo.lock", "src/ext.rs", "src/gen.rs"]),
         ]
     );
     assert_eq!(data["steps"][4]["collapsed"], true);
