@@ -557,6 +557,13 @@ pub trait ReviewProvider: Sync {
     /// numbers (and CI status) without a lookup per branch.
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>>;
 
+    /// Every open review in the repository, paging as far as the provider
+    /// allows, for following a stack anywhere in it. The flag is false when
+    /// the listing stopped at that bound with more reviews left.
+    fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
+        Ok((self.open_reviews()?, true))
+    }
+
     /// Review annotations (id, CI dot, queue state, and - with `detail` -
     /// review tallies) for the given branches, in as few calls as the provider
     /// allows. The default is the generic per-branch path; a provider can

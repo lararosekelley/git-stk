@@ -6,7 +6,8 @@
 //! ships; invoked by `.github/workflows/e2e.yml`.
 //!
 //! Scenarios, all on one ephemeral repo, GitHub / GitLab / Gitea:
-//!   1. core lifecycle   - build a stack -> submit -> restack -> squash-merge
+//!   1. core lifecycle   - build a stack -> submit -> look up and tour a review
+//!      by number and URL -> restack -> squash-merge
 //!   2. issue auto-close - a branch that references an issue closes it on merge
 //!   3. metadata surgery - adopt, repair, rename
 //!   4. conflict recovery - an interrupted restack: abort, then continue
@@ -323,6 +324,8 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
         return Err(format!("list showed no review ids:\n{listed}"));
     }
 
+    review_lookup_and_tour(provider, slug, work)?;
+
     // `comment` posts through each host's own CLI. A flag-shaped body checks
     // it reaches the host verbatim rather than being parsed as a flag.
     let body = "--- e2e comment";
@@ -355,6 +358,62 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
         if !work.join(file).exists() {
             return Err(format!("{file} missing on main after the stack landed"));
         }
+    }
+    Ok(())
+}
+
+/// `review` finds a review by number, by `#N`/`!N`, and by URL, and `tour`
+/// fetches the stack's review heads and descriptions by number - the lookups
+/// and fetches only a real host can answer.
+fn review_lookup_and_tour(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
+    let review = open_review(provider, slug, "feat/b")?
+        .ok_or_else(|| "no open review for feat/b".to_owned())?;
+    let (number, url, sigil) = match provider {
+        Provider::Github => (&review["number"], &review["url"], '#'),
+        Provider::Gitlab => (&review["iid"], &review["web_url"], '!'),
+        Provider::Gitea => (&review["number"], &review["html_url"], '#'),
+    };
+    let number = number
+        .as_u64()
+        .ok_or_else(|| format!("no number in {review}"))?
+        .to_string();
+    let url = url
+        .as_str()
+        .ok_or_else(|| format!("no URL in {review}"))?
+        .to_owned();
+    for target in [number.clone(), format!("{sigil}{number}"), url] {
+        let shown = stk(work, &["review", &target])?;
+        if !shown.contains("feat/b") {
+            return Err(format!("review {target} did not show feat/b:\n{shown}"));
+        }
+    }
+
+    let page = work.join(".git").join("e2e-tour.html");
+    let page_arg = page.to_string_lossy().into_owned();
+    let wrote = stk(work, &["tour", &number, "--no-open", "--output", &page_arg])?;
+    if !wrote.contains("in a stack of 2 reviews") {
+        return Err(format!("tour did not cover the two-review stack:\n{wrote}"));
+    }
+    let html = std::fs::read_to_string(&page).map_err(|e| format!("read the tour: {e}"))?;
+    let start_tag = r#"<script id="tour-data" type="application/json">"#;
+    let data = html
+        .split_once(start_tag)
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(data, _)| data)
+        .ok_or_else(|| "the tour page has no data".to_owned())?;
+    let data: serde_json::Value =
+        serde_json::from_str(data).map_err(|e| format!("parse the tour data: {e}"))?;
+    let branches: Vec<&str> = data["chapters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|chapter| chapter["review"]["branch"].as_str())
+        .collect();
+    if branches != ["feat/a", "feat/b"] || data["current"] != 1 {
+        return Err(format!(
+            "tour chapters were {branches:?} at {}, wanted feat/a then feat/b at 1",
+            data["current"]
+        ));
     }
     Ok(())
 }
@@ -736,7 +795,7 @@ fn open_review(
                     "--state",
                     "open",
                     "--json",
-                    "number,title,headRefName",
+                    "number,title,headRefName,url",
                 ],
                 None,
             )?,

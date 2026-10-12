@@ -239,7 +239,9 @@ on top of it), so it works for stacks opened by any tool or by hand. Each link i
 commits, so a fork's review that only shares a branch name is left out, and a review of a long-lived branch
 (the default branch, `develop`, `release/*` and the like) is never a stack parent. If the stack cannot be
 listed or a review in it cannot be fetched or read, the tour says so and covers the rest of the stack it could
-reach. `--no-stack` tours just the one review.
+reach. Open reviews are listed page by page; in a repository with more than the listing can reach (2,000 on
+GitHub and GitLab, 2,500 on Gitea), the tour warns that the stack may be missing some. `--no-stack` tours just
+the one review.
 
 The step sidebar can be hidden, and the sun/moon button switches between light and dark themes
 (the page follows the system theme until one is chosen). The page is saved under

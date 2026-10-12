@@ -410,6 +410,29 @@ impl ReviewProvider for GitHubProvider {
         parse_github_reviews(&output)
     }
 
+    fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
+        // gh pages through the API itself; a repository under the limit costs
+        // a single request.
+        const LIMIT: usize = 2000;
+        let limit = LIMIT.to_string();
+        let output = command_output(
+            "gh",
+            &[
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                &limit,
+                "--json",
+                "number,state,baseRefName,headRefName,url,title,isDraft",
+            ],
+        )?;
+        let reviews = parse_github_reviews(&output)?;
+        let complete = reviews.len() < LIMIT;
+        Ok((reviews, complete))
+    }
+
     fn annotate_review(&self, review: &ReviewRequest, detail: bool) -> Result<ReviewAnnotation> {
         // One GraphQL call for the queue state, the CI rollup, and the stack
         // position - the same query `list` makes, so the two cannot disagree
