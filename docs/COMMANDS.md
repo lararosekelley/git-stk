@@ -261,12 +261,16 @@ comments on the review as a whole. Replies and comments are confirmed in the ter
 posts nothing, so it is not asked about. Gitea places a reply by line, so it can only answer a thread on a
 line of the current diff.
 
-An agent tour (`--style agentTour`, or `stk.tourStyle = agentTour`) has an agent plan each review: its files
-in reading order, as titled steps. The agent is a command you give in `stk.tourAgent` or `--agent`, such as
-`claude -p` or `llm -m <model>`; it holds its own credentials, so git-stk holds none. git-stk sends it the
-review's description, commits, and diff on stdin and reads a JSON plan back, checks it against the diff (each
-file once, every file somewhere, notes only on lines the diff shows), and falls back to the file-role steps,
-with a warning, for a review it cannot plan. The first agent tour in a repository asks before sending
+An agent tour (`--style agentTour`, or `stk.tourStyle = agentTour`) has an agent plan each review: an
+overview, the files in reading order as titled steps with a short explanation each, and notes on particular
+lines. The agent is a command you give in `stk.tourAgent` or `--agent`, such as `claude -p` or `llm -m
+<model>`; it holds its own credentials, so git-stk holds none. git-stk sends it the review's description,
+commits, and diff on stdin and reads a JSON plan back, checks it against the diff (each file once, every file
+somewhere, notes only on lines the diff shows), and falls back to the file-role steps, with a warning, for a
+review it cannot plan. The page opens the review with the plan's overview and a line naming the command that
+planned it and the provider, model, and effort level the agent reports for itself; each step shows its
+explanation, and the plan's notes sit on their lines as tour notes, set apart from review comments; everything
+the agent wrote is marked with a sparkle emoji. The first agent tour in a repository asks before sending
 anything, and records the command you agreed to as `stk.tourAgentAllowed` in that repository's config; a
 different command asks again, and without a terminal to ask at, the tour stops instead. Plans are saved per
 review head under `.git/stk/tours/plans/`, so a tour of the same commits plans nothing new; `--refresh-plan`

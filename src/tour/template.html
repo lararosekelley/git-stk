@@ -214,6 +214,20 @@ header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-hei
 #refresh-discussion { font-size: 13px; padding: 5px 12px; }
 .discussion > :not(summary) { max-width: 88ch; }
 .discussion > :last-child { margin-bottom: 16px; }
+/* What the tour agent wrote stands apart from what people wrote. */
+.plan { border-left: 3px solid var(--hl-keyword); padding: 2px 0 2px 16px; max-width: 76ch; }
+.plan-overview { font-size: 15px; line-height: 1.6; }
+.plan-attribution { margin: 8px 0 0; font-size: 12px; color: var(--fg-muted); }
+.plan-attribution code { font-size: 11.5px; color: var(--fg); }
+.step-summary { color: var(--fg); max-width: 72ch; margin: -6px 0 16px; line-height: 1.55; }
+.agent-text { display: flex; gap: 8px; align-items: baseline; }
+.agent-text > .markdown { min-width: 0; flex: 1; }
+.agent-mark { flex: none; }
+.tour-note {
+  border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 6px; background: var(--bg);
+  margin: 6px 0; padding: 4px 12px; font-family: var(--font-ui); font-size: 13px; white-space: normal;
+}
+.tour-note-label { font-size: 12px; font-weight: 600; color: var(--hl-keyword); padding-top: 2px; }
 .thread-index { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 13px; }
 .thread-index li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; min-width: 0; }
 .thread-index code { font-size: 12px; }
@@ -595,6 +609,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     }).map(function (thread) {
       return el("tr", { class: "thread-row" }, [el("td", { colspan: "4" }, [renderThread(thread)])]);
     });
+    notesOnFile(this.file).filter(function (note) {
+      return note.side === "old" ? note.line === oldNum : note.line === newNum;
+    }).forEach(function (note) {
+      rows.push(el("tr", { class: "thread-row" }, [el("td", { colspan: "4" }, [renderNote(note)])]));
+    });
     draftsOnFile(this.file).filter(function (draft) {
       return draft.side === "old" ? draft.line === oldNum : draft.line === newNum;
     }).forEach(function (draft) {
@@ -964,6 +983,58 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     });
     document.body.appendChild(panel);
     summary.focus();
+  }
+
+  // The agent's notes on a file's lines, for an agent tour.
+  function notesOnFile(file) {
+    var notes = chapter.plan ? chapter.plan.notes : [];
+    return notes.filter(function (note) {
+      return note.path === file.path || (note.side === "old" && note.path === file.oldPath);
+    });
+  }
+
+  function renderNote(note) {
+    var body = el("div", { class: "markdown comment-body" });
+    setMarkdown(body, note.bodyHtml);
+    return el("div", { class: "tour-note" }, [el("div", { class: "tour-note-label", text: "\u2728 Tour note" }), body]);
+  }
+
+  // Who planned an agent tour: the command git-stk ran, which it knows, and
+  // the provider, model, and effort the agent says it is, which it cannot check.
+  function planAttribution(plan) {
+    var parts = [];
+    if (plan.source === "file") {
+      parts.push("Planned from a plan file");
+    } else {
+      parts.push("Planned by ");
+      parts.push(el("code", { text: plan.command || "the tour agent" }));
+    }
+    var reported = [plan.provider, plan.model].filter(Boolean).join(" ");
+    var effort = plan.effort ? "effort " + plan.effort : "effort not reported";
+    parts.push(reported
+      ? ". The agent reports itself as " + reported + ", " + effort + "."
+      : ". The agent did not say which model it is.");
+    if (plan.cached) parts.push(" Saved from an earlier tour of this commit.");
+    return el("p", { class: "plan-attribution" }, parts);
+  }
+
+  // Text the tour agent wrote, marked beside it rather than inside it, so the
+  // mark cannot land in a code block or a list the text opens with.
+  function agentText(body, extraClass) {
+    return el("div", { class: "agent-text" + (extraClass ? " " + extraClass : "") }, [
+      el("span", { class: "agent-mark", title: "Written by the tour agent", "aria-label": "Written by the tour agent", text: "\u2728" }),
+      body,
+    ]);
+  }
+
+  function renderPlan(plan) {
+    var overview = null;
+    if (plan.overviewHtml) {
+      overview = el("div", { class: "markdown plan-overview" });
+      setMarkdown(overview, plan.overviewHtml);
+      overview = agentText(overview);
+    }
+    return el("section", { class: "plan", "aria-label": "Tour plan" }, [overview, planAttribution(plan)]);
   }
 
   function threadsOnFile(file) {
@@ -1396,6 +1467,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 
   function renderIntro() {
     var parts = [];
+    if (chapter.plan) parts.push(renderPlan(chapter.plan));
     if (chapter.review.bodyHtml) {
       // Rendered from Markdown by git-stk with raw HTML and script links removed.
       var body = el("div", { class: "markdown description" });
@@ -1498,6 +1570,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       el("h2", {}, [el("span", { class: "step-number", "data-step-number": step.id, text: String(stepIndex + 1) }), step.title]),
       el("label", { class: "reviewed-toggle" }, [box, " Reviewed"]),
     ]);
+    var summary = null;
+    if (step.summary) {
+      summary = el("div", { class: "markdown" });
+      setMarkdown(summary, step.summary);
+      summary = agentText(summary, "step-summary");
+    }
     var files = step.files.map(function (file, fileIndex) {
       var view = new FileView(file, stepIndex, fileIndex, step.collapsed);
       views.push(view);
@@ -1506,7 +1584,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     var next = stepIndex + 1 < chapter.steps.length
       ? el("a", { class: "next", href: "#" + stepAnchor(stepIndex + 1), text: "Next: " + chapter.steps[stepIndex + 1].title })
       : null;
-    return el("section", { class: "step", id: stepAnchor(stepIndex) }, [head].concat(files, [next]));
+    return el("section", { class: "step", id: stepAnchor(stepIndex) }, [head, summary].concat(files, [next]));
   }
 
   function renderChapterNav() {
