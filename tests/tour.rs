@@ -1786,6 +1786,16 @@ fn an_agent_tour_tells_the_agent_the_repos_guidance_and_discussion() {
     assert_eq!(discussion["comments"][0]["body"], "Thanks!");
     assert_eq!(discussion["reviews"][0]["state"], "approved");
     assert_eq!(discussion["openThreads"][0]["path"], "src/lib.rs");
+    let lib = changeset["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"] == "src/lib.rs")
+        .unwrap();
+    assert_eq!(
+        lib["text"], "fn one() {}\nfn two() {}\n",
+        "a small file goes whole"
+    );
 }
 
 #[test]
