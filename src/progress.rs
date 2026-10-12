@@ -34,6 +34,10 @@ impl Progress {
                             break;
                         }
                         let line = message.lock().map(|text| text.clone()).unwrap_or_default();
+                        // A line that wraps cannot be redrawn in place: each
+                        // tick would leave a copy above it.
+                        let width = usize::from(term.size().1).saturating_sub(3).max(10);
+                        let line = fit(&line, width);
                         let _ = term.clear_line();
                         let _ = term.write_str(&format!("{frame} {}", style(line).dim()));
                         thread::sleep(TICK);
@@ -60,5 +64,26 @@ impl Drop for Progress {
             stop.store(true, Ordering::Relaxed);
             let _ = handle.join();
         }
+    }
+}
+
+/// `line` cut to `width` characters, ending in `...` when cut.
+fn fit(line: &str, width: usize) -> String {
+    if line.chars().count() <= width {
+        return line.to_owned();
+    }
+    let kept: String = line.chars().take(width.saturating_sub(3)).collect();
+    format!("{kept}...")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_lines_are_cut_to_fit() {
+        assert_eq!(fit("short", 10), "short");
+        assert_eq!(fit("a line far too long", 10), "a line ...");
+        assert_eq!(fit("a line far too long", 10).chars().count(), 10);
     }
 }

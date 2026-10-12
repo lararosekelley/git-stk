@@ -28,7 +28,11 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   found from review bases, so stacks not made with git-stk work too
   (`--no-stack` tours one review). The page header stays in view, the step
   sidebar can be hidden, and the page follows the system theme or a choice
-  from its toggle between Catppuccin Latte and Mocha.
+  from its toggle between Catppuccin Latte and Mocha. An agent tour (`--style
+  agentTour` or `stk.tourStyle`) has your own agent command (`stk.tourAgent`
+  or `--agent`, such as `claude -p`) plan each review into ordered, titled
+  steps, asks once per repository and command before sending anything, and
+  saves plans per head; `--plan` follows a plan written ahead of time.
 - **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
   URL as well as a branch, so `git stk view 12` opens a review whose branch is
   not checked out. A URL for another repository's review is refused rather

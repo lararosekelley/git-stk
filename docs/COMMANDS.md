@@ -201,7 +201,8 @@ git stk config
 git stk status [branch]
 git stk review [branch | number | url]
 git stk view [branch | number | url]
-git stk tour [branch | number | url] [--no-stack] [--no-open] [-o <path>]
+git stk tour [branch | number | url] [--style standard|agentTour] [--agent <command>] [--plan <file>]
+             [--refresh-plan] [--no-stack] [--no-open] [-o <path>]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
@@ -259,6 +260,18 @@ GitLab (Gitea has no way to resolve one from outside its pages), and the box at 
 comments on the review as a whole. Replies and comments are confirmed in the terminal like reviews; resolving
 posts nothing, so it is not asked about. Gitea places a reply by line, so it can only answer a thread on a
 line of the current diff.
+
+An agent tour (`--style agentTour`, or `stk.tourStyle = agentTour`) has an agent plan each review: its files
+in reading order, as titled steps. The agent is a command you give in `stk.tourAgent` or `--agent`, such as
+`claude -p` or `llm -m <model>`; it holds its own credentials, so git-stk holds none. git-stk sends it the
+review's description, commits, and diff on stdin and reads a JSON plan back, checks it against the diff (each
+file once, every file somewhere, notes only on lines the diff shows), and falls back to the file-role steps,
+with a warning, for a review it cannot plan. The first agent tour in a repository asks before sending
+anything, and records the command you agreed to as `stk.tourAgentAllowed` in that repository's config; a
+different command asks again, and without a terminal to ask at, the tour stops instead. Plans are saved per
+review head under `.git/stk/tours/plans/`, so a tour of the same commits plans nothing new; `--refresh-plan`
+asks again. `--plan <file>` follows a plan written ahead of time, by a harness for example, for the review
+asked for.
 
 The step sidebar can be hidden, and the sun/moon button switches between light and dark themes (the page
 follows the system theme until one is chosen). The tour is served from a local address only this machine

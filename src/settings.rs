@@ -36,6 +36,13 @@ pub const GITEA_HOST_KEY: &str = "stk.giteaHost";
 pub const CHECK_TIMEOUT_KEY: &str = "stk.checkTimeout";
 pub const USE_PR_TEMPLATE_KEY: &str = "stk.usePrTemplate";
 pub const WORKTREE_DIR_KEY: &str = "stk.worktreeDir";
+pub const TOUR_STYLE_KEY: &str = "stk.tourStyle";
+/// The command an agent tour is planned with, such as `claude -p`: the
+/// user's own harness, so git-stk holds no key for any model.
+pub const TOUR_AGENT_KEY: &str = "stk.tourAgent";
+/// The tour agent command the user agreed, in the repository's own config,
+/// to send this repository's reviews to; another command asks again.
+pub const TOUR_AGENT_ALLOWED_KEY: &str = "stk.tourAgentAllowed";
 pub const DEFAULT_REMOTE: &str = "origin";
 
 /// How long `merge --wait` polls a review's checks before giving up, unless
@@ -71,7 +78,34 @@ pub const SETTINGS: &[(&str, &str)] = &[
         WORKTREE_DIR_KEY,
         "a <repo>-worktrees directory beside the repo",
     ),
+    (TOUR_STYLE_KEY, "standard"),
+    (TOUR_AGENT_KEY, "none; agent tours need one"),
+    (
+        TOUR_AGENT_ALLOWED_KEY,
+        "none; the first agent tour with a command asks, and records it here",
+    ),
 ];
+
+/// How a tour lays out a review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TourStyle {
+    /// Files grouped by the role they play.
+    #[value(name = "standard")]
+    Standard,
+    /// Steps, an overview, and notes planned by the tour agent.
+    #[value(name = "agentTour")]
+    AgentTour,
+}
+
+/// The tour style `stk.tourStyle` sets, standard when unset.
+pub fn tour_style() -> Result<TourStyle> {
+    match git::config_get(TOUR_STYLE_KEY)?.as_deref().map(str::trim) {
+        None | Some("") => Ok(TourStyle::Standard),
+        Some(value) if value.eq_ignore_ascii_case("standard") => Ok(TourStyle::Standard),
+        Some(value) if value.eq_ignore_ascii_case("agentTour") => Ok(TourStyle::AgentTour),
+        Some(other) => bail!("{TOUR_STYLE_KEY} is {other:?}; it takes standard or agentTour"),
+    }
+}
 
 /// The remote used for provider detection, trunk discovery, and pushes.
 pub fn remote() -> Result<String> {

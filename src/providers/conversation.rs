@@ -76,7 +76,7 @@ pub struct Anchor {
 }
 
 /// Which side of a diff a line is on: the old file or the new one.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum Side {
     Old,
     New,

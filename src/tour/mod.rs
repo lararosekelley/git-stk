@@ -2,11 +2,14 @@
 //! step by step, for `git stk tour`.
 
 use std::cell::RefCell;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+use crate::agent::Agent;
 use crate::git;
 use crate::notes;
 use crate::progress::Progress;
@@ -16,6 +19,7 @@ use crate::settings;
 mod conversation;
 mod diff;
 mod markdown;
+pub mod plan;
 pub mod server;
 pub mod stack;
 mod steps;
@@ -67,7 +71,32 @@ struct Chapter {
     steps: Vec<Step>,
     /// The review's discussion as page data.
     conversation: Value,
+    /// The plan the review's steps follow, for an agent tour.
+    plan: Option<PlanInfo>,
 }
+
+/// Where a chapter's plan came from and what it adds beyond its steps.
+struct PlanInfo {
+    overview: String,
+    notes: Vec<plan::Note>,
+    reported: plan::Reported,
+    /// The agent command that wrote it, or None for a plan given as a file.
+    command: Option<String>,
+    /// Saved from an earlier tour of the same head rather than asked for now.
+    cached: bool,
+}
+
+/// How an agent tour gets the plans its reviews follow.
+pub struct Planner {
+    pub agent: Option<Agent>,
+    /// A plan written ahead of time for the review asked for.
+    pub plan_file: Option<String>,
+    /// Ask the agent again rather than use plans saved from before.
+    pub refresh: bool,
+}
+
+/// Changesets planned at once.
+const PLANNING_AT_ONCE: usize = 4;
 
 impl Tour {
     /// Read `stack`. A review that cannot be fetched or read, or that
@@ -77,6 +106,7 @@ impl Tour {
         kind: ProviderKind,
         provider: &dyn ReviewProvider,
         stack: Stack,
+        planner: Option<&Planner>,
         progress: &Progress,
     ) -> Result<Self> {
         let Stack {
@@ -196,6 +226,15 @@ impl Tour {
             chapter_of[index] = Some(chapters.len());
             chapters.push(chapter);
         }
+        if let Some(planner) = planner {
+            plan_chapters(
+                &mut chapters,
+                current_chapter,
+                planner,
+                progress,
+                &mut warnings,
+            );
+        }
         Ok(Self {
             chapters,
             current: current_chapter,
@@ -309,6 +348,7 @@ impl Chapter {
             commits,
             steps,
             conversation: Value::Null,
+            plan: None,
         }))
     }
 
@@ -325,19 +365,221 @@ impl Chapter {
                 "bodyHtml": markdown::to_html(&self.body),
             },
             "conversation": self.conversation,
+            "plan": self.plan.as_ref().map(|plan| json!({
+                "source": if plan.command.is_some() { "agent" } else { "file" },
+                "command": plan.command,
+                "cached": plan.cached,
+                "provider": plan.reported.provider,
+                "model": plan.reported.model,
+                "effort": plan.reported.effort,
+                "overviewHtml": markdown::to_html(&plan.overview),
+                "notes": plan.notes.iter().map(|note| json!({
+                    "path": note.path,
+                    "side": note.side.as_str(),
+                    "line": note.line,
+                    "bodyHtml": markdown::to_html(&note.body),
+                })).collect::<Vec<_>>(),
+            })),
             "baseSha": self.base_sha,
             "headSha": self.head_sha,
             "commits": self.commits.iter().map(|(sha, subject)| {
                 json!({ "sha": sha, "subject": subject })
             }).collect::<Vec<_>>(),
             "steps": self.steps.iter().map(|step| json!({
-                "id": step.kind.id(),
-                "title": step.kind.title(),
+                "id": step.id(),
+                "title": step.title(),
+                "summary": step.label.as_ref().map(|label| markdown::to_html(&label.summary)),
                 "collapsed": step.kind == steps::StepKind::Generated,
                 "files": step.files.iter().map(file_data).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         })
     }
+}
+
+/// Plan each chapter: the asked-for one from a plan file when there is one,
+/// the rest from a saved plan or the agent, asked a few at a time. A chapter
+/// whose plan cannot be had or used keeps its steps by file role.
+fn plan_chapters(
+    chapters: &mut [Chapter],
+    current: usize,
+    planner: &Planner,
+    progress: &Progress,
+    warnings: &mut Vec<String>,
+) {
+    // The answer each chapter's plan comes from, and whether it was saved.
+    let mut answers: Vec<Option<(Result<String>, bool)>> =
+        (0..chapters.len()).map(|_| None).collect();
+    if let Some(text) = &planner.plan_file {
+        answers[current] = Some((Ok(text.clone()), false));
+    }
+    let mut to_ask = Vec::new();
+    if let Some(agent) = &planner.agent {
+        for (index, chapter) in chapters.iter().enumerate() {
+            if answers[index].is_some() {
+                continue;
+            }
+            let saved = (!planner.refresh)
+                .then(|| plan_cache(chapter, agent).ok())
+                .flatten()
+                .and_then(|path| std::fs::read_to_string(path).ok());
+            match saved {
+                Some(answer) => answers[index] = Some((Ok(answer), true)),
+                None => to_ask.push(index),
+            }
+        }
+        let prompts: Vec<(usize, String)> = to_ask
+            .iter()
+            .map(|&index| (index, plan_request(chapters, index).prompt()))
+            .collect();
+        let cached = answers
+            .iter()
+            .filter(|answer| matches!(answer, Some((_, true))))
+            .count();
+        for (index, result) in ask_in_pool(agent, &prompts, cached, progress) {
+            answers[index] = Some((result, false));
+        }
+    }
+
+    for (index, answer) in answers.into_iter().enumerate() {
+        let Some((answer, cached)) = answer else {
+            continue;
+        };
+        let chapter = &mut chapters[index];
+        let from_file = index == current && planner.plan_file.is_some();
+        let source = if from_file {
+            "the plan file".to_owned()
+        } else {
+            planner
+                .agent
+                .as_ref()
+                .map_or_else(String::new, |agent| format!("`{}`", agent.display()))
+        };
+        let applied = answer.and_then(|answer| {
+            let parsed = plan::parse(&answer)?;
+            plan::check(&parsed, &chapter.steps)?;
+            let steps = std::mem::take(&mut chapter.steps);
+            Ok((plan::apply(parsed, steps), answer))
+        });
+        match applied {
+            Ok((applied, answer)) => {
+                if !from_file
+                    && !cached
+                    && let Some(agent) = &planner.agent
+                    && let Ok(path) = plan_cache(chapter, agent)
+                {
+                    let _ = path
+                        .parent()
+                        .map(std::fs::create_dir_all)
+                        .map(|_| std::fs::write(&path, &answer));
+                }
+                if !applied.corrections.is_empty() {
+                    warnings.push(format!(
+                        "the plan for {} from {source} {}; that was set right",
+                        chapter.review.id,
+                        applied.corrections.join("; ")
+                    ));
+                }
+                chapter.steps = applied.steps;
+                chapter.plan = Some(PlanInfo {
+                    overview: applied.overview,
+                    notes: applied.notes,
+                    reported: applied.reported,
+                    command: (!from_file)
+                        .then(|| planner.agent.as_ref().map(Agent::display))
+                        .flatten(),
+                    cached,
+                });
+            }
+            Err(error) => warnings.push(format!(
+                "could not plan {} with {source}, so it is toured by file role: {error:#}",
+                chapter.review.id
+            )),
+        }
+    }
+}
+
+/// Ask `agent` each of `prompts`, a few at a time: each worker takes the next
+/// as soon as it is free, so one slow changeset holds up no others. The
+/// terminal counts them off as they come back, along with the `cached`
+/// changesets whose saved plans need no asking.
+fn ask_in_pool(
+    agent: &Agent,
+    prompts: &[(usize, String)],
+    cached: usize,
+    progress: &Progress,
+) -> Vec<(usize, Result<String>)> {
+    let total = prompts.len() + cached;
+    let report = |finished: usize| {
+        let saved = if cached > 0 {
+            format!(" ({cached} cached)")
+        } else {
+            String::new()
+        };
+        progress.set(format!("agent reviews: {finished}/{total} done{saved}"));
+    };
+    if total > 0 {
+        report(cached);
+    }
+    if prompts.is_empty() {
+        return Vec::new();
+    }
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(cached);
+    let answers = Mutex::new(Vec::with_capacity(prompts.len()));
+    thread::scope(|scope| {
+        for _ in 0..PLANNING_AT_ONCE.min(prompts.len()) {
+            scope.spawn(|| {
+                loop {
+                    let taken = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((index, prompt)) = prompts.get(taken) else {
+                        break;
+                    };
+                    let answer = agent.ask(prompt);
+                    if let Ok(mut answers) = answers.lock() {
+                        answers.push((*index, answer));
+                    }
+                    report(done.fetch_add(1, Ordering::Relaxed) + 1);
+                }
+            });
+        }
+    });
+    answers.into_inner().unwrap_or_default()
+}
+
+/// What chapter `index` offers its planner.
+fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
+    let chapter = &chapters[index];
+    let mut below = Vec::new();
+    let mut parent = chapter.parent;
+    while let Some(at) = parent {
+        below.push(chapters[at].review.label());
+        parent = chapters[at].parent;
+    }
+    below.reverse();
+    plan::Request {
+        review: &chapter.review,
+        body: &chapter.body,
+        commits: &chapter.commits,
+        steps: &chapter.steps,
+        below,
+    }
+}
+
+/// Where a chapter's plan from `agent` is saved: per review, head, agent
+/// command, and the instructions and plan version it was asked with, so any
+/// of those changing asks again.
+fn plan_cache(chapter: &Chapter, agent: &Agent) -> Result<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (agent.display(), plan::VERSION, plan::INSTRUCTIONS).hash(&mut hasher);
+    let short = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
+    Ok(
+        git::git_common_path_absolute("stk/tours/plans")?.join(format!(
+            "{}-{short}-{:016x}.json",
+            chapter.review.id_value(),
+            hasher.finish()
+        )),
+    )
 }
 
 /// The results of scoped threads, in order, re-raising a panic from any.
