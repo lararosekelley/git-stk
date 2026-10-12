@@ -10,36 +10,40 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 - **tour:** `git stk tour [target]` (experimental) serves a step-by-step walk
   through a review's changes to your browser from a local, token-guarded
-  address, and stops when the last tab showing it closes (`--output` writes a
-  read-only snapshot instead). It takes a branch, review number, or URL,
-  fetches the review's head from the remote so the branch need not be checked
-  out, and groups files by role: configuration, schemas and types,
+  address, and stops when the last tab showing it closes; `--output` writes a
+  read-only snapshot instead. It takes a branch, review number, or URL, and
+  fetches the review's head from the remote, so the branch need not be checked
+  out. Files are grouped by role: configuration, schemas and types,
   implementation, tests, documentation, and collapsed generated and vendored
   files. Diffs are syntax highlighted, switch between unified and split views,
-  and can expand the unchanged lines around each hunk. The description is
-  rendered as Markdown, and the review's discussion is shown with it: review
-  outcomes and comments, threads under their lines, and outdated threads with
-  the code they were left on. Line comments can be drafted on the page and
-  submitted as one review (comment, approve, or request changes) once the
-  terminal running the tour confirms what will be posted; threads can be
-  replied to and resolved, and the review commented on, the same way. Reviewed
-  steps are remembered per head commit. A review in a stack is toured with the
-  rest of its stack, branches included, one review at a time; the stack is
-  found from review bases, so stacks not made with git-stk work too
-  (`--no-stack` tours one review). The page header stays in view, the step
-  sidebar can be hidden, and the page follows the system theme or a choice
-  from its toggle between light and dark palettes borrowed from the Callie
-  calendar, under the git-stk logo. An agent tour (`--style agentTour` or
-  `stk.tourStyle`) has your own agent command (`stk.tourAgent` or `--agent`,
-  such as `claude -p`) plan each review into explained steps with line notes,
-  given the repository's AGENTS.md, CLAUDE.md, and CONTRIBUTING.md guidance,
-  the review's discussion so far, and smaller changed files whole, shows which
-  command and model planned it, asks once per repository and command before
-  sending anything, and saves plans per head; `--plan` follows a plan written
-  ahead of time. An agent review (`--style agentReview`) adds the agent's
-  findings, each on a line with a severity (required, recommended, or
-  optional), a category, and optional replacement code, and any of them can be
-  added to your review as a drafted comment.
+  and can expand the unchanged lines around each hunk. Reviewed steps are
+  remembered per head commit. The page follows the system theme or its own
+  light/dark toggle, in palettes borrowed from the Callie calendar.
+- **tour:** the review's description is rendered as Markdown and its
+  discussion shown with it: review outcomes and comments, threads under their
+  lines, and outdated threads with the code they were left on. Line comments
+  can be drafted on the page and submitted as one review (comment, approve, or
+  request changes), threads replied to and resolved, and the review commented
+  on, each once the terminal running the tour confirms what will be posted.
+- **tour:** a review in a stack is toured with the rest of its stack, branches
+  included, one review at a time. The stack is found from review bases, so
+  stacks not made with git-stk work too; `--no-stack` tours one review.
+- **tour:** an agent tour (`--style agentTour`, or `stk.tourStyle`) has your
+  own agent command (`stk.tourAgent` or `--agent`, such as `claude -p`) plan
+  each review into explained steps with line notes. The agent gets the
+  review's description, commits, and diff, smaller changed files whole, the
+  repository's AGENTS.md, CLAUDE.md, and CONTRIBUTING.md as they stand at the
+  review's base, and the discussion so far. git-stk holds no credentials, asks
+  once per repository and command before sending anything (recorded as
+  `stk.tourAgentAllowed`), and shows which command and model planned each
+  review. Plans are checked against the diff, saved per review head and base
+  as they arrive, and reused until `--refresh-plan`; `--plan` follows a plan
+  written ahead of time.
+- **tour:** an agent review (`--style agentReview`) adds the agent's findings,
+  each on a line of the diff with a severity (required, recommended, or
+  optional), a category, and optional replacement code. Findings are listed
+  most severe first and shown on their lines, and any of them can be added to
+  your review as a drafted comment, as a suggestion on GitHub.
 - **review, view:** take a review by number (`12`, `#12`, `!12`) or by its web
   URL as well as a branch, so `git stk view 12` opens a review whose branch is
   not checked out. A URL for another repository's review is refused rather
