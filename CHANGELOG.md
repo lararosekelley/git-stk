@@ -28,7 +28,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   found from review bases, so stacks not made with git-stk work too
   (`--no-stack` tours one review). The page header stays in view, the step
   sidebar can be hidden, and the page follows the system theme or a choice
-  from its toggle between Catppuccin Latte and Mocha. An agent tour (`--style
+  from its toggle between light and dark palettes borrowed from the Callie
+  calendar, under the git-stk logo. An agent tour (`--style
   agentTour` or `stk.tourStyle`) has your own agent command (`stk.tourAgent`
   or `--agent`, such as `claude -p`) plan each review into explained steps
   with line notes, shows which command and model planned it, asks once per
