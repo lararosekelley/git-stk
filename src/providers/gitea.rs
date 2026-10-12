@@ -197,6 +197,10 @@ impl ReviewProvider for GiteaProvider {
     }
 
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {
+        Ok(list_pulls("open")?.0)
+    }
+
+    fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
         list_pulls("open")
     }
 
@@ -314,6 +318,7 @@ fn without_draft_prefix(title: &str) -> &str {
 /// match client-side.
 fn find_review(branch: &str, include_closed: bool) -> Result<Option<ReviewRequest>> {
     let mut matches: Vec<ReviewRequest> = list_pulls("all")?
+        .0
         .into_iter()
         .filter(|review| review.branch == branch)
         .collect();
@@ -346,7 +351,9 @@ fn api_pull(id_value: &str) -> Result<Value> {
 /// pagination. Uses the API passthrough rather than `tea pr list` (whose JSON
 /// is a lossy projection: no `merged`, `draft`, or nested refs), and pages so a
 /// branch's review can't fall off the first page on a busy repo.
-fn list_pulls(state: &str) -> Result<Vec<ReviewRequest>> {
+/// The pulls in `state`, and whether that is all of them rather than as many
+/// as the page bound allows.
+fn list_pulls(state: &str) -> Result<(Vec<ReviewRequest>, bool)> {
     // Gitea caps page size at 50, so request exactly that and page past it.
     const PAGE_SIZE: usize = 50;
     // Bound the walk so a misbehaving server can't loop forever.
@@ -362,10 +369,10 @@ fn list_pulls(state: &str) -> Result<Vec<ReviewRequest>> {
         let full_page = batch.len() == PAGE_SIZE;
         reviews.extend(batch);
         if !full_page {
-            break;
+            return Ok((reviews, true));
         }
     }
-    Ok(reviews)
+    Ok((reviews, false))
 }
 
 /// How long to wait for Gitea to recompute mergeability after a push before a

@@ -64,7 +64,7 @@ fn write_tour(
     // The open reviews, to find the stack in, come back while the target is
     // looked up.
     let (review, open_reviews) = thread::scope(|scope| {
-        let open_reviews = stack.then(|| scope.spawn(|| review_provider.open_reviews()));
+        let open_reviews = stack.then(|| scope.spawn(|| review_provider.all_open_reviews()));
         let review = match target {
             ReviewRef::Number(number) => review_provider.review_by_number(number),
             ReviewRef::Branch(branch) => review_provider
@@ -90,7 +90,13 @@ fn write_tour(
     let label = review.label();
     let warnings = RefCell::new(Vec::new());
     let stack = match open_reviews {
-        Some(Ok(open)) => {
+        Some(Ok((open, complete))) => {
+            if !complete {
+                warnings.borrow_mut().push(format!(
+                    "the repository has more open reviews than could be listed ({}), so the stack may be missing some",
+                    open.len()
+                ));
+            }
             let default_branch = settings::remote()
                 .ok()
                 .and_then(|remote| git::remote_default_branch(&remote));

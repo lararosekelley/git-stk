@@ -291,6 +291,36 @@ impl ReviewProvider for GitLabProvider {
         parse_gitlab_reviews(&output)
     }
 
+    fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
+        const PER_PAGE: usize = 100;
+        // Bound the walk so a misbehaving server can't loop forever.
+        const MAX_PAGES: usize = 20;
+        let per_page = PER_PAGE.to_string();
+        let mut reviews = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let page = page.to_string();
+            let batch = parse_gitlab_reviews(&command_output(
+                "glab",
+                &[
+                    "mr",
+                    "list",
+                    "--output",
+                    "json",
+                    "--per-page",
+                    &per_page,
+                    "--page",
+                    &page,
+                ],
+            )?)?;
+            let full_page = batch.len() == PER_PAGE;
+            reviews.extend(batch);
+            if !full_page {
+                return Ok((reviews, true));
+            }
+        }
+        Ok((reviews, false))
+    }
+
     fn mark_ready(&self, review: &ReviewRequest) -> Result<String> {
         command_output(
             "glab",

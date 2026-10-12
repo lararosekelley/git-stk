@@ -249,7 +249,10 @@ const STACKED: [(u32, &str, &str); 3] = [
 fn stack_fake(listed: Option<&[String]>) -> FakeProvider {
     let fake = FakeProvider::new();
     let mut fake = match listed {
-        Some(listed) => fake.on("pr list", &format!("[{}]", listed.join(","))),
+        Some(listed) => fake.on(
+            "pr list --state open --limit 2000",
+            &format!("[{}]", listed.join(",")),
+        ),
         None => fake.fail("pr list", "HTTP 502"),
     };
     for (number, branch, base) in STACKED {
@@ -500,6 +503,64 @@ fn tour_leaves_out_a_review_whose_head_cannot_be_fetched() {
 }
 
 #[test]
+fn tour_pages_through_every_open_gitlab_mr() {
+    let (repo, _origin) = repo_with_review("refs/merge-requests/34/head");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let others: Vec<String> = (100..200)
+        .map(|iid| {
+            format!(
+                r#"{{"iid":{iid},"state":"opened","target_branch":"main","source_branch":"other-{iid}","web_url":"https://gitlab.com/group/repo/-/merge_requests/{iid}"}}"#
+            )
+        })
+        .collect();
+    let fake = FakeProvider::new()
+        .log_all("calls.log")
+        .on(
+            "mr view 34 --output json",
+            r##"{"iid":34,"state":"opened","target_branch":"main","source_branch":"contrib","web_url":"https://gitlab.com/group/repo/-/merge_requests/34","title":"Add two","description":""}"##,
+        )
+        .on(
+            "mr list --output json --per-page 100 --page 1",
+            &format!("[{}]", others.join(",")),
+        )
+        .on("mr list --output json --per-page 100 --page 2", "[]")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "!34", "--no-open", "--output", "tour.html"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("warning").not());
+
+    let calls = fs::read_to_string(repo.path().join("calls.log")).unwrap();
+    assert!(
+        calls.contains("--page 2"),
+        "a full first page is followed by the next:\n{calls}"
+    );
+    assert!(!calls.contains("--page 3"), "{calls}");
+}
+
+#[test]
+fn tour_warns_when_the_open_reviews_run_past_the_listing_limit() {
+    let (repo, _origin) = stacked_prs();
+    let mut listed = stack_listing();
+    listed.extend((1000..2996).map(|number| github_pr(number, &format!("other-{number}"), "main")));
+    assert_eq!(listed.len(), 2000);
+    let fake = stack_fake(Some(&listed))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "13", "--no-open", "--output", "tour.html"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "warning: the repository has more open reviews than could be listed (2000), so the stack may be missing some",
+        ));
+}
+
+#[test]
 fn tour_does_not_stack_reviews_on_a_release_review() {
     let (repo, _origin) = stacked_prs();
     // A develop -> main release review, and a feature review into develop.
@@ -515,7 +576,10 @@ fn tour_does_not_stack_reviews_on_a_release_review() {
         github_pr(41, "feature-x", "develop"),
     ];
     let fake = FakeProvider::new()
-        .on("pr list", &format!("[{}]", listed.join(",")))
+        .on(
+            "pr list --state open --limit 2000",
+            &format!("[{}]", listed.join(",")),
+        )
         .on("pr view 41 --json body", r#"{"body":""}"#)
         .on("pr view 41 --json", &github_pr(41, "feature-x", "develop"))
         .fallback_fail("unexpected provider call")
