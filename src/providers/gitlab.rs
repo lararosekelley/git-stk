@@ -759,6 +759,18 @@ fn parse_gitlab_inbox(
 ) -> Result<Vec<(InboxList, Listing)>> {
     let value: serde_json::Value =
         serde_json::from_str(json).context("failed to parse glab inbox JSON")?;
+    let errors: Vec<&str> = value["errors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|error| error["message"].as_str())
+        .collect();
+    if !errors.is_empty() {
+        bail!(
+            "GitLab could not answer for the inbox: {}",
+            errors.join("; ")
+        );
+    }
     let project = &value["data"]["project"];
     if project.is_null() {
         bail!("GitLab did not find this project for the inbox");
@@ -1347,7 +1359,7 @@ mod tests {
                     .iter()
                     .map(|entry| entry.review.id.clone())
                     .collect(),
-                Listing::Unsupported(why) => vec![why.clone()],
+                Listing::Unsupported(why) | Listing::Failed(why) => vec![why.clone()],
             }
         };
         assert_eq!(ids(InboxList::Incoming), ["!1"]);
@@ -1360,6 +1372,20 @@ mod tests {
         assert_eq!(entries[0].unresolved, Some(2));
         assert_eq!(entries[0].checks, CheckStatus::Passing);
         assert_eq!(entries[0].decision, Decision::ReviewRequired);
+    }
+
+    #[test]
+    fn an_inbox_query_gitlab_rejects_says_why() {
+        let error = parse_gitlab_inbox(
+            r#"{"errors":[{"message":"Field 'approved' doesn't exist on type 'MergeRequest'"}]}"#,
+            &InboxList::ALL,
+            "me",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "GitLab could not answer for the inbox: Field 'approved' doesn't exist on type 'MergeRequest'"
+        );
     }
 
     #[test]
