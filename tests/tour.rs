@@ -1556,19 +1556,20 @@ fn an_agent_review_of_a_new_head_follows_up_on_the_last_one() {
 
     // A new push to the review.
     repo.git(["fetch", "-q", "origin", "refs/pull/12/head"]);
+    let first_head = repo.git(["rev-parse", "FETCH_HEAD"]).trim().to_owned();
     repo.git(["switch", "-q", "--detach", "FETCH_HEAD"]);
     repo.write("src/lib.rs", "fn one() {}\nfn two() {}\nfn three() {}\n");
     repo.git(["commit", "-qam", "add three"]);
     repo.git(["push", "-q", "-f", "origin", "HEAD:refs/pull/12/head"]);
+    let second_head = repo.git(["rev-parse", "HEAD"]).trim().to_owned();
     repo.git(["switch", "-q", "main"]);
 
+    // The finding the first review dropped, off the diff, is not followed up.
     repo.stack_faked(&fake)
         .args(["tour", "12", "--no-open", "--output", "second.html"])
         .assert()
         .success()
-        .stderr(predicates::str::contains(
-            "did not say what became of 1 earlier finding, so it is unclear",
-        ));
+        .stderr(predicates::str::contains("earlier finding").not());
     let second = tour_data(&fs::read_to_string(repo.path().join("second.html")).unwrap());
     let follow_up = &second["chapters"][0]["plan"]["followUp"];
     assert_eq!(follow_up["confidence"], 71);
@@ -1583,19 +1584,51 @@ fn an_agent_review_of_a_new_head_follows_up_on_the_last_one() {
             )
         })
         .collect();
-    assert_eq!(
-        statuses,
-        [
-            ("Name the test", "fixed"),
-            ("Unused", "open"),
-            ("Off the diff", "unclear")
-        ]
-    );
+    // In the order the first review showed them, most severe first.
+    assert_eq!(statuses, [("Unused", "fixed"), ("Name the test", "open")]);
+    assert_eq!(follow_up["head"], &first_head[..12]);
     let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
     assert_eq!(
         asked.lines().count(),
         2,
         "a new head is asked again: {asked}"
+    );
+
+    // A third head follows up on the second; going back to the second then
+    // keeps its own follow-up of the first, saved before it.
+    repo.git(["switch", "-q", "--detach", &second_head]);
+    repo.write(
+        "src/lib.rs",
+        "fn one() {}\nfn two() {}\nfn three() {}\nfn four() {}\n",
+    );
+    repo.git(["commit", "-qam", "add four"]);
+    repo.git(["push", "-q", "-f", "origin", "HEAD:refs/pull/12/head"]);
+    repo.git(["switch", "-q", "main"]);
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "third.html"])
+        .assert()
+        .success();
+    let third = tour_data(&fs::read_to_string(repo.path().join("third.html")).unwrap());
+    assert_eq!(
+        third["chapters"][0]["plan"]["followUp"]["head"],
+        &second_head[..12]
+    );
+    repo.git([
+        "push",
+        "-q",
+        "-f",
+        "origin",
+        &format!("{second_head}:refs/pull/12/head"),
+    ]);
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "again.html"])
+        .assert()
+        .success();
+    let again = tour_data(&fs::read_to_string(repo.path().join("again.html")).unwrap());
+    assert_eq!(again["chapters"][0]["plan"]["cached"], true);
+    assert_eq!(
+        again["chapters"][0]["plan"]["followUp"]["head"],
+        &first_head[..12]
     );
 }
 

@@ -101,25 +101,40 @@ pub struct PreviousFinding {
 }
 
 impl Previous {
-    /// The review `plan` gave of the head `head`; None when it reviewed
-    /// nothing.
-    pub fn from_plan(head: &str, plan: Plan) -> Option<Self> {
-        let confidence = plan
-            .assessment
-            .confidence
-            .and_then(|confidence| u8::try_from(confidence).ok())
-            .filter(|&confidence| confidence <= 100);
-        let findings: Vec<PreviousFinding> = plan
-            .findings
+    /// What a review showed, to save beside its plan: the findings that
+    /// survived checking, and its confidence.
+    pub fn shown(findings: &[Finding], assessment: Option<&Assessment>) -> Value {
+        json!({
+            "confidence": assessment.and_then(|assessment| assessment.confidence),
+            "findings": findings.iter().map(|finding| json!({
+                "path": finding.path,
+                "line": finding.line,
+                "severity": finding.severity.as_str(),
+                "title": finding.title,
+                "body": finding.body,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The review of the head `head`, from what it showed; None when it
+    /// showed nothing to follow up on.
+    pub fn from_shown(head: &str, shown: &Value) -> Option<Self> {
+        let text =
+            |finding: &Value, key: &str| finding[key].as_str().unwrap_or_default().to_owned();
+        let confidence = shown["confidence"]
+            .as_u64()
+            .and_then(|confidence| u8::try_from(confidence).ok());
+        let findings: Vec<PreviousFinding> = shown["findings"]
+            .as_array()
             .into_iter()
-            .filter(|finding| !finding.title.is_empty() || !finding.body.is_empty())
+            .flatten()
             .filter_map(|finding| {
                 Some(PreviousFinding {
-                    line: finding.line?,
-                    path: finding.path,
-                    severity: finding.severity,
-                    title: finding.title,
-                    body: finding.body,
+                    line: u32::try_from(finding["line"].as_u64()?).ok()?,
+                    path: text(finding, "path"),
+                    severity: text(finding, "severity"),
+                    title: text(finding, "title"),
+                    body: text(finding, "body"),
                 })
             })
             .collect();
@@ -1251,15 +1266,15 @@ diff --git a/Cargo.lock b/Cargo.lock
 
     #[test]
     fn a_follow_up_says_what_became_of_each_earlier_finding() {
-        let earlier = parse(
-            r#"{"steps":[],"confidence":60,"findings":[
+        let earlier: Value = serde_json::from_str(
+            r#"{"confidence":60,"findings":[
                 {"path":"src/a.rs","line":2,"severity":"required","title":"First","body":"B"},
                 {"path":"src/a.rs","line":3,"severity":"optional","title":"Second","body":"B"},
                 {"path":"src/a.rs","line":4,"severity":"optional","title":"Third","body":"B"},
                 {"path":"src/a.rs","severity":"optional","title":"No line"}]}"#,
         )
         .unwrap();
-        let previous = Previous::from_plan("abc123", earlier).unwrap();
+        let previous = Previous::from_shown("abc123", &earlier).unwrap();
         assert_eq!(previous.confidence, Some(60));
         assert_eq!(
             previous.findings.len(),
@@ -1296,8 +1311,10 @@ diff --git a/Cargo.lock b/Cargo.lock
                 "did not say what became of 1 earlier finding, so it is unclear",
             ]
         );
-        let none = parse(r#"{"steps":[],"overview":"Only a tour."}"#).unwrap();
-        assert_eq!(Previous::from_plan("abc123", none), None);
+        assert_eq!(
+            Previous::from_shown("abc123", &Previous::shown(&[], None)),
+            None
+        );
     }
 
     #[test]
