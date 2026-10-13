@@ -27,6 +27,9 @@ pub struct FileDiff {
     pub new_path: String,
     pub status: FileStatus,
     pub binary: bool,
+    /// The `index` and mode lines of the file's header: what changed when no
+    /// line did, as for a binary file or a mode change.
+    pub header: Vec<String>,
     pub hunks: Vec<Hunk>,
     /// The whole file before and after, where the tour embeds it for
     /// highlighting and context expansion.
@@ -101,6 +104,7 @@ pub fn parse(patch: &str) -> Vec<FileDiff> {
                 new_path: path,
                 status: FileStatus::Modified,
                 binary: false,
+                header: Vec::new(),
                 hunks: Vec::new(),
                 old_text: None,
                 new_text: None,
@@ -149,6 +153,11 @@ pub fn parse(patch: &str) -> Vec<FileDiff> {
             }
         } else if line.starts_with("Binary files ") || line == "GIT binary patch" {
             file.binary = true;
+        } else if line.starts_with("index ")
+            || line.starts_with("old mode ")
+            || line.starts_with("new mode ")
+        {
+            file.header.push(line.to_owned());
         }
     }
     files.extend(current);

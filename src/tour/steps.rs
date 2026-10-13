@@ -306,6 +306,7 @@ mod tests {
             new_path: path.to_owned(),
             status: FileStatus::Modified,
             binary: false,
+            header: Vec::new(),
             hunks: Vec::new(),
             old_text: None,
             new_text: None,
