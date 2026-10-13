@@ -79,6 +79,8 @@ struct Chapter {
     guidance: Vec<(String, String)>,
     /// How the review's CI stands, for an agent review.
     ci: &'static str,
+    /// The agent's review of an earlier head of this review, to follow up on.
+    previous: Option<plan::Previous>,
     /// The plan the review's steps follow, for an agent tour.
     plan: Option<PlanInfo>,
 }
@@ -89,6 +91,7 @@ struct PlanInfo {
     notes: Vec<plan::Note>,
     findings: Vec<plan::Finding>,
     assessment: Option<plan::Assessment>,
+    follow_up: Option<plan::FollowUp>,
     reported: plan::Reported,
     /// The agent command that wrote it, or None for a plan given as a file.
     command: Option<String>,
@@ -369,6 +372,7 @@ impl Chapter {
             discussion: Value::Null,
             guidance: Vec::new(),
             ci: "unknown",
+            previous: None,
             plan: None,
         }))
     }
@@ -414,6 +418,18 @@ impl Chapter {
                     "evidenceHtml": markdown::to_html(&finding.evidence),
                     "preExisting": finding.pre_existing,
                 })).collect::<Vec<_>>(),
+                "followUp": plan.follow_up.as_ref().map(|follow_up| json!({
+                    "head": follow_up.head,
+                    "confidence": follow_up.confidence,
+                    "findings": follow_up.findings.iter().map(|(finding, status, note)| json!({
+                        "path": finding.path,
+                        "line": finding.line,
+                        "severity": finding.severity,
+                        "title": finding.title,
+                        "status": status.as_str(),
+                        "note": note,
+                    })).collect::<Vec<_>>(),
+                })),
                 "assessment": plan.assessment.as_ref().map(|assessment| json!({
                     "confidence": assessment.confidence,
                     "risk": assessment.risk.map(plan::Risk::as_str),
@@ -457,18 +473,31 @@ fn plan_chapters(
     }
     let mut to_ask = Vec::new();
     if let Some(agent) = &planner.agent {
+        let mut previous: Vec<Option<plan::Previous>> = (0..chapters.len()).map(|_| None).collect();
         for (index, chapter) in chapters.iter().enumerate() {
             if answers[index].is_some() {
                 continue;
             }
-            let saved = (!planner.refresh)
+            let path = (!planner.refresh)
                 .then(|| plan_cache(chapter, agent, planner.review).ok())
-                .flatten()
-                .and_then(|path| std::fs::read_to_string(path).ok());
+                .flatten();
+            let saved = path.as_ref().and_then(|path| {
+                let answer = std::fs::read_to_string(path).ok()?;
+                let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+                Some((answer, modified))
+            });
+            // A saved plan followed up on the reviews saved before it.
+            let before = saved.as_ref().map(|(_, modified)| *modified);
             match saved {
-                Some(answer) => answers[index] = Some((Ok(answer), true)),
+                Some((answer, _)) => answers[index] = Some((Ok(answer), true)),
                 None => to_ask.push(index),
             }
+            if planner.review {
+                previous[index] = previous_review(chapter, before);
+            }
+        }
+        for (chapter, previous) in chapters.iter_mut().zip(previous) {
+            chapter.previous = previous;
         }
         if planner.review {
             // How CI stands, so the agent need not report what it checks;
@@ -552,11 +581,18 @@ fn plan_chapters(
                 parsed.findings.clear();
                 parsed.assessment = plan::RawAssessment::default();
             }
+            let statuses = std::mem::take(&mut parsed.statuses);
             let steps = std::mem::take(&mut chapter.steps);
-            Ok(plan::apply(parsed, steps))
+            let mut applied = plan::apply(parsed, steps);
+            let follow_up = chapter
+                .previous
+                .as_ref()
+                .filter(|_| planner.review && !from_file)
+                .map(|previous| plan::follow_up(previous, statuses, &mut applied.corrections));
+            Ok((applied, follow_up))
         });
         match applied {
-            Ok(applied) => {
+            Ok((applied, follow_up)) => {
                 if !applied.corrections.is_empty() {
                     warnings.push(format!(
                         "the plan for {} from {source} {}; that was set right",
@@ -570,6 +606,7 @@ fn plan_chapters(
                     notes: applied.notes,
                     findings: applied.findings,
                     assessment: applied.assessment,
+                    follow_up,
                     reported: applied.reported,
                     command: (!from_file)
                         .then(|| planner.agent.as_ref().map(Agent::display))
@@ -656,7 +693,36 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
         guidance: &chapter.guidance,
         discussion: &chapter.discussion,
         ci: chapter.ci,
+        previous: chapter.previous.as_ref(),
     }
+}
+
+/// The latest saved agent review of an earlier head of `chapter`'s review,
+/// from any agent and saved before `before` when given, for a follow-up.
+fn previous_review(
+    chapter: &Chapter,
+    before: Option<std::time::SystemTime>,
+) -> Option<plan::Previous> {
+    let dir = git::git_common_path_absolute("stk/tours/plans").ok()?;
+    let prefix = format!("{}-", chapter.review.id_value());
+    let head = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
+    let mut saved: Vec<(std::time::SystemTime, String, std::path::PathBuf)> =
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                let earlier = name.strip_prefix(&prefix)?.split('-').next()?.to_owned();
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                let in_time = before.is_none_or(|before| modified < before);
+                (earlier != head && in_time).then(|| (modified, earlier, entry.path()))
+            })
+            .collect();
+    saved.sort_by_key(|(modified, _, _)| std::cmp::Reverse(*modified));
+    saved.into_iter().find_map(|(_, earlier, path)| {
+        let plan = plan::parse(&std::fs::read_to_string(path).ok()?).ok()?;
+        plan::Previous::from_plan(&earlier, plan)
+    })
 }
 
 /// A CI rollup as the tour agent is told it.

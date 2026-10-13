@@ -266,6 +266,13 @@ header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-hei
 .risk-rationale { color: var(--fg-muted); }
 .assessment-question { margin-top: 8px; padding: 6px 12px; border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 11px; }
 .finding-evidence { margin: 2px 0 6px; font-size: 12px; }
+.confidence-delta { color: var(--fg-muted); }
+.follow-up { margin-top: 10px; font-size: 13px; }
+.follow-up > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.follow-up li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.status { font-size: 11px; font-weight: 600; border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; color: var(--fg-muted); white-space: nowrap; }
+.status-fixed { color: var(--done); border-color: var(--done); }
+.status-open { color: var(--hl-constant); border-color: var(--hl-constant); }
 .finding-evidence > summary { cursor: pointer; color: var(--fg-muted); }
 .severity.pre-existing { font-weight: 400; }
 .finding-counts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -1152,13 +1159,16 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   // The agent's overall judgment: how confident it is the changeset ships
   // without a defect, what an unfound one would cost, and any question for
   // the author.
-  function renderAssessment(assessment) {
+  function renderAssessment(assessment, followUp) {
     if (!assessment) return null;
     var parts = [];
     if (assessment.confidence !== null && assessment.confidence !== undefined) {
       var band = assessment.confidence >= 85 ? "high" : assessment.confidence >= 60 ? "medium" : "low";
+      var before = followUp && followUp.confidence !== null && followUp.confidence !== undefined ? followUp.confidence : null;
+      var delta = before === null ? null : assessment.confidence - before;
       parts.push(el("span", { class: "confidence confidence-" + band, title: "How likely the agent thinks this changeset is to reach production without a defect" }, [
         el("strong", { text: assessment.confidence }), "/100 confidence",
+        delta === null ? null : el("span", { class: "confidence-delta", text: " (" + (delta > 0 ? "+" : "") + delta + " since " + followUp.head.slice(0, 7) + ")" }),
       ]));
     }
     if (assessment.risk) {
@@ -1187,6 +1197,28 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       rows.push(el("div", { class: "assessment-question" }, box));
     }
     return el("div", { class: "assessment" }, rows);
+  }
+
+  var STATUSES = { fixed: "Fixed", open: "Still open", obsolete: "Obsolete", unclear: "Unclear" };
+
+  // What became of the findings of the agent's review of an earlier head.
+  function renderFollowUp(followUp) {
+    if (!followUp || !followUp.findings.length) return null;
+    var counts = ["fixed", "open", "obsolete", "unclear"].map(function (status) {
+      var count = followUp.findings.filter(function (finding) { return finding.status === status; }).length;
+      return count ? el("span", { class: "status status-" + status, text: count + " " + (STATUSES[status] || status).toLowerCase() }) : null;
+    });
+    return el("details", { class: "follow-up" }, [
+      el("summary", {}, [el("span", { class: "agent-mark", "aria-hidden": "true", text: "\u2728" }), el("strong", { text: "Since the review of " }), el("code", { text: followUp.head.slice(0, 7) })].concat(counts)),
+      el("ul", { class: "thread-index" }, followUp.findings.map(function (finding) {
+        return el("li", {}, [
+          el("span", { class: "status status-" + finding.status, text: STATUSES[finding.status] || finding.status }),
+          el("code", { text: finding.path + ":" + finding.line }),
+          el("span", { text: finding.title }),
+          finding.note ? el("span", { class: "thread-excerpt", text: finding.note }) : null,
+        ]);
+      })),
+    ]);
   }
 
   // The findings by severity, each linking to its file.
@@ -1223,7 +1255,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       setMarkdown(overview, plan.overviewHtml);
       overview = agentText(overview);
     }
-    return el("section", { class: "plan", "aria-label": "Tour plan" }, [overview, renderAssessment(plan.assessment), renderFindingIndex(plan), planAttribution(plan)]);
+    return el("section", { class: "plan", "aria-label": "Tour plan" }, [overview, renderAssessment(plan.assessment, plan.followUp), renderFollowUp(plan.followUp), renderFindingIndex(plan), planAttribution(plan)]);
   }
 
   function threadsOnFile(file) {

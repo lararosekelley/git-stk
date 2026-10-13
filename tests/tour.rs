@@ -1535,6 +1535,71 @@ fn an_agent_review_shows_its_findings_most_severe_first() {
 }
 
 #[test]
+fn an_agent_review_of_a_new_head_follows_up_on_the_last_one() {
+    // The same answer at both heads: its statuses only count at the second,
+    // which has an earlier review to follow up on.
+    let answer = AGENT_REVIEW.replacen(
+        r#""question""#,
+        r#""previousFindings":[{"index":0,"status":"fixed","note":"Renamed."},
+            {"index":1,"status":"open"}],"question""#,
+        1,
+    );
+    let (repo, _origin, fake) =
+        agent_tour_repo(|fake| fake.record_append("--print", "asked", &answer));
+    repo.git(["config", "stk.tourStyle", "agentReview"]);
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "first.html"])
+        .assert()
+        .success();
+    let first = tour_data(&fs::read_to_string(repo.path().join("first.html")).unwrap());
+    assert_eq!(first["chapters"][0]["plan"]["followUp"], Value::Null);
+
+    // A new push to the review.
+    repo.git(["fetch", "-q", "origin", "refs/pull/12/head"]);
+    repo.git(["switch", "-q", "--detach", "FETCH_HEAD"]);
+    repo.write("src/lib.rs", "fn one() {}\nfn two() {}\nfn three() {}\n");
+    repo.git(["commit", "-qam", "add three"]);
+    repo.git(["push", "-q", "-f", "origin", "HEAD:refs/pull/12/head"]);
+    repo.git(["switch", "-q", "main"]);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "second.html"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "did not say what became of 1 earlier finding, so it is unclear",
+        ));
+    let second = tour_data(&fs::read_to_string(repo.path().join("second.html")).unwrap());
+    let follow_up = &second["chapters"][0]["plan"]["followUp"];
+    assert_eq!(follow_up["confidence"], 71);
+    let statuses: Vec<(&str, &str)> = follow_up["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| {
+            (
+                finding["title"].as_str().unwrap(),
+                finding["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            ("Name the test", "fixed"),
+            ("Unused", "open"),
+            ("Off the diff", "unclear")
+        ]
+    );
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(
+        asked.lines().count(),
+        2,
+        "a new head is asked again: {asked}"
+    );
+}
+
+#[test]
 fn an_agent_tour_takes_its_style_from_config_and_the_flag_overrides_it() {
     let (repo, _origin, fake) = agent_tour_repo(|fake| fake.record("--print", "asked", AGENT_PLAN));
     repo.git(["config", "stk.tourStyle", "agentTour"]);

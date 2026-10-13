@@ -38,8 +38,155 @@ pub struct Plan {
     pub findings: Vec<RawFinding>,
     /// The review's overall judgment, asked for with the findings.
     pub assessment: RawAssessment,
+    /// What became of an earlier review's findings, by their index there.
+    pub statuses: Vec<RawStatus>,
     /// What the agent says it is, which git-stk cannot check.
     pub reported: Reported,
+}
+
+/// What the agent says became of one of an earlier review's findings.
+pub struct RawStatus {
+    pub index: Option<usize>,
+    pub status: String,
+    pub note: String,
+}
+
+/// What became of an earlier finding once the changeset moved on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Fixed,
+    Open,
+    /// The code it was about is gone or no longer matters.
+    Obsolete,
+    Unclear,
+}
+
+impl Status {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "fixed" => Some(Self::Fixed),
+            "open" => Some(Self::Open),
+            "obsolete" => Some(Self::Obsolete),
+            "unclear" => Some(Self::Unclear),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::Open => "open",
+            Self::Obsolete => "obsolete",
+            Self::Unclear => "unclear",
+        }
+    }
+}
+
+/// A review of an earlier head of the same changeset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Previous {
+    /// The earlier head, abbreviated.
+    pub head: String,
+    pub confidence: Option<u8>,
+    pub findings: Vec<PreviousFinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviousFinding {
+    pub path: String,
+    pub line: u32,
+    pub severity: String,
+    pub title: String,
+    pub body: String,
+}
+
+impl Previous {
+    /// The review `plan` gave of the head `head`; None when it reviewed
+    /// nothing.
+    pub fn from_plan(head: &str, plan: Plan) -> Option<Self> {
+        let confidence = plan
+            .assessment
+            .confidence
+            .and_then(|confidence| u8::try_from(confidence).ok())
+            .filter(|&confidence| confidence <= 100);
+        let findings: Vec<PreviousFinding> = plan
+            .findings
+            .into_iter()
+            .filter(|finding| !finding.title.is_empty() || !finding.body.is_empty())
+            .filter_map(|finding| {
+                Some(PreviousFinding {
+                    line: finding.line?,
+                    path: finding.path,
+                    severity: finding.severity,
+                    title: finding.title,
+                    body: finding.body,
+                })
+            })
+            .collect();
+        (confidence.is_some() || !findings.is_empty()).then(|| Self {
+            head: head.to_owned(),
+            confidence,
+            findings,
+        })
+    }
+}
+
+/// An earlier review's findings, each with what became of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowUp {
+    pub head: String,
+    pub confidence: Option<u8>,
+    pub findings: Vec<(PreviousFinding, Status, String)>,
+}
+
+/// What the agent said became of `previous`'s findings, checked. A finding
+/// it said nothing about, or gave an unknown status, is unclear.
+pub fn follow_up(
+    previous: &Previous,
+    statuses: Vec<RawStatus>,
+    corrections: &mut Vec<String>,
+) -> FollowUp {
+    let mut said: Vec<Option<(Status, String)>> = vec![None; previous.findings.len()];
+    for raw in statuses {
+        let Some(slot) = raw.index.and_then(|index| said.get_mut(index)) else {
+            corrections.push(format!(
+                "gave a status for an earlier finding that does not exist ({})",
+                raw.index
+                    .map_or_else(|| "no index".to_owned(), |index| format!("index {index}"))
+            ));
+            continue;
+        };
+        let status = Status::parse(&raw.status).unwrap_or_else(|| {
+            corrections.push(format!(
+                "gave an earlier finding the unknown status {:?}, so it is unclear",
+                raw.status
+            ));
+            Status::Unclear
+        });
+        *slot = Some((status, raw.note));
+    }
+    let unsaid = said.iter().filter(|slot| slot.is_none()).count();
+    if unsaid > 0 {
+        corrections.push(format!(
+            "did not say what became of {unsaid} earlier {}, so {} unclear",
+            if unsaid == 1 { "finding" } else { "findings" },
+            if unsaid == 1 { "it is" } else { "they are" }
+        ));
+    }
+    FollowUp {
+        head: previous.head.clone(),
+        confidence: previous.confidence,
+        findings: previous
+            .findings
+            .iter()
+            .cloned()
+            .zip(said)
+            .map(|(finding, said)| {
+                let (status, note) = said.unwrap_or((Status::Unclear, String::new()));
+                (finding, status, note)
+            })
+            .collect(),
+    }
 }
 
 /// The agent's overall judgment of a changeset, before it is checked.
@@ -340,6 +487,20 @@ pub fn parse(answer: &str) -> Result<Plan> {
         .collect();
     let agent = value.get("agent").cloned().unwrap_or_default();
     let risk = value.get("risk").cloned().unwrap_or_default();
+    let statuses = value
+        .get("previousFindings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|status| RawStatus {
+            index: status
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok()),
+            status: text(status, "status"),
+            note: text(status, "note"),
+        })
+        .collect();
     let assessment = RawAssessment {
         confidence: value.get("confidence").and_then(whole_number),
         unusable_confidence: value
@@ -356,6 +517,7 @@ pub fn parse(answer: &str) -> Result<Plan> {
         notes,
         findings,
         assessment,
+        statuses,
         reported: Reported {
             provider: text(&agent, "provider"),
             model: text(&agent, "model"),
@@ -684,6 +846,8 @@ pub struct Request<'a> {
     /// How the review's CI stands: passing, failing, pending, inconclusive,
     /// none, or unknown.
     pub ci: &'a str,
+    /// A review of an earlier head, for the agent to follow up on.
+    pub previous: Option<&'a Previous>,
 }
 
 impl Request<'_> {
@@ -745,6 +909,18 @@ impl Request<'_> {
             "guidance": self.guidance.iter().map(|(path, text)| json!({ "path": path, "text": text })).collect::<Vec<_>>(),
             "discussion": self.discussion,
             "ci": self.ci,
+            "previousReview": self.previous.map(|previous| json!({
+                "head": previous.head,
+                "confidence": previous.confidence,
+                "findings": previous.findings.iter().enumerate().map(|(index, finding)| json!({
+                    "index": index,
+                    "path": finding.path,
+                    "line": finding.line,
+                    "severity": finding.severity,
+                    "title": finding.title,
+                    "body": finding.body,
+                })).collect::<Vec<_>>(),
+            })),
             "files": files,
         });
         format!(
@@ -810,7 +986,8 @@ Review rules:
 - Give a "suggestion" only on the "new" side, and only when it is the exact replacement for those lines, with their indentation.
 - Judge the changeset against the conventions in "guidance".
 - Do not raise what an open thread in "discussion" already raises, but a comment cannot waive a real problem.
-- Report at most fifteen findings, most important first. Do not repeat what the steps and notes already say."#;
+- Report at most fifteen findings, most important first. Do not repeat what the steps and notes already say.
+- When "previousReview" is given, it is your review of an earlier head of this changeset. Check each of its findings against the current code before looking for new ones, and add "previousFindings": [{"index": 0, "status": "fixed", "note": "One sentence."}], one per earlier finding, with "status" one of "fixed", "open", "obsolete" (the code it was about is gone), or "unclear". A reply or a claim without a matching code change is not a fix. An earlier finding still open goes in "findings" again, on its current line; a new defect from an attempted fix is a new finding. Score "confidence" afresh."#;
 
 // The agent reads "changeset" for what git-stk calls a review, so its
 // instructions never ask for a review of a review.
@@ -1073,6 +1250,57 @@ diff --git a/Cargo.lock b/Cargo.lock
     }
 
     #[test]
+    fn a_follow_up_says_what_became_of_each_earlier_finding() {
+        let earlier = parse(
+            r#"{"steps":[],"confidence":60,"findings":[
+                {"path":"src/a.rs","line":2,"severity":"required","title":"First","body":"B"},
+                {"path":"src/a.rs","line":3,"severity":"optional","title":"Second","body":"B"},
+                {"path":"src/a.rs","line":4,"severity":"optional","title":"Third","body":"B"},
+                {"path":"src/a.rs","severity":"optional","title":"No line"}]}"#,
+        )
+        .unwrap();
+        let previous = Previous::from_plan("abc123", earlier).unwrap();
+        assert_eq!(previous.confidence, Some(60));
+        assert_eq!(
+            previous.findings.len(),
+            3,
+            "a finding with no line is left out"
+        );
+        let now = parse(
+            r#"{"steps":[],"previousFindings":[
+                {"index":0,"status":"fixed","note":"Guarded now."},
+                {"index":1,"status":"Maybe"},
+                {"index":7,"status":"open"}]}"#,
+        )
+        .unwrap();
+        let mut corrections = Vec::new();
+        let follow_up = follow_up(&previous, now.statuses, &mut corrections);
+        let shape: Vec<_> = follow_up
+            .findings
+            .iter()
+            .map(|(finding, status, note)| (finding.title.as_str(), *status, note.as_str()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("First", Status::Fixed, "Guarded now."),
+                ("Second", Status::Unclear, ""),
+                ("Third", Status::Unclear, ""),
+            ]
+        );
+        assert_eq!(
+            corrections,
+            [
+                "gave an earlier finding the unknown status \"Maybe\", so it is unclear",
+                "gave a status for an earlier finding that does not exist (index 7)",
+                "did not say what became of 1 earlier finding, so it is unclear",
+            ]
+        );
+        let none = parse(r#"{"steps":[],"overview":"Only a tour."}"#).unwrap();
+        assert_eq!(Previous::from_plan("abc123", none), None);
+    }
+
+    #[test]
     fn a_long_list_of_files_left_out_is_cut_short() {
         let plan = parse(r#"{"steps":[{"title":"T","files":["src/a.rs"]}]}"#).unwrap();
         let mut steps = steps_for(PATCH);
@@ -1126,6 +1354,7 @@ diff --git a/Cargo.lock b/Cargo.lock
             guidance: &[],
             discussion: &Value::Null,
             ci: "failing",
+            previous: None,
         }
         .prompt(false);
         assert!(prompt.starts_with(INSTRUCTIONS));
