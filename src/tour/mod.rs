@@ -1178,12 +1178,21 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 /// An id for a file's change: the same for the same change at any head, so
 /// marking it viewed outlasts a push that leaves it alone.
 fn patch_id(file: &FileDiff) -> String {
+    // The blob ids in an `index` line stand in for content only when no line
+    // shows it: abbreviated, they would change with the repository's size,
+    // and they change when only the base moved.
+    let header: Vec<&str> = file
+        .header
+        .iter()
+        .map(String::as_str)
+        .filter(|line| !line.starts_with("index ") || file.binary || file.hunks.is_empty())
+        .collect();
     let mut text = format!(
         "{}\0{}\0{}\0{}\0",
         file.old_path,
         file.path(),
         file.status.as_str(),
-        file.header.join("\n")
+        header.join("\n")
     );
     for hunk in &file.hunks {
         for line in &hunk.lines {
@@ -1279,6 +1288,15 @@ mod tests {
             )
         };
         assert_ne!(mode("100755"), mode("100644"));
+        // A file with lines keeps its id whatever its blob ids say.
+        let indexed = |index: &str| {
+            patch_id(
+                &diff::parse(&format!(
+                    "diff --git a/f.rs b/f.rs\nindex {index} 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+new\n"
+                ))[0],
+            )
+        };
+        assert_eq!(indexed("1111111..2222222"), indexed("33333333..44444444"));
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
     }
 
