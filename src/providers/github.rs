@@ -10,10 +10,11 @@ use super::json::{
     parse_state, required_string,
 };
 use super::{
-    Anchor, CheckStatus, Comment, Conversation, IssueState, MergeBlocker, NativeStack,
-    NativeStackLayer, ReviewAnnotation, ReviewEvent, ReviewProvider, ReviewRequest, ReviewState,
-    ReviewSummary, Side, StackPosition, Submission, Thread, Verdict, VerdictState, WaitOutcome,
-    command_output, command_output_with_input, generic_annotate, merge_with_retry,
+    Anchor, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT, InboxEntry, InboxList,
+    IssueState, Listing, MergeBlocker, NativeStack, NativeStackLayer, ReviewAnnotation,
+    ReviewEvent, ReviewProvider, ReviewRequest, ReviewState, ReviewSummary, Side, StackPosition,
+    Submission, Thread, Verdict, VerdictState, WaitOutcome, command_output,
+    command_output_with_input, generic_annotate, merge_with_retry,
 };
 use crate::settings;
 
@@ -409,6 +410,33 @@ impl ReviewProvider for GitHubProvider {
             ],
         )?;
         parse_github_reviews(&output)
+    }
+
+    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
+        let (owner, repo) = repo_owner_name_result()?;
+        let slug = format!("{owner}/{repo}");
+        // A query per list, side by side: one query searching for all of them
+        // can outlast GitHub's timeout on a busy repository.
+        std::thread::scope(|scope| {
+            let asked: Vec<_> = lists
+                .iter()
+                .map(|&list| {
+                    let query_arg = format!("query={}", inbox_query(&slug, list));
+                    scope.spawn(move || {
+                        let output = command_output("gh", &["api", "graphql", "-f", &query_arg])?;
+                        Ok((list, parse_github_inbox(&output)?))
+                    })
+                })
+                .collect();
+            asked
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        })
     }
 
     fn conversation(&self, review: &ReviewRequest) -> Result<Conversation> {
@@ -904,6 +932,81 @@ fn github_review_request(submission: &Submission) -> serde_json::Value {
 
 /// A pull request's discussion in one request. Each listing stops at 100,
 /// and the counts say whether anything was left out.
+/// The search behind each inbox list. A review requested of you both by name
+/// and through a team is only in `incoming`, and one returned to you only in
+/// `returned`.
+fn inbox_search(list: InboxList) -> &'static str {
+    match list {
+        InboxList::Incoming => "user-review-requested:@me",
+        InboxList::Team => "team-review-requested-user:@me -user-review-requested:@me",
+        InboxList::Mine => "author:@me -review:changes_requested",
+        InboxList::Returned => "author:@me review:changes_requested",
+    }
+}
+
+/// The GraphQL query searching `slug` for one list.
+fn inbox_query(slug: &str, list: InboxList) -> String {
+    format!(
+        "query {{ search(type: ISSUE, first: {FETCH_LIMIT}, query: \"repo:{slug} is:pr is:open sort:updated-desc {}\") {{ issueCount nodes {{ ...inboxReview }} }} }} fragment inboxReview on PullRequest {{ number state title url isDraft headRefName baseRefName author {{ login }} createdAt updatedAt additions deletions reviewDecision commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }} reviewThreads(first: 100) {{ nodes {{ isResolved }} }} }}",
+        inbox_search(list)
+    )
+}
+
+fn parse_github_inbox(json: &str) -> Result<Listing> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).context("failed to parse gh inbox JSON")?;
+    let search = &value["data"]["search"];
+    let entries = search["nodes"]
+        .as_array()
+        .context("gh answered the inbox search without results")?
+        .iter()
+        .map(github_inbox_entry)
+        .collect::<Result<Vec<_>>>()?;
+    let more = search["issueCount"].as_u64().unwrap_or(0) > entries.len() as u64;
+    Ok(Listing::Found { entries, more })
+}
+
+fn github_inbox_entry(node: &serde_json::Value) -> Result<InboxEntry> {
+    let number = node["number"]
+        .as_u64()
+        .context("an inbox review has no number")?;
+    let text = |key: &str| node[key].as_str().unwrap_or_default().to_owned();
+    let rollup = node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"].as_str();
+    let unresolved = node["reviewThreads"]["nodes"].as_array().map(|threads| {
+        threads
+            .iter()
+            .filter(|thread| thread["isResolved"] == false)
+            .count() as u32
+    });
+    Ok(InboxEntry {
+        review: ReviewRequest {
+            id: format!("#{number}"),
+            branch: text("headRefName"),
+            base: text("baseRefName"),
+            state: ReviewState::Open,
+            url: text("url"),
+            title: text("title"),
+            draft: node["isDraft"].as_bool().unwrap_or(false),
+        },
+        author: node["author"]["login"]
+            .as_str()
+            .unwrap_or("ghost")
+            .to_owned(),
+        created_at: text("createdAt"),
+        updated_at: text("updatedAt"),
+        additions: node["additions"].as_u64().unwrap_or(0),
+        deletions: node["deletions"].as_u64().unwrap_or(0),
+        checks: rollup_state_to_status(rollup),
+        decision: match node["reviewDecision"].as_str() {
+            Some("APPROVED") => Decision::Approved,
+            Some("CHANGES_REQUESTED") => Decision::ChangesRequested,
+            Some("REVIEW_REQUIRED") => Decision::ReviewRequired,
+            _ => Decision::None,
+        },
+        unresolved,
+    })
+}
+
 const CONVERSATION_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){\
 repository(owner:$owner,name:$name){pullRequest(number:$number){\
 comments(first:100){totalCount nodes{id author{login} body createdAt url}}\

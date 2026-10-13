@@ -10,6 +10,8 @@ use crate::providers::ReviewState;
 pub const BRANCH: Style = AnsiColor::Cyan.on_default();
 /// The branch you are standing on.
 pub const CURRENT: Style = AnsiColor::Green.on_default().bold();
+/// Section headings, such as `inbox`'s lists.
+pub const HEADING: Style = Style::new().bold();
 /// Secondary detail: URLs, the trunk tag, counts.
 pub const DIM: Style = Style::new().dimmed();
 /// The `hint:` prefix.

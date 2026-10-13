@@ -55,6 +55,7 @@ pub enum Command {
     Review(commands::review::Review),
     View(commands::view::View),
     Tour(commands::tour::Tour),
+    Inbox(commands::inbox::Inbox),
     Comment(commands::comment::Comment),
     Sync(commands::sync::Sync),
     Merge(commands::merge::Merge),

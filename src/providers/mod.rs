@@ -45,6 +45,7 @@ mod demo;
 mod gitea;
 mod github;
 mod gitlab;
+mod inbox;
 mod json;
 mod review_ref;
 
@@ -56,6 +57,7 @@ use demo::DemoProvider;
 use gitea::GiteaProvider;
 use github::GitHubProvider;
 use gitlab::GitLabProvider;
+pub use inbox::{Decision, FETCH_LIMIT, InboxEntry, InboxList, Listing, age, epoch_seconds};
 pub use review_ref::ReviewRef;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -692,6 +694,18 @@ pub trait ReviewProvider: Sync {
     /// queue would merge that review into the layer below it.
     fn base_has_merge_queue(&self, _branch: &str) -> Result<bool> {
         Ok(false)
+    }
+
+    /// Each of `lists` for this repository, in the order asked, with up to
+    /// [`FETCH_LIMIT`] reviews each, for `inbox`.
+    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
+        Ok(lists
+            .iter()
+            .map(|&list| {
+                let why = "this forge has no review lists in git-stk".to_owned();
+                (list, Listing::Unsupported(why))
+            })
+            .collect())
     }
 }
 

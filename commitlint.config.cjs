@@ -40,6 +40,7 @@ module.exports = {
         "run",
         "absorb",
         "tour",
+        "inbox",
         "security",
         "list",
         "linux",
