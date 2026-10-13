@@ -91,6 +91,12 @@ fn render(
                 format!("  {}", style::dim(&why)),
             ];
         }
+        Listing::Failed(why) => {
+            return vec![
+                style::paint(style::HEADING, list.title()),
+                format!("  {}", style::warn(&format!("could not list these: {why}"))),
+            ];
+        }
     };
     let found = entries.len();
     let count = if more {

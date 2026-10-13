@@ -423,19 +423,21 @@ impl ReviewProvider for GitHubProvider {
                 .map(|&list| {
                     let query_arg = format!("query={}", inbox_query(&slug, list));
                     scope.spawn(move || {
-                        let output = command_output("gh", &["api", "graphql", "-f", &query_arg])?;
-                        Ok((list, parse_github_inbox(&output)?))
+                        let listing = command_output("gh", &["api", "graphql", "-f", &query_arg])
+                            .and_then(|output| parse_github_inbox(&output))
+                            .unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
+                        (list, listing)
                     })
                 })
                 .collect();
-            asked
+            Ok(asked
                 .into_iter()
                 .map(|handle| {
                     handle
                         .join()
                         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
                 })
-                .collect()
+                .collect())
         })
     }
 

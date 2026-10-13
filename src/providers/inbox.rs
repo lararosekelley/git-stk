@@ -76,6 +76,9 @@ pub enum Listing {
     },
     /// The forge has no such list, and why.
     Unsupported(String),
+    /// The forge could not answer for this list, and why; the others may
+    /// still have answered.
+    Failed(String),
 }
 
 /// Seconds since the Unix epoch for an RFC 3339 timestamp such as
