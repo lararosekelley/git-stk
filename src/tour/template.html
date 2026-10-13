@@ -205,6 +205,23 @@ main > header {
 header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.25; margin: 0; overflow-wrap: anywhere; flex: 1; }
 .icon-button { padding: 5px; line-height: 0; color: var(--fg-muted); }
 .icon-button:hover { color: var(--fg); }
+.icon-button[aria-pressed="true"] { color: var(--accent-fg); }
+.vi-settings {
+  position: fixed; top: 16px; right: 16px; z-index: 11; width: min(380px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 14px; padding: 16px; box-shadow: 0 10px 30px var(--shadow);
+}
+.vi-settings h2 { font-size: 16px; margin: 0 0 8px; }
+.vi-row { display: flex; align-items: center; gap: 6px; margin: 6px 0; font-size: 13px; }
+.vi-row input[type="number"] { width: 80px; }
+.vi-note { font-size: 12px; color: var(--fg-muted); margin: -2px 0 6px; }
+.vi-row select, .vi-row input[type="number"] { font: inherit; color: var(--fg); background: var(--bg-soft); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
+.vi-keys { border-collapse: collapse; font-size: 13px; margin: 2px 0 8px; }
+.vi-keys td { padding: 2px 10px 2px 0; }
+kbd { font-family: var(--font-code); font-size: 12px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--bg-soft); }
+.vi-hints {
+  position: fixed; bottom: 16px; right: 16px; z-index: 11; background: var(--bg); border: 1px solid var(--accent-edge); border-radius: 11px;
+  padding: 10px 14px; font-size: 13px; box-shadow: 0 10px 30px var(--shadow); display: grid; gap: 2px;
+}
 .nav-toggle { margin-top: 4px; }
 .meta { color: var(--fg-muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
 .state { border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; font-size: 12px; }
@@ -448,6 +465,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
     moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+    keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   };
   var layout = readStorage(layoutKey, "unified") === "split" ? "split" : "unified";
   // One review of the stack is shown at a time.
@@ -1721,6 +1739,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     var top = el("div", { class: "header-top" }, [
       navButton(),
       el("h1", { text: review.title || review.id }),
+      viButton(),
       themeButton(),
     ]);
     return el("header", { id: "c" + chapterIndex }, [top, meta, toolbar]);
@@ -2000,6 +2019,256 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       else window.scrollTo(0, 0);
     }
   }
+
+  // Vi mode: j/k to scroll, gg/G for the ends, ]/[ between files, }/{ between
+  // steps, and a leader key, then a letter, for the rest. Off until turned on
+  // in its popup, where the leader and how long it waits are chosen too.
+  var viKey = "git-stk-tour:vi";
+  var LEADERS = { ",": "Comma", " ": "Space", "\\": "Backslash", ";": "Semicolon" };
+  var LEADER_COMMANDS = [
+    ["n", "next review in the stack"],
+    ["p", "previous review in the stack"],
+    ["1-9", "step by number"],
+    ["r", "mark this step reviewed"],
+    ["v", "mark this file viewed"],
+    ["o", "open or fold this file"],
+    ["s", "split or unified view"],
+    ["t", "light or dark theme"],
+    ["b", "show or hide the sidebar"],
+    ["c", "the review panel"],
+  ];
+  var MOTIONS = [
+    ["j / k", "scroll down / up"],
+    ["gg / G", "top / bottom"],
+    ["] / [", "next / previous file"],
+    ["} / {", "next / previous step"],
+    ["?", "this popup"],
+    ["Esc", "cancel"],
+  ];
+  var vi = (function () {
+    var stored = readStorage(viKey, {});
+    return {
+      enabled: stored.enabled === true,
+      leader: Object.prototype.hasOwnProperty.call(LEADERS, stored.leader) ? stored.leader : ",",
+      timeout: typeof stored.timeout === "number" && stored.timeout >= 0 ? stored.timeout : 2000,
+    };
+  })();
+  var leaderPending = false;
+  var leaderTimer = null;
+  var gPending = false;
+  var gTimer = null;
+
+  function saveVi() {
+    writeStorage(viKey, vi);
+    var button = document.getElementById("vi-button");
+    if (button) button.setAttribute("aria-pressed", String(vi.enabled));
+  }
+
+  function viButton() {
+    var button = iconButton("keyboard", toggleViSettings);
+    button.id = "vi-button";
+    button.title = "Vi mode";
+    button.setAttribute("aria-label", "Vi mode settings");
+    button.setAttribute("aria-pressed", String(vi.enabled));
+    return button;
+  }
+
+  function toggleViSettings() {
+    if (document.getElementById("vi-settings")) { closeViSettings(); return; }
+    var enabled = el("input", { type: "checkbox" });
+    enabled.checked = vi.enabled;
+    enabled.addEventListener("change", function () {
+      vi.enabled = enabled.checked;
+      if (!vi.enabled) cancelLeader();
+      saveVi();
+    });
+    var leader = el("select", { "aria-label": "Leader key" }, Object.keys(LEADERS).map(function (key) {
+      var option = el("option", { value: key, text: LEADERS[key] });
+      option.selected = key === vi.leader;
+      return option;
+    }));
+    leader.addEventListener("change", function () { vi.leader = leader.value; saveVi(); });
+    var timeout = el("input", { type: "number", min: "0", step: "100", value: String(vi.timeout), "aria-label": "Leader timeout in milliseconds" });
+    timeout.addEventListener("change", function () {
+      var value = parseInt(timeout.value, 10);
+      if (!isNaN(value) && value >= 0) { vi.timeout = value; saveVi(); }
+      else timeout.value = String(vi.timeout);
+    });
+    function keys(rows) {
+      return el("table", { class: "vi-keys" }, [el("tbody", {}, rows.map(function (row) {
+        return el("tr", {}, [el("td", {}, [el("kbd", { text: row[0] })]), el("td", { text: row[1] })]);
+      }))]);
+    }
+    var close = el("button", { type: "button", text: "Close" });
+    var panel = el("div", { id: "vi-settings", class: "vi-settings", role: "dialog", "aria-label": "Vi mode" }, [
+      el("h2", { text: "Vi mode" }),
+      el("label", { class: "vi-row" }, [enabled, " Use vi keys on this page"]),
+      el("label", { class: "vi-row" }, ["Leader ", leader]),
+      el("label", { class: "vi-row" }, ["Leader timeout ", timeout, " ms"]),
+      el("div", { class: "vi-note", text: "0 waits for the next key however long it takes." }),
+      el("div", { class: "note-label", text: "Keys" }),
+      keys(MOTIONS),
+      el("div", { class: "note-label", text: "After the leader" }),
+      keys(LEADER_COMMANDS),
+      el("div", { class: "editor-actions" }, [close]),
+    ]);
+    close.addEventListener("click", closeViSettings);
+    document.body.appendChild(panel);
+  }
+
+  function cancelLeader() {
+    leaderPending = false;
+    if (leaderTimer) clearTimeout(leaderTimer);
+    leaderTimer = null;
+    var hints = document.getElementById("vi-hints");
+    if (hints) hints.remove();
+  }
+
+  function startLeader() {
+    leaderPending = true;
+    document.body.appendChild(el("div", { id: "vi-hints", class: "vi-hints", role: "status" },
+      LEADER_COMMANDS.map(function (row) {
+        return el("div", {}, [el("kbd", { text: row[0] }), " " + row[1]]);
+      })));
+    if (vi.timeout > 0) leaderTimer = setTimeout(cancelLeader, vi.timeout);
+  }
+
+  function scrollBehavior() {
+    return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  }
+
+  // Where the pinned header ends, the line the reader is reading at.
+  function readingLine() {
+    return (parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--header-height")) || 0) + 24;
+  }
+
+  // The last element of `selector` whose top has passed the reading line, or
+  // null before the first.
+  function passedOf(selector) {
+    var line = readingLine();
+    var passed = Array.prototype.filter.call(main.querySelectorAll(selector), function (node) {
+      return node.getBoundingClientRect().top <= line;
+    });
+    return passed.length ? passed[passed.length - 1] : null;
+  }
+
+  // The element of `selector` the reader is at, the first until one passes.
+  function currentOf(selector) {
+    return passedOf(selector) || main.querySelector(selector);
+  }
+
+  function jump(selector, forward) {
+    var all = Array.prototype.slice.call(main.querySelectorAll(selector));
+    var current = passedOf(selector);
+    var index = all.indexOf(current);
+    var line = readingLine();
+    // Going back from partway into an element lands on its own start first.
+    var target = forward ? all[index + 1]
+      : current && current.getBoundingClientRect().top < line - 30 ? current : all[index - 1];
+    if (target) target.scrollIntoView({ behavior: scrollBehavior() });
+  }
+
+  function currentStep() {
+    var section = currentOf("section.step");
+    if (!section) return null;
+    return chapter.steps.filter(function (step, index) { return stepAnchor(index) === section.id; })[0] || null;
+  }
+
+  function currentFileView() {
+    var details = currentOf("details.file");
+    return views.filter(function (view) { return view.details === details; })[0] || null;
+  }
+
+  function runLeader(key) {
+    var step;
+    var view;
+    if (key === "n" || key === "p") {
+      var next = chapterIndex + (key === "n" ? 1 : -1);
+      if (next >= 0 && next < data.chapters.length) location.hash = "#c" + next;
+    } else if (/^[1-9]$/.test(key)) {
+      var index = Number(key) - 1;
+      if (index < chapter.steps.length) location.hash = "#" + stepAnchor(index);
+    } else if (key === "r" && (step = currentStep())) {
+      setViewed(step.files, !stepReviewed(step));
+    } else if (key === "v" && (view = currentFileView())) {
+      setViewed([view.file], !viewed[view.file.patchId]);
+    } else if (key === "o" && (view = currentFileView())) {
+      view.details.open = !view.details.open;
+    } else if (key === "s") {
+      setLayout(layout === "split" ? "unified" : "split");
+    } else if (key === "t") {
+      var themeToggle = document.getElementById("theme-button");
+      if (themeToggle) themeToggle.click();
+    } else if (key === "b") {
+      var sidebar = document.querySelector(".nav-toggle");
+      if (sidebar) sidebar.click();
+    } else if (key === "c" && data.served) {
+      if (!document.getElementById("review-panel")) openReview();
+    }
+  }
+
+  // Whether keys go into a field rather than to vi; a checkbox or a button
+  // takes no text.
+  function typing(target) {
+    if (!target) return false;
+    if (target.tagName === "INPUT") return !/^(checkbox|radio|button|submit|reset)$/.test(target.type);
+    return target.isContentEditable || /^(TEXTAREA|SELECT)$/.test(target.tagName);
+  }
+
+  function closeViSettings() {
+    var settings = document.getElementById("vi-settings");
+    if (!settings) return;
+    settings.remove();
+    var button = document.getElementById("vi-button");
+    if (button) button.focus();
+  }
+
+  document.addEventListener("keydown", function (event) {
+    var key = event.key;
+    if (key === "Escape") {
+      cancelLeader();
+      closeViSettings();
+      return;
+    }
+    if (!vi.enabled || event.ctrlKey || event.metaKey || event.altKey || typing(event.target)) return;
+    if (/^(Shift|Control|Alt|Meta|CapsLock)$/.test(key)) return;
+    if (leaderPending) {
+      event.preventDefault();
+      cancelLeader();
+      runLeader(key);
+      return;
+    }
+    if (key === vi.leader) {
+      event.preventDefault();
+      startLeader();
+      return;
+    }
+    var handled = true;
+    if (key === "j" || key === "k") {
+      window.scrollBy({ top: (key === "j" ? 1 : -1) * window.innerHeight * 0.4, behavior: scrollBehavior() });
+    } else if (key === "G") {
+      gPending = false;
+      window.scrollTo({ top: document.body.scrollHeight, behavior: scrollBehavior() });
+    } else if (key === "g") {
+      if (gPending) {
+        gPending = false;
+        window.scrollTo({ top: 0, behavior: scrollBehavior() });
+      } else {
+        gPending = true;
+        if (gTimer) clearTimeout(gTimer);
+        gTimer = setTimeout(function () { gPending = false; }, 500);
+      }
+    } else if (key === "]" || key === "[") {
+      jump("details.file", key === "]");
+    } else if (key === "}" || key === "{") {
+      jump("section.step", key === "}");
+    } else if (key === "?") {
+      toggleViSettings();
+    } else {
+      handled = false;
+    }
+    if (handled) event.preventDefault();
+  });
 
   // While the page is open, the tour server stays up; it stops once the last
   // tab closes or stops checking in.

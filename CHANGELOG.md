@@ -33,6 +33,12 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   reviewed once its files are. An agent's finding on a line with an open
   thread is marked as also raised there, and findings can be dismissed and
   restored.
+- **tour:** Vi mode, from the keyboard button beside the theme toggle: `j`
+  and `k` scroll, `gg` and `G` jump to the ends, `]`/`[` move between files
+  and `}`/`{` between steps, and a leader key (comma, space, backslash, or
+  semicolon, with a timeout you set) then a letter moves along the stack,
+  jumps to a step, marks a step reviewed or a file viewed, or switches the
+  view, theme, or sidebar.
 
 ### Fixed
 
