@@ -203,6 +203,7 @@ git stk review [branch | number | url]
 git stk view [branch | number | url]
 git stk tour [branch | number | url] [--style standard|agentTour|agentReview] [--agent <command>] [--plan <file>]
              [--refresh-plan] [--no-stack] [--no-open] [-o <path>]
+git stk inbox [--filter incoming,returned,team,mine] [--limit <n>] [--sort updated|created|size]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
@@ -294,6 +295,14 @@ follows the system theme until one is chosen). The tour is served from a local a
 can reach, behind a token generated for each run, and opened in your browser (`--no-open` just prints the
 address). It refreshes the discussion on request, and stops when the last tab showing it closes, or on
 Ctrl-C. `--output` instead writes a read-only snapshot of the page to a file and exits.
+
+`inbox` lists the reviews in this repository that wait on you, in four lists: requested of you by name
+(`incoming`), yours with changes requested (`returned`), requested of a team you are on and not of you by name
+(`team`), and the rest of yours (`mine`). Each review shows its CI status, number, title, size, author, last
+update, approval or requested changes, open threads, and whether it is a draft. `--filter` takes a
+comma-separated subset of the lists, `--limit` how many reviews each shows (default 10), and `--sort` their
+order: most recently `updated` (the default), most recently `created`, or largest `size` first. Up to 50
+reviews are fetched per list.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider
 CLI - handy for a review bot that answers a mention: `git stk comment "@claude review"`.

@@ -226,6 +226,7 @@ git stk submit [--stack]     # open or update a review per branch, parent-first
 git stk review [target]      # print a review: branch, 12, #12, or its URL
 git stk view [target]        # open it in your browser
 git stk tour [target]        # walk through a review's changes step by step
+git stk inbox                # reviews requested of you or your teams, and yours
 git stk comment <message>    # comment on the current branch's review
 git stk sync                 # refresh metadata, clean up landed branches, restack
 git stk merge [--all]        # land the bottom review (or the whole stack), then sync

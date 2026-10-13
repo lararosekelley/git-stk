@@ -10,8 +10,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::{
-    Conversation, MergeBlocker, ReviewProvider, ReviewRequest, ReviewState, Submission, Thread,
-    WaitOutcome, command_output,
+    CheckStatus, Conversation, Decision, InboxEntry, InboxList, Listing, MergeBlocker,
+    ReviewProvider, ReviewRequest, ReviewState, Submission, Thread, WaitOutcome, command_output,
 };
 use crate::git;
 
@@ -166,6 +166,42 @@ impl ReviewProvider for DemoProvider {
     fn wait_for_checks(&self, _review: &ReviewRequest) -> Result<WaitOutcome> {
         // The demo has no CI; checks are always green.
         Ok(WaitOutcome::Passed)
+    }
+
+    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
+        // Every demo review is yours, and nobody else reviews them.
+        let mut mine = self
+            .open_reviews()?
+            .into_iter()
+            .map(|review| InboxEntry {
+                review,
+                author: "you".to_owned(),
+                created_at: String::new(),
+                updated_at: String::new(),
+                additions: 0,
+                deletions: 0,
+                checks: CheckStatus::None,
+                decision: Decision::ReviewRequired,
+                unresolved: Some(0),
+            })
+            .collect::<Vec<_>>();
+        Ok(lists
+            .iter()
+            .map(move |&list| {
+                let entries = if list == InboxList::Mine {
+                    std::mem::take(&mut mine)
+                } else {
+                    Vec::new()
+                };
+                (
+                    list,
+                    Listing::Found {
+                        entries,
+                        more: false,
+                    },
+                )
+            })
+            .collect())
     }
 
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {

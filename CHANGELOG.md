@@ -4,6 +4,18 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.15.0
+
+### Added
+
+- **inbox:** `git stk inbox` lists the reviews in this repository that wait
+  on you: requested of you, returned to you with changes requested, requested
+  of a team you are on, and your own. Each shows its CI status, size, author,
+  age, approval or requested changes, open threads, and draft state.
+  `--filter` picks lists (`incoming`, `returned`, `team`, `mine`), `--limit`
+  how many each shows (default 10), and `--sort` their order (`updated`,
+  `created`, or `size`).
+
 ## 0.14.0
 
 ### Added
