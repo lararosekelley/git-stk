@@ -742,8 +742,7 @@ impl ReviewProvider for GitLabProvider {
     }
 }
 
-/// Whether a title already carries a draft marker, in either spelling, so a
-/// retitle does not double up the prefix.
+/// The fields each inbox merge request is asked for.
 const GITLAB_INBOX_FRAGMENT: &str = "fragment inboxReview on MergeRequest { iid title webUrl draft sourceBranch targetBranch createdAt updatedAt author { username } diffStatsSummary { additions deletions } headPipeline { status } approved resolvableDiscussionsCount resolvedDiscussionsCount reviewers { nodes { username mergeRequestInteraction { reviewState } } } }";
 
 /// Review states that mean the reviewer has had their say, until the review
@@ -886,6 +885,8 @@ fn gitlab_inbox_entry(node: &serde_json::Value) -> Result<InboxEntry> {
     })
 }
 
+/// Whether a title already carries a draft marker, in either spelling, so a
+/// retitle does not double up the prefix.
 fn is_draft_title(title: &str) -> bool {
     let lowered = title.trim_start().to_ascii_lowercase();
     lowered.starts_with("draft:") || lowered.starts_with("wip:")
