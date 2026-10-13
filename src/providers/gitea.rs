@@ -299,41 +299,61 @@ impl ReviewProvider for GiteaProvider {
         };
         let (pulls, complete) = open_pull_values()?;
         let slug = repo_slug()?;
-        lists
+        // The pulls in `list`, up to the fetch limit, each with its reviews.
+        let reviewed = |list: InboxList| -> Result<(Vec<(&Value, Value)>, bool)> {
+            let mut chosen: Vec<&Value> = pulls
+                .iter()
+                .filter(|pull| in_gitea_list(pull, list, &me, &teams))
+                .collect();
+            let more = chosen.len() > FETCH_LIMIT || !complete;
+            chosen.truncate(FETCH_LIMIT);
+            let reviews = gitea_reviews_of(&slug, &chosen)?;
+            Ok((chosen.into_iter().zip(reviews).collect(), more))
+        };
+        // Returned and mine hold the same pulls, told apart by their reviews,
+        // so those are read once for both.
+        let authored = (lists.contains(&InboxList::Mine) || lists.contains(&InboxList::Returned))
+            .then(|| reviewed(InboxList::Mine).map_err(|error| format!("{error:#}")));
+        let listing = |list: InboxList| -> Result<Listing> {
+            let asked;
+            let (found, more): (&[(&Value, Value)], bool) = match (list, &authored) {
+                (InboxList::Mine | InboxList::Returned, Some(Ok((found, more)))) => {
+                    (found.as_slice(), *more)
+                }
+                (InboxList::Mine | InboxList::Returned, Some(Err(why))) => bail!("{why}"),
+                _ => {
+                    asked = reviewed(list)?;
+                    (asked.0.as_slice(), asked.1)
+                }
+            };
+            let kept: Vec<&(&Value, Value)> = found
+                .iter()
+                .filter(|(_, reviews)| match list {
+                    InboxList::Returned => latest_decision(reviews) == Decision::ChangesRequested,
+                    InboxList::Mine => latest_decision(reviews) != Decision::ChangesRequested,
+                    InboxList::Incoming | InboxList::Team => true,
+                })
+                .collect();
+            let statuses = gitea_statuses(&slug, kept.iter().map(|(pull, _)| *pull))?;
+            let entries = kept
+                .into_iter()
+                .zip(statuses)
+                .map(|((pull, reviews), checks)| {
+                    let mut entry = gitea_inbox_entry(pull, reviews);
+                    entry.checks = checks;
+                    entry
+                })
+                .collect();
+            Ok(Listing::Found { entries, more })
+        };
+        Ok(lists
             .iter()
             .map(|&list| {
-                let mut chosen: Vec<&Value> = pulls
-                    .iter()
-                    .filter(|pull| in_gitea_list(pull, list, &me, &teams))
-                    .collect();
-                let more = chosen.len() > FETCH_LIMIT || !complete;
-                chosen.truncate(FETCH_LIMIT);
-                // Your own pulls split on their reviews, so fetch those first.
-                let reviews = gitea_reviews_of(&slug, &chosen)?;
-                let entries: Vec<(InboxEntry, &Value)> = chosen
-                    .drain(..)
-                    .zip(reviews)
-                    .filter(|(_, reviews)| match list {
-                        InboxList::Returned => {
-                            latest_decision(reviews) == Decision::ChangesRequested
-                        }
-                        InboxList::Mine => latest_decision(reviews) != Decision::ChangesRequested,
-                        InboxList::Incoming | InboxList::Team => true,
-                    })
-                    .map(|(pull, reviews)| (gitea_inbox_entry(pull, &reviews), pull))
-                    .collect();
-                let statuses = gitea_statuses(&slug, entries.iter().map(|(_, pull)| *pull))?;
-                let entries = entries
-                    .into_iter()
-                    .zip(statuses)
-                    .map(|((mut entry, _), checks)| {
-                        entry.checks = checks;
-                        entry
-                    })
-                    .collect();
-                Ok((list, Listing::Found { entries, more }))
+                let found =
+                    listing(list).unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
+                (list, found)
             })
-            .collect()
+            .collect())
     }
 
     fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
@@ -614,12 +634,6 @@ fn api_pull(id_value: &str) -> Result<Value> {
         .context("failed to parse gitea pull JSON")
 }
 
-/// Every PR in `state` (open|closed|all) as ReviewRequests, following
-/// pagination. Uses the API passthrough rather than `tea pr list` (whose JSON
-/// is a lossy projection: no `merged`, `draft`, or nested refs), and pages so a
-/// branch's review can't fall off the first page on a busy repo.
-/// The pulls in `state`, and whether that is all of them rather than as many
-/// as the page bound allows.
 /// Gitea answers per pull, so the inbox's per-pull calls go this many at once.
 const INBOX_CALLS_AT_ONCE: usize = 8;
 
@@ -784,6 +798,12 @@ fn gitea_inbox_entry(pull: &Value, reviews: &Value) -> InboxEntry {
     }
 }
 
+/// Every PR in `state` (open|closed|all) as ReviewRequests, following
+/// pagination. Uses the API passthrough rather than `tea pr list` (whose JSON
+/// is a lossy projection: no `merged`, `draft`, or nested refs), and pages so a
+/// branch's review can't fall off the first page on a busy repo.
+/// The pulls in `state`, and whether that is all of them rather than as many
+/// as the page bound allows.
 fn list_pulls(state: &str) -> Result<(Vec<ReviewRequest>, bool)> {
     // Gitea caps page size at 50, so request exactly that and page past it.
     const PAGE_SIZE: usize = 50;
