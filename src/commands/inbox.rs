@@ -34,17 +34,9 @@ enum InboxSort {
     Size,
 }
 
-/// The lists in the order they are shown: what waits on you first.
-const SHOWN: [InboxList; 4] = [
-    InboxList::Incoming,
-    InboxList::Returned,
-    InboxList::Team,
-    InboxList::Mine,
-];
-
 impl Run for Inbox {
     fn run(self) -> Result<()> {
-        let lists: Vec<InboxList> = SHOWN
+        let lists: Vec<InboxList> = InboxList::ALL
             .into_iter()
             .filter(|list| self.filter.is_empty() || self.filter.contains(list))
             .collect();
