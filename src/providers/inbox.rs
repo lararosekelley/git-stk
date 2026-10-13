@@ -7,7 +7,7 @@ use super::{CheckStatus, ReviewRequest};
 pub const FETCH_LIMIT: usize = 50;
 
 /// One of the inbox's lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum InboxList {
     /// Reviews requested of you by name.
     Incoming,
@@ -20,16 +20,8 @@ pub enum InboxList {
 }
 
 impl InboxList {
-    pub const ALL: [Self; 4] = [Self::Incoming, Self::Team, Self::Mine, Self::Returned];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Incoming => "incoming",
-            Self::Team => "team",
-            Self::Mine => "mine",
-            Self::Returned => "returned",
-        }
-    }
+    /// Every list, in the order shown: what waits on you first.
+    pub const ALL: [Self; 4] = [Self::Incoming, Self::Returned, Self::Team, Self::Mine];
 
     pub fn title(self) -> &'static str {
         match self {
