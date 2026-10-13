@@ -247,12 +247,18 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
         )
     };
     let pulls = format!(
-        "[{},{},{},{}]",
+        "[{},{},{},{},{}]",
         pull(1, "ann", r#"{"login":"me"}"#, ""),
         pull(2, "bo", "", r#"{"id":7}"#),
         // Gitea leaves the line counts out of its listing.
         pull(3, "me", "", "").replace(r#""additions":7,"deletions":1,"#, ""),
         pull(4, "me", r#"{"login":"ann"}"#, ""),
+        pull(5, "me", r#"{"login":"bo"}"#, ""),
+    );
+    // Pull 5's latest verdict is on the second page of its reviews.
+    let approvals = format!(
+        "[{}]",
+        vec![r#"{"user":{"login":"bo"},"state":"APPROVED","dismissed":false}"#; 50].join(",")
     );
     let fake = FakeProvider::new()
         .commands(&["tea"])
@@ -263,6 +269,11 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
             "pulls/4/reviews",
             r#"[{"user":{"login":"ann"},"state":"REQUEST_CHANGES","dismissed":false}]"#,
         )
+        .on(
+            "pulls/5/reviews?limit=50&page=2",
+            r#"[{"user":{"login":"bo"},"state":"REQUEST_CHANGES","dismissed":false}]"#,
+        )
+        .on("pulls/5/reviews?limit=50&page=1", &approvals)
         .on("/reviews", "[]")
         .on("api repos/o/r/pulls/3", r#"{"additions":40,"deletions":9}"#)
         .on(
@@ -279,7 +290,9 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
         .assert()
         .success()
         .stdout(contains("Requested of you (1)\n  🔴 #1 Pull 1"))
-        .stdout(contains("Returned to you (1)\n  🟢 #4 Pull 4"))
+        .stdout(contains("Returned to you (2)"))
+        .stdout(contains("#4 Pull 4"))
+        .stdout(contains("#5 Pull 5"))
         .stdout(contains("changes requested"))
         .stdout(contains("Requested of your teams (1)\n  🟢 #2 Pull 2"))
         .stdout(contains("Yours (1)\n  🟢 #3 Pull 3  +40/-9"));
