@@ -303,7 +303,8 @@ update, approval or requested changes, open threads, and whether it is a draft. 
 comma-separated subset of the lists, `--limit` how many reviews each shows (default 10), and `--sort` their
 order: most recently `updated` (the default), most recently `created`, or largest `size` first. Up to 50
 reviews are fetched per list. GitLab has no team review requests, so `team` says so there, and a merge request
-you have reviewed leaves `incoming` until it is requested of you again.
+you have reviewed leaves `incoming` until it is requested of you again. Gitea and Forgejo are asked per pull for
+reviews and CI, and have no count of open threads to show.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider
 CLI - handy for a review bot that answers a mention: `git stk comment "@claude review"`.
