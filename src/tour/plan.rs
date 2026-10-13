@@ -36,8 +36,61 @@ pub struct Plan {
     pub notes: Vec<Note>,
     /// Review findings, asked for by an `agentReview` tour.
     pub findings: Vec<RawFinding>,
+    /// The review's overall judgment, asked for with the findings.
+    pub assessment: RawAssessment,
     /// What the agent says it is, which git-stk cannot check.
     pub reported: Reported,
+}
+
+/// The agent's overall judgment of a changeset, before it is checked.
+#[derive(Default)]
+pub struct RawAssessment {
+    pub confidence: Option<i64>,
+    pub risk: String,
+    pub rationale: String,
+    pub question: String,
+}
+
+/// How costly a defect nobody has found yet would be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Risk {
+    Low,
+    Standard,
+    High,
+    Critical,
+}
+
+impl Risk {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "standard" => Some(Self::Standard),
+            "high" => Some(Self::High),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Standard => "standard",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// A checked judgment: what the page shows above the findings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assessment {
+    /// 0 to 100: how likely the changeset is to reach production without a
+    /// defect.
+    pub confidence: Option<u8>,
+    pub risk: Option<Risk>,
+    pub rationale: String,
+    /// One blocking question for the author, when the intent is unclear.
+    pub question: Option<String>,
 }
 
 /// How much a finding matters, by what to do about it.
@@ -74,23 +127,27 @@ impl Severity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     Bug,
+    Safety,
     Security,
-    Performance,
-    Design,
-    Tests,
-    Docs,
-    Style,
+    Architecture,
+    EscapeHatch,
+    ErrorHandling,
+    Coverage,
+    SurfaceDrift,
+    Complexity,
 }
 
 impl Category {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 9] = [
         Self::Bug,
+        Self::Safety,
         Self::Security,
-        Self::Performance,
-        Self::Design,
-        Self::Tests,
-        Self::Docs,
-        Self::Style,
+        Self::Architecture,
+        Self::EscapeHatch,
+        Self::ErrorHandling,
+        Self::Coverage,
+        Self::SurfaceDrift,
+        Self::Complexity,
     ];
 
     fn parse(value: &str) -> Option<Self> {
@@ -102,12 +159,14 @@ impl Category {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Bug => "bug",
+            Self::Safety => "safety",
             Self::Security => "security",
-            Self::Performance => "performance",
-            Self::Design => "design",
-            Self::Tests => "tests",
-            Self::Docs => "docs",
-            Self::Style => "style",
+            Self::Architecture => "architecture",
+            Self::EscapeHatch => "escape-hatch",
+            Self::ErrorHandling => "error-handling",
+            Self::Coverage => "coverage",
+            Self::SurfaceDrift => "surface-drift",
+            Self::Complexity => "complexity",
         }
     }
 }
@@ -122,6 +181,8 @@ pub struct RawFinding {
     pub category: String,
     pub title: String,
     pub body: String,
+    pub evidence: String,
+    pub pre_existing: bool,
     pub suggestion: String,
 }
 
@@ -138,6 +199,10 @@ pub struct Finding {
     pub title: String,
     /// Markdown.
     pub body: String,
+    /// The path to the failure: the input, the branch taken, the line.
+    pub evidence: String,
+    /// A problem the changeset did not introduce or worsen.
+    pub pre_existing: bool,
     /// Replacement text for the lines, when the agent has one.
     pub suggestion: Option<String>,
 }
@@ -167,8 +232,11 @@ pub struct Applied {
     pub overview: String,
     pub steps: Vec<Step>,
     pub notes: Vec<Note>,
-    /// Most severe first.
+    /// The changeset's own problems, most severe first, then the ones it
+    /// did not introduce.
     pub findings: Vec<Finding>,
+    /// Present when the agent reviewed the changeset.
+    pub assessment: Option<Assessment>,
     pub reported: Reported,
     /// What the plan got wrong that was set right, for warnings.
     pub corrections: Vec<String>,
@@ -258,6 +326,8 @@ pub fn parse(answer: &str) -> Result<Plan> {
             category: text(finding, "category"),
             title: text(finding, "title"),
             body: text(finding, "body"),
+            evidence: text(finding, "evidence"),
+            pre_existing: finding.get("preExisting").and_then(Value::as_bool) == Some(true),
             // Replacement code keeps its own indentation.
             suggestion: finding
                 .get("suggestion")
@@ -267,15 +337,53 @@ pub fn parse(answer: &str) -> Result<Plan> {
         })
         .collect();
     let agent = value.get("agent").cloned().unwrap_or_default();
+    let risk = value.get("risk").cloned().unwrap_or_default();
+    let assessment = RawAssessment {
+        confidence: value.get("confidence").and_then(Value::as_i64),
+        risk: text(&risk, "level"),
+        rationale: text(&risk, "rationale"),
+        question: text(&value, "question"),
+    };
     Ok(Plan {
         overview: text(&value, "overview"),
         steps,
         notes,
         findings,
+        assessment,
         reported: Reported {
             provider: text(&agent, "provider"),
             model: text(&agent, "model"),
         },
+    })
+}
+
+/// The agent's judgment, checked; None when it gave none.
+fn assess(raw: RawAssessment, corrections: &mut Vec<String>) -> Option<Assessment> {
+    let question = Some(raw.question.trim().to_owned()).filter(|question| !question.is_empty());
+    if raw.confidence.is_none() && raw.risk.is_empty() && question.is_none() {
+        return None;
+    }
+    let confidence = raw.confidence.and_then(|confidence| {
+        let checked = u8::try_from(confidence).ok().filter(|&value| value <= 100);
+        if checked.is_none() {
+            corrections.push(format!(
+                "gave a confidence of {confidence}, outside 0 to 100, so none is shown"
+            ));
+        }
+        checked
+    });
+    let risk = Risk::parse(&raw.risk);
+    if risk.is_none() && !raw.risk.is_empty() {
+        corrections.push(format!(
+            "gave the unknown risk level {:?}, so none is shown",
+            raw.risk
+        ));
+    }
+    Some(Assessment {
+        confidence,
+        risk,
+        rationale: raw.rationale,
+        question,
     })
 }
 
@@ -430,6 +538,14 @@ pub fn apply(plan: Plan, steps: Vec<Step>) -> Applied {
             corrections.push(format!("left a finding at {}:{line} empty", raw.path));
             continue;
         }
+        // A finding is reported only with the path to its failure.
+        if raw.evidence.trim().is_empty() {
+            corrections.push(format!(
+                "gave no evidence for the finding at {}:{line}, so it is left out",
+                raw.path
+            ));
+            continue;
+        }
         let severity = Severity::parse(&raw.severity).unwrap_or_else(|| {
             corrections.push(format!(
                 "gave the finding at {}:{line} the unknown severity {:?}, so it is optional",
@@ -463,10 +579,12 @@ pub fn apply(plan: Plan, steps: Vec<Step>) -> Applied {
             category: Category::parse(&raw.category),
             title: raw.title,
             body: raw.body,
+            evidence: raw.evidence,
+            pre_existing: raw.pre_existing,
             suggestion,
         });
     }
-    findings.sort_by_key(|finding| finding.severity);
+    findings.sort_by_key(|finding| (finding.pre_existing, finding.severity));
     if findings.len() > MAX_FINDINGS {
         corrections.push(format!(
             "found {} things; the {MAX_FINDINGS} most severe are kept",
@@ -475,11 +593,13 @@ pub fn apply(plan: Plan, steps: Vec<Step>) -> Applied {
         findings.truncate(MAX_FINDINGS);
     }
 
+    let assessment = assess(plan.assessment, &mut corrections);
     Applied {
         overview: plan.overview,
         steps: planned,
         notes,
         findings,
+        assessment,
         reported: plan.reported,
         corrections,
     }
@@ -539,6 +659,9 @@ pub struct Request<'a> {
     pub guidance: &'a [(String, String)],
     /// What reviewers have said so far, or null when it could not be read.
     pub discussion: &'a Value,
+    /// How the review's CI stands: passing, failing, pending, inconclusive,
+    /// none, or unknown.
+    pub ci: &'a str,
 }
 
 impl Request<'_> {
@@ -599,6 +722,7 @@ impl Request<'_> {
             "stackedOn": self.below,
             "guidance": self.guidance.iter().map(|(path, text)| json!({ "path": path, "text": text })).collect::<Vec<_>>(),
             "discussion": self.discussion,
+            "ci": self.ci,
             "files": files,
         });
         format!(
@@ -641,18 +765,30 @@ pub fn instructions(review: bool) -> String {
     }
 }
 
-const REVIEW_INSTRUCTIONS: &str = r#"Also review the changeset. Add a "findings" array to the same JSON object, each entry shaped like this:
+const REVIEW_INSTRUCTIONS: &str = r#"Also review the changeset, as the last line of defense against its defects: be critical, try to break it, and trace its blast radius. A review is judged by signal to noise; one good finding beats five obvious ones, and none is a fine answer. Add these to the same JSON object:
 
-{"path": "path/of/a/changed/file", "side": "new", "line": 42, "startLine": 40, "severity": "required", "category": "bug", "title": "A short title", "body": "Markdown: what is wrong, why it matters, and how to fix it.", "suggestion": "Replacement text for lines startLine through line, or empty"}
+"confidence": a whole number from 0 to 100, the likelihood this changeset reaches production without introducing a defect. Start at 95. Subtract heavily for a confirmed bug, a crash on a reachable path, a safety or security regression, destructive work without validation, missing required coverage, or a wide blast radius; subtract moderately for a boundary violation, a half-finished migration, an unjustified escape hatch, a behavior change with no test change, or user-facing surface drift; add back a little for clear intent, a small blast radius, and tests that would catch a regression. Score against your findings, so the two agree.
+
+"risk": {"level": "low", "rationale": "One sentence."}: what a defect nobody has found yet would cost, apart from the findings. "critical" for authentication, authorization, payments, data loss, migrations, or security boundaries; "high" for shared or cross-cutting code, concurrency, or public interfaces; "standard" for an ordinary feature or fix; "low" for documentation, tests, internal tooling, or code behind a flag that is off. Move one level at most for how well tests cover the change.
+
+"question": one blocking question for the author when the intended behavior is unclear in a way that decides whether the code is correct, or "" when it is clear.
+
+"findings": an array, each entry shaped like this:
+
+{"path": "path/of/a/changed/file", "side": "new", "line": 42, "startLine": 40, "severity": "required", "category": "bug", "title": "A short title", "body": "Markdown: the failure and the smallest fix.", "evidence": "The input, the branch it takes, and the line that misbehaves.", "preExisting": false, "suggestion": "Replacement text for lines startLine through line, or empty"}
 
 Review rules:
+- A finding is something you would ask the author to change: a semantic bug or unhandled failure; a safety regression (a guarantee weaker than before, weighing anything destructive or irreversible most); a security hole; a broken architectural boundary or a bypassed seam; an escape hatch (a silenced compiler, linter, or type check, or a discarded error) added without a written reason; an error-handling regression; missing coverage the repository's own practice calls for; a user-facing flag, command, setting, or default the documentation no longer matches; or complexity that hides bugs. If it is correct, it is not a finding. Praise, style, and nitpicks are not findings.
+- Verify before reporting: "evidence" walks the path to the failure in the code you were given. If you cannot walk it, you have a hypothesis, not a finding; leave it out. A guard a line or two away is the most common reason a bug is not one.
+- CI runs separately; "ci" says how it stands. Never report what formatting, linting, type checking, or tests already check, and do not guess why a check failed.
+- Stay within the changeset's intent. Set "preExisting" to true for a problem the changeset did not introduce or worsen.
 - "severity" is one of: "required" (should block merging: a bug, a security hole, data loss, a broken build), "recommended" (worth fixing before merging, without blocking it), or "optional" (take it or leave it).
-- "category" is one of: "bug", "security", "performance", "design", "tests", "docs", "style".
+- "category" is one of: "bug", "safety", "security", "architecture", "escape-hatch", "error-handling", "coverage", "surface-drift", "complexity".
 - Put each finding on a line that appears in the diff; "startLine" is optional, for a finding about a range ending at "line". Use "side" "old" for removed lines and "new" otherwise.
 - Give a "suggestion" only on the "new" side, and only when it is the exact replacement for those lines, with their indentation.
 - Judge the changeset against the conventions in "guidance".
 - Do not raise what an open thread in "discussion" already raises, but a comment cannot waive a real problem.
-- Report real problems, most important first, at most fifteen; an empty array is a fine answer. Do not repeat what the steps and notes already say."#;
+- Report at most fifteen findings, most important first. Do not repeat what the steps and notes already say."#;
 
 // The agent reads "changeset" for what git-stk calls a review, so its
 // instructions never ask for a review of a review.
@@ -798,14 +934,17 @@ diff --git a/Cargo.lock b/Cargo.lock
             r#"{"steps":[{"title":"T","files":["src/a.rs","tests/a.rs","Cargo.lock"]}],
               "findings":[
                 {"path":"src/a.rs","side":"new","line":2,"startLine":1,"severity":"optional",
-                 "category":"style","title":"Name","body":"B","suggestion":"    fn d() {}\n"},
+                 "category":"complexity","title":"Name","body":"B","evidence":"E","suggestion":"    fn d() {}\n"},
                 {"path":"tests/a.rs","side":"new","line":2,"severity":"Required",
-                 "category":"tests","title":"Assert","body":"B"},
+                 "category":"coverage","title":"Assert","body":"B","evidence":"E"},
+                {"path":"src/a.rs","side":"new","line":1,"severity":"required","category":"bug",
+                 "title":"Old","body":"B","evidence":"E","preExisting":true},
                 {"path":"src/a.rs","side":"old","line":2,"startLine":2,"severity":"blocker",
-                 "category":"vibes","title":"Gone","body":"B","suggestion":"fn b() {}"},
-                {"path":"src/a.rs","side":"new","line":9,"severity":"required","title":"Nowhere"},
+                 "category":"vibes","title":"Gone","body":"B","evidence":"E","suggestion":"fn b() {}"},
+                {"path":"src/a.rs","side":"new","line":9,"severity":"required","title":"Nowhere","evidence":"E"},
                 {"path":"src/a.rs","side":"new","line":2,"startLine":5,"severity":"recommended",
-                 "title":"Backwards","body":"B","suggestion":"fn e() {}"},
+                 "title":"Backwards","body":"B","evidence":"E","suggestion":"fn e() {}"},
+                {"path":"src/a.rs","side":"new","line":2,"severity":"required","title":"Hunch","body":"B"},
                 {"path":"src/a.rs","side":"new","line":1,"severity":"required"}]}"#,
         )
         .unwrap();
@@ -825,11 +964,21 @@ diff --git a/Cargo.lock b/Cargo.lock
         assert_eq!(
             shape,
             [
-                ("Assert", Severity::Required, Some(Category::Tests), None),
+                ("Assert", Severity::Required, Some(Category::Coverage), None),
                 ("Backwards", Severity::Recommended, None, None),
-                ("Name", Severity::Optional, Some(Category::Style), Some(1)),
+                (
+                    "Name",
+                    Severity::Optional,
+                    Some(Category::Complexity),
+                    Some(1)
+                ),
                 ("Gone", Severity::Optional, None, None),
+                ("Old", Severity::Required, Some(Category::Bug), None),
             ]
+        );
+        assert!(
+            applied.findings[4].pre_existing,
+            "pre-existing problems come last"
         );
         assert_eq!(
             applied.findings[2].suggestion.as_deref(),
@@ -846,7 +995,45 @@ diff --git a/Cargo.lock b/Cargo.lock
                 "gave the finding at src/a.rs:2 the unknown severity \"blocker\", so it is optional",
                 "found something at src/a.rs:9, which the diff does not show",
                 "suggested code for lines of src/a.rs the diff does not show, so it is left out",
+                "gave no evidence for the finding at src/a.rs:2, so it is left out",
                 "left a finding at src/a.rs:1 empty",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_review_judgment_is_checked() {
+        let judged = |json: &str| {
+            let plan = parse(&format!(
+                r#"{{"steps":[{{"title":"T","files":["src/a.rs","tests/a.rs","Cargo.lock"]}}]{json}}}"#
+            ))
+            .unwrap();
+            let applied = apply(plan, steps_for(PATCH));
+            (applied.assessment, applied.corrections)
+        };
+        assert_eq!(judged(""), (None, vec![]));
+        let (assessment, corrections) = judged(
+            r#","confidence":82,"risk":{"level":"High","rationale":"Shared code."},"question":" Why now? ""#,
+        );
+        assert_eq!(
+            assessment,
+            Some(Assessment {
+                confidence: Some(82),
+                risk: Some(Risk::High),
+                rationale: "Shared code.".into(),
+                question: Some("Why now?".into()),
+            })
+        );
+        assert!(corrections.is_empty());
+        let (assessment, corrections) =
+            judged(r#","confidence":140,"risk":{"level":"spicy"},"question":"""#);
+        let assessment = assessment.unwrap();
+        assert_eq!((assessment.confidence, assessment.risk), (None, None));
+        assert_eq!(
+            corrections,
+            [
+                "gave a confidence of 140, outside 0 to 100, so none is shown",
+                "gave the unknown risk level \"spicy\", so none is shown",
             ]
         );
     }
@@ -904,12 +1091,14 @@ diff --git a/Cargo.lock b/Cargo.lock
             below: vec!["Base work (#6)".into()],
             guidance: &[],
             discussion: &Value::Null,
+            ci: "failing",
         }
         .prompt(false);
         assert!(prompt.starts_with(INSTRUCTIONS));
         let review: Value =
             serde_json::from_str(prompt.rsplit_once("The changeset:").unwrap().1.trim()).unwrap();
         assert_eq!(review["stackedOn"][0], "Base work (#6)");
+        assert_eq!(review["ci"], "failing");
         let files = review["files"].as_array().unwrap();
         let lock = files
             .iter()

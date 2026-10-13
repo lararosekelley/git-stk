@@ -254,6 +254,20 @@ header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-hei
 .finding-category { font-size: 12px; color: var(--fg-muted); }
 .finding-suggestion { margin: 4px 0 6px; padding: 6px 8px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px; overflow-x: auto; }
 .finding-index { margin-top: 12px; }
+.assessment { margin-top: 12px; }
+.assessment-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.confidence strong { font-size: 18px; }
+.confidence-high strong { color: var(--done); }
+.confidence-medium strong { color: var(--hl-constant); }
+.confidence-low strong { color: var(--removed); }
+.risk { font-size: 11px; font-weight: 600; border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; color: var(--fg-muted); }
+.risk-high { color: var(--hl-constant); border-color: var(--hl-constant); }
+.risk-critical { color: var(--removed); border-color: var(--removed); }
+.risk-rationale { color: var(--fg-muted); }
+.assessment-question { margin-top: 8px; padding: 6px 12px; border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 11px; }
+.finding-evidence { margin: 2px 0 6px; font-size: 12px; }
+.finding-evidence > summary { cursor: pointer; color: var(--fg-muted); }
+.severity.pre-existing { font-weight: 400; }
 .finding-counts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .thread-index { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 13px; }
 .thread-index li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; min-width: 0; }
@@ -1058,10 +1072,16 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     var head = el("div", { class: "finding-head" }, [
       el("span", { class: "agent-mark", "aria-label": "Written by the tour agent", text: "\u2728" }),
       el("span", { class: "severity severity-" + finding.severity, text: SEVERITIES[finding.severity] || finding.severity }),
-      finding.category ? el("span", { class: "finding-category", text: finding.category }) : null,
+      finding.category ? el("span", { class: "finding-category", text: finding.category.replace("-", " ") }) : null,
+      finding.preExisting ? el("span", { class: "severity pre-existing", title: "A problem this changeset did not introduce", text: "pre-existing" }) : null,
       el("strong", { text: finding.title || "Finding" }),
     ]);
     var parts = [head, body];
+    if (finding.evidenceHtml) {
+      var evidence = el("div", { class: "markdown" });
+      setMarkdown(evidence, finding.evidenceHtml);
+      parts.push(el("details", { class: "finding-evidence" }, [el("summary", { text: "Why this was flagged" }), evidence]));
+    }
     if (finding.suggestion) {
       parts.push(el("div", { class: "note-label", text: "Suggested" + (finding.startLine ? " for lines " + finding.startLine + "-" + finding.line : "") + ":" }));
       parts.push(el("pre", { class: "finding-suggestion", text: finding.suggestion }));
@@ -1130,6 +1150,46 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   }
 
   // The findings by severity, each linking to its file.
+  // The agent's overall judgment: how confident it is the changeset ships
+  // without a defect, what an unfound one would cost, and any question for
+  // the author.
+  function renderAssessment(assessment) {
+    if (!assessment) return null;
+    var parts = [];
+    if (assessment.confidence !== null && assessment.confidence !== undefined) {
+      var band = assessment.confidence >= 85 ? "high" : assessment.confidence >= 60 ? "medium" : "low";
+      parts.push(el("span", { class: "confidence confidence-" + band, title: "How likely the agent thinks this changeset is to reach production without a defect" }, [
+        el("strong", { text: assessment.confidence }), "/100 confidence",
+      ]));
+    }
+    if (assessment.risk) {
+      parts.push(el("span", { class: "risk risk-" + assessment.risk, text: assessment.risk + " risk" }));
+    }
+    if (assessment.rationale) parts.push(el("span", { class: "risk-rationale", text: assessment.rationale }));
+    var rows = [el("div", { class: "assessment-row" }, [el("span", { class: "agent-mark", "aria-hidden": "true", text: "\u2728" })].concat(parts))];
+    if (assessment.questionHtml) {
+      var question = el("div", { class: "markdown" });
+      setMarkdown(question, assessment.questionHtml);
+      var box = [el("div", { class: "note-label", text: "Question for the author" }), question];
+      if (data.served) {
+        var ask = el("button", { type: "button", text: "Ask in your review" });
+        ask.addEventListener("click", function () {
+          var key = draftsKey() + ":summary";
+          var summary = readStorage(key, "");
+          if (summary.indexOf(assessment.question) < 0) {
+            writeStorage(key, summary ? summary + "\n\n" + assessment.question : assessment.question);
+          }
+          var panel = document.getElementById("review-panel");
+          if (panel) panel.remove();
+          openReview();
+        });
+        box.push(el("div", { class: "thread-actions" }, [ask]));
+      }
+      rows.push(el("div", { class: "assessment-question" }, box));
+    }
+    return el("div", { class: "assessment" }, rows);
+  }
+
   function renderFindingIndex(plan) {
     var findings = plan.findings || [];
     if (!findings.length) return null;
@@ -1163,7 +1223,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       setMarkdown(overview, plan.overviewHtml);
       overview = agentText(overview);
     }
-    return el("section", { class: "plan", "aria-label": "Tour plan" }, [overview, renderFindingIndex(plan), planAttribution(plan)]);
+    return el("section", { class: "plan", "aria-label": "Tour plan" }, [overview, renderAssessment(plan.assessment), renderFindingIndex(plan), planAttribution(plan)]);
   }
 
   function threadsOnFile(file) {

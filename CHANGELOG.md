@@ -16,6 +16,15 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   how many each shows (default 10), and `--sort` their order (`updated`,
   `created`, or `size`). It works on GitHub, GitLab, Gitea, and Forgejo; on
   GitLab, which has no team review requests, `team` says so.
+- **tour:** an agent review follows the rules of a careful maintainer: its
+  findings are only what it would ask to change, never style or what CI
+  already checks (the agent is told how CI stands), each with the evidence
+  behind it and a mark when the changeset did not introduce it, in new
+  categories (bug, safety, security, architecture, escape-hatch,
+  error-handling, coverage, surface-drift, complexity). Above them it gives its
+  confidence out of 100 that the changeset ships without a defect, a risk
+  level, and a question for the author when the intent is unclear, which can
+  be added to your review's summary.
 
 ## 0.14.0
 

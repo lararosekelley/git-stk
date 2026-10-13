@@ -1430,12 +1430,16 @@ const AGENT_REVIEW: &str = r#"{"version":1,
  "agent":{"provider":"Fake Labs","model":"fake-1","effort":"low"},
  "overview":"Adds `two`.",
  "steps":[{"title":"The new function","summary":"S","files":["src/lib.rs"]}],
+ "confidence":71,"risk":{"level":"standard","rationale":"An ordinary change."},
+ "question":"Is `two` meant to be public?",
  "findings":[
-   {"path":"tests/lib_test.rs","side":"new","line":2,"severity":"optional","category":"tests",
-    "title":"Name the test","body":"Say what it checks.","suggestion":"fn two_runs() {}"},
+   {"path":"tests/lib_test.rs","side":"new","line":2,"severity":"optional","category":"coverage",
+    "title":"Name the test","body":"Say what it checks.","evidence":"The test is named `t`.",
+    "suggestion":"fn two_runs() {}"},
    {"path":"src/lib.rs","side":"new","line":2,"severity":"required","category":"bug",
-    "title":"Unused","body":"`two` is never called."},
-   {"path":"src/lib.rs","side":"new","line":40,"severity":"required","title":"Off the diff"}]}"#;
+    "title":"Unused","body":"`two` is never called.","evidence":"Nothing calls `two`."},
+   {"path":"src/lib.rs","side":"new","line":40,"severity":"required","title":"Off the diff",
+    "evidence":"E"}]}"#;
 
 #[test]
 fn an_agent_review_shows_its_findings_most_severe_first() {
@@ -1467,8 +1471,25 @@ fn an_agent_review_shows_its_findings_most_severe_first() {
         shape,
         [
             ("src/lib.rs", "required", "bug"),
-            ("tests/lib_test.rs", "optional", "tests")
+            ("tests/lib_test.rs", "optional", "coverage")
         ]
+    );
+    assert_eq!(
+        findings[0]["evidenceHtml"],
+        "<p>Nothing calls <code>two</code>.</p>\n"
+    );
+    let assessment = &data["chapters"][0]["plan"]["assessment"];
+    assert_eq!(
+        (
+            &assessment["confidence"],
+            &assessment["risk"],
+            &assessment["question"]
+        ),
+        (
+            &Value::from(71),
+            &Value::from("standard"),
+            &Value::from("Is `two` meant to be public?")
+        )
     );
     assert_eq!(
         findings[0]["bodyHtml"],
@@ -1495,6 +1516,7 @@ fn an_agent_review_shows_its_findings_most_severe_first() {
         serde_json::json!([]),
         "an agentTour shows no findings"
     );
+    assert_eq!(plan["chapters"][0]["plan"]["assessment"], Value::Null);
     repo.stack_faked(&fake)
         .args(["tour", "12", "--no-open", "--output", "again.html"])
         .assert()
