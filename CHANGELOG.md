@@ -25,6 +25,9 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   confidence out of 100 that the changeset ships without a defect, a risk
   level, and a question for the author when the intent is unclear, which can
   be added to your review's summary.
+- **tour:** an agent review of a review's new head follows up on its review
+  of the last one: each earlier finding comes back fixed, still open,
+  obsolete, or unclear, with a note, and the confidence shows how it moved.
 
 ## 0.14.0
 

@@ -297,7 +297,9 @@ unclear, which Ask in your review adds to the review's summary. Findings are lis
 pre-existing ones last, counted on each file, and shown on their lines with a collapsible note on why each was
 flagged. Add to review turns a finding into a drafted line comment, with its replacement code as a suggestion
 on GitHub, to edit or submit with the rest of the review. Plans with findings are saved apart from plans
-without them.
+without them. When a review has moved on to a new head, the agent follows up on its review of the last one:
+each earlier finding comes back fixed, still open, obsolete, or unclear, with a note, under "Since the review
+of" a commit, and the confidence shows its change since then.
 
 The step sidebar can be hidden, and the sun/moon button switches between light and dark themes (the page
 follows the system theme until one is chosen). The tour is served from a local address only this machine
