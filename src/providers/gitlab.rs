@@ -9,9 +9,10 @@ use super::json::{
     parse_state, required_string,
 };
 use super::{
-    Anchor, CheckStatus, Comment, Conversation, IssueState, MergeBlocker, ReviewEvent,
-    ReviewProvider, ReviewRequest, ReviewSummary, Side, Submission, Thread, Verdict, VerdictState,
-    WaitOutcome, command_output, command_output_with_input, merge_with_resettle, merge_with_retry,
+    Anchor, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT, InboxEntry, InboxList,
+    IssueState, Listing, MergeBlocker, ReviewEvent, ReviewProvider, ReviewRequest, ReviewState,
+    ReviewSummary, Side, Submission, Thread, Verdict, VerdictState, WaitOutcome, command_output,
+    command_output_with_input, merge_with_resettle, merge_with_retry,
 };
 
 /// One draft note per comment, positioned on the MR's current diff, then the
@@ -612,6 +613,50 @@ impl ReviewProvider for GitLabProvider {
         Ok(gitlab_summary(&mr, approvals.as_deref()))
     }
 
+    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
+        let user: serde_json::Value =
+            serde_json::from_str(&command_output("glab", &["api", "user"])?)
+                .context("failed to parse glab user JSON")?;
+        let me = required_string(&user, &["username"])?;
+        let project: serde_json::Value =
+            serde_json::from_str(&command_output("glab", &["api", "projects/:id"])?)
+                .context("failed to parse glab project JSON")?;
+        let path = required_string(&project, &["path_with_namespace"])?;
+        let wants = |list| lists.contains(&list);
+        let mut searches = String::new();
+        if wants(InboxList::Incoming) {
+            searches.push_str(&format!(
+                "requested: mergeRequests(state: opened, reviewerUsername: $me, first: {FETCH_LIMIT}, sort: UPDATED_DESC) {{ count nodes {{ ...inboxReview }} }} "
+            ));
+        }
+        if wants(InboxList::Mine) || wants(InboxList::Returned) {
+            searches.push_str(&format!(
+                "authored: mergeRequests(state: opened, authorUsername: $me, first: {FETCH_LIMIT}, sort: UPDATED_DESC) {{ count nodes {{ ...inboxReview }} }} "
+            ));
+        }
+        let output = if searches.is_empty() {
+            r#"{"data":{"project":{}}}"#.to_owned()
+        } else {
+            let query = format!(
+                "query($path: ID!, $me: String!) {{ project(fullPath: $path) {{ {searches}}} }} {GITLAB_INBOX_FRAGMENT}"
+            );
+            command_output(
+                "glab",
+                &[
+                    "api",
+                    "graphql",
+                    "-f",
+                    &format!("query={query}"),
+                    "-f",
+                    &format!("path={path}"),
+                    "-f",
+                    &format!("me={me}"),
+                ],
+            )?
+        };
+        parse_gitlab_inbox(&output, lists, &me)
+    }
+
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {
         // No --opened: it is deprecated, and glab prints the deprecation notice
         // to stdout, which corrupts the JSON we parse. Listing without a state
@@ -699,6 +744,148 @@ impl ReviewProvider for GitLabProvider {
 
 /// Whether a title already carries a draft marker, in either spelling, so a
 /// retitle does not double up the prefix.
+const GITLAB_INBOX_FRAGMENT: &str = "fragment inboxReview on MergeRequest { iid title webUrl draft sourceBranch targetBranch createdAt updatedAt author { username } diffStatsSummary { additions deletions } headPipeline { status } approved resolvableDiscussionsCount resolvedDiscussionsCount reviewers { nodes { username mergeRequestInteraction { reviewState } } } }";
+
+/// Review states that mean the reviewer has had their say, until the review
+/// is requested of them again.
+const REVIEWED_STATES: [&str; 3] = ["REVIEWED", "REQUESTED_CHANGES", "APPROVED"];
+
+/// The inbox lists from the merge requests requested of `me` and by `me`. A
+/// merge request leaves `incoming` once `me` has reviewed it, as on GitHub,
+/// and one of `me`'s with changes requested is `returned`, not `mine`.
+fn parse_gitlab_inbox(
+    json: &str,
+    lists: &[InboxList],
+    me: &str,
+) -> Result<Vec<(InboxList, Listing)>> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).context("failed to parse glab inbox JSON")?;
+    let project = &value["data"]["project"];
+    if project.is_null() {
+        bail!("GitLab did not find this project for the inbox");
+    }
+    let nodes = |alias: &str| {
+        project[alias]["nodes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let more = |alias: &str, nodes: &[serde_json::Value]| {
+        project[alias]["count"].as_u64().unwrap_or(0) > nodes.len() as u64
+    };
+    let state_of = |node: &serde_json::Value, user: &str| {
+        node["reviewers"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|reviewer| user.is_empty() || reviewer["username"] == user)
+            .map(|reviewer| {
+                reviewer["mergeRequestInteraction"]["reviewState"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let requested = nodes("requested");
+    let authored = nodes("authored");
+    lists
+        .iter()
+        .map(|&list| {
+            let listing = match list {
+                InboxList::Team => {
+                    Listing::Unsupported("GitLab has no team review requests".to_owned())
+                }
+                InboxList::Incoming => {
+                    let entries = requested
+                        .iter()
+                        .filter(|node| node["author"]["username"] != me)
+                        .filter(|node| {
+                            !state_of(node, me)
+                                .iter()
+                                .any(|state| REVIEWED_STATES.contains(&state.as_str()))
+                        })
+                        .map(gitlab_inbox_entry)
+                        .collect::<Result<Vec<_>>>()?;
+                    Listing::Found {
+                        more: more("requested", &requested),
+                        entries,
+                    }
+                }
+                InboxList::Mine | InboxList::Returned => {
+                    let returned = list == InboxList::Returned;
+                    let entries = authored
+                        .iter()
+                        .filter(|node| {
+                            state_of(node, "")
+                                .iter()
+                                .any(|state| state == "REQUESTED_CHANGES")
+                                == returned
+                        })
+                        .map(gitlab_inbox_entry)
+                        .collect::<Result<Vec<_>>>()?;
+                    Listing::Found {
+                        more: more("authored", &authored),
+                        entries,
+                    }
+                }
+            };
+            Ok((list, listing))
+        })
+        .collect()
+}
+
+fn gitlab_inbox_entry(node: &serde_json::Value) -> Result<InboxEntry> {
+    let iid = node["iid"]
+        .as_str()
+        .context("an inbox merge request has no iid")?;
+    let text = |key: &str| node[key].as_str().unwrap_or_default().to_owned();
+    let states: Vec<&str> = node["reviewers"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|reviewer| reviewer["mergeRequestInteraction"]["reviewState"].as_str())
+        .collect();
+    let decision = if states.contains(&"REQUESTED_CHANGES") {
+        Decision::ChangesRequested
+    } else if node["approved"] == true {
+        Decision::Approved
+    } else if states.is_empty() {
+        Decision::None
+    } else {
+        Decision::ReviewRequired
+    };
+    let count = |key: &str| node[key].as_u64().unwrap_or(0);
+    let pipeline = node["headPipeline"]["status"]
+        .as_str()
+        .map(str::to_ascii_lowercase);
+    Ok(InboxEntry {
+        review: ReviewRequest {
+            id: format!("!{iid}"),
+            branch: text("sourceBranch"),
+            base: text("targetBranch"),
+            state: ReviewState::Open,
+            url: text("webUrl"),
+            title: text("title"),
+            draft: node["draft"].as_bool().unwrap_or(false),
+        },
+        author: node["author"]["username"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        created_at: text("createdAt"),
+        updated_at: text("updatedAt"),
+        additions: node["diffStatsSummary"]["additions"].as_u64().unwrap_or(0),
+        deletions: node["diffStatsSummary"]["deletions"].as_u64().unwrap_or(0),
+        checks: map_pipeline_status(pipeline.as_deref()),
+        decision,
+        unresolved: Some(
+            count("resolvableDiscussionsCount").saturating_sub(count("resolvedDiscussionsCount"))
+                as u32,
+        ),
+    })
+}
+
 fn is_draft_title(title: &str) -> bool {
     let lowered = title.trim_start().to_ascii_lowercase();
     lowered.starts_with("draft:") || lowered.starts_with("wip:")
@@ -1124,6 +1311,54 @@ mod tests {
         // A 404 body / error text (trains are Premium) is not an array.
         assert!(super::active_train_source_branches("not json").is_empty());
         assert!(super::active_train_source_branches(r#"{"message":"404 Not Found"}"#).is_empty());
+    }
+
+    #[test]
+    fn the_inbox_drops_reviewed_requests_and_returns_changes_requested() {
+        let node = |iid: u32, author: &str, reviewers: &str, approved: bool| {
+            format!(
+                r#"{{"iid":"{iid}","title":"MR {iid}","webUrl":"u","draft":false,"sourceBranch":"b{iid}","targetBranch":"main",
+                "createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-02T00:00:00Z","author":{{"username":"{author}"}},
+                "diffStatsSummary":{{"additions":4,"deletions":1}},"headPipeline":{{"status":"SUCCESS"}},"approved":{approved},
+                "resolvableDiscussionsCount":3,"resolvedDiscussionsCount":1,"reviewers":{{"nodes":[{reviewers}]}}}}"#
+            )
+        };
+        let reviewer = |user: &str, state: &str| {
+            format!(
+                r#"{{"username":"{user}","mergeRequestInteraction":{{"reviewState":"{state}"}}}}"#
+            )
+        };
+        let json = format!(
+            r#"{{"data":{{"project":{{
+                "requested":{{"count":3,"nodes":[{},{},{}]}},
+                "authored":{{"count":3,"nodes":[{},{},{}]}}}}}}}}"#,
+            node(1, "ann", &reviewer("me", "UNREVIEWED"), false),
+            node(2, "bo", &reviewer("me", "APPROVED"), true),
+            node(3, "me", &reviewer("me", "UNREVIEWED"), false),
+            node(4, "me", &reviewer("ann", "REQUESTED_CHANGES"), false),
+            node(5, "me", &reviewer("ann", "APPROVED"), true),
+            node(6, "me", "", false),
+        );
+        let lists = parse_gitlab_inbox(&json, &InboxList::ALL, "me").unwrap();
+        let ids = |list: InboxList| -> Vec<String> {
+            match &lists.iter().find(|(found, _)| *found == list).unwrap().1 {
+                Listing::Found { entries, .. } => entries
+                    .iter()
+                    .map(|entry| entry.review.id.clone())
+                    .collect(),
+                Listing::Unsupported(why) => vec![why.clone()],
+            }
+        };
+        assert_eq!(ids(InboxList::Incoming), ["!1"]);
+        assert_eq!(ids(InboxList::Returned), ["!4"]);
+        assert_eq!(ids(InboxList::Mine), ["!5", "!6"]);
+        assert_eq!(ids(InboxList::Team), ["GitLab has no team review requests"]);
+        let Listing::Found { entries, .. } = &lists[0].1 else {
+            panic!("incoming is found");
+        };
+        assert_eq!(entries[0].unresolved, Some(2));
+        assert_eq!(entries[0].checks, CheckStatus::Passing);
+        assert_eq!(entries[0].decision, Decision::ReviewRequired);
     }
 
     #[test]

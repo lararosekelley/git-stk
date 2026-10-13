@@ -178,6 +178,24 @@ fn a_list_github_cannot_answer_says_so_and_the_rest_still_show() {
         .on("team-review-requested-user:@me", "not json")
         .on("user-review-requested:@me", &search(0, &[]))
         .on("review:changes_requested", &search(0, &[]))
+fn a_gitlab_inbox_says_it_has_no_team_list() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let mr = r#"{"iid":"8","title":"Speed up sync","webUrl":"https://gitlab.com/o/r/-/merge_requests/8",
+        "draft":true,"sourceBranch":"fast","targetBranch":"main","createdAt":"2026-10-01T00:00:00Z",
+        "updatedAt":"2026-10-02T00:00:00Z","author":{"username":"ann"},
+        "diffStatsSummary":{"additions":30,"deletions":2},"headPipeline":{"status":"FAILED"},"approved":false,
+        "resolvableDiscussionsCount":0,"resolvedDiscussionsCount":0,
+        "reviewers":{"nodes":[{"username":"me","mergeRequestInteraction":{"reviewState":"UNREVIEWED"}}]}}"#;
+    let fake = FakeProvider::new()
+        .on("api user", r#"{"username":"me"}"#)
+        .on("api projects/:id", r#"{"path_with_namespace":"o/r"}"#)
+        .on(
+            "api graphql",
+            &format!(
+                r#"{{"data":{{"project":{{"requested":{{"count":1,"nodes":[{mr}]}},"authored":{{"count":0,"nodes":[]}}}}}}}}"#
+            ),
+        )
         .fallback_fail("unexpected provider call")
         .install(&repo);
 
@@ -188,6 +206,11 @@ fn a_list_github_cannot_answer_says_so_and_the_rest_still_show() {
         .stdout(contains("Requested of you (0)"))
         .stdout(contains(
             "Requested of your teams\n  could not list these: failed to parse gh inbox JSON",
+        .stdout(contains("Requested of you (1)\n  🔴 !8 Speed up sync"))
+        .stdout(contains("ann, "))
+        .stdout(contains("draft"))
+        .stdout(contains(
+            "Requested of your teams\n  GitLab has no team review requests",
         ))
         .stdout(contains("Yours (0)"));
 }
