@@ -269,6 +269,7 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
         )
         .on("/status", r#"{"state":"success","total_count":1}"#)
         .fallback_fail("unexpected provider call")
+        .log_all("calls")
         .install(&repo);
 
     repo.stack_faked(&fake)
@@ -280,4 +281,10 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
         .stdout(contains("changes requested"))
         .stdout(contains("Requested of your teams (1)\n  🟢 #2 Pull 2"))
         .stdout(contains("Yours (1)\n  🟢 #3 Pull 3"));
+    let calls = std::fs::read_to_string(repo.path().join("calls")).unwrap();
+    assert_eq!(
+        calls.matches("pulls/4/reviews").count(),
+        1,
+        "returned and mine share one read of your pulls' reviews: {calls}"
+    );
 }
