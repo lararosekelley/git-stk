@@ -1168,9 +1168,35 @@ fn language(path: &str) -> &'static str {
     }
 }
 
+/// FNV-1a: a hash that stays the same across builds, for ids the page keeps.
+pub fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// An id for a file's change: the same for the same change at any head, so
+/// marking it viewed outlasts a push that leaves it alone.
+fn patch_id(file: &FileDiff) -> String {
+    let mut text = format!("{}\0{}\0", file.old_path, file.path());
+    for hunk in &file.hunks {
+        for line in &hunk.lines {
+            text.push(match line.kind {
+                LineKind::Context => ' ',
+                LineKind::Added => '+',
+                LineKind::Deleted => '-',
+            });
+            text.push_str(&line.text);
+            text.push('\n');
+        }
+    }
+    format!("{:016x}", fnv1a(text.as_bytes()))
+}
+
 fn file_data(file: &FileDiff) -> Value {
     json!({
         "path": file.path(),
+        "patchId": patch_id(file),
         "oldPath": file.old_path,
         "status": file.status.as_str(),
         "binary": file.binary,
@@ -1218,6 +1244,19 @@ fn escape_html(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_keeps_its_patch_id_while_its_change_does() {
+        let patch = |line: &str| {
+            diff::parse(&format!(
+                "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+{line}\n"
+            ))
+        };
+        let id = |line: &str| patch_id(&patch(line)[0]);
+        assert_eq!(id("new"), id("new"));
+        assert_ne!(id("new"), id("newer"));
+        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
+    }
 
     #[test]
     fn guidance_past_its_budget_keeps_the_root_and_the_nearest() {

@@ -82,10 +82,19 @@ pub struct Server {
     token: String,
 }
 
+/// Ports tried after the preferred one before taking any free port.
+const NEARBY_PORTS: u16 = 10;
+
 impl Server {
-    pub fn bind() -> Result<Self> {
-        let listener =
-            TcpListener::bind("127.0.0.1:0").context("failed to start the tour server")?;
+    /// Listen on `preferred`, or a port just past it when that is taken, so
+    /// the page keeps one origin, and with it what the browser stored for it,
+    /// from one tour to the next; any free port otherwise.
+    pub fn bind(preferred: u16) -> Result<Self> {
+        let listener = (0..NEARBY_PORTS)
+            .filter_map(|offset| preferred.checked_add(offset))
+            .find_map(|port| TcpListener::bind(("127.0.0.1", port)).ok())
+            .map_or_else(|| TcpListener::bind("127.0.0.1:0"), Ok)
+            .context("failed to start the tour server")?;
         let port = listener.local_addr()?.port();
         listener.set_nonblocking(true)?;
         Ok(Self {
@@ -350,6 +359,18 @@ fn token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tour_takes_its_preferred_port_when_it_is_free() {
+        let first = Server::bind(0).unwrap();
+        let preferred = first.port;
+        drop(first);
+        let held = Server::bind(preferred).unwrap();
+        assert_eq!(held.port, preferred);
+        // Taken, so the next tour of this repository moves along.
+        let next = Server::bind(preferred).unwrap();
+        assert_ne!(next.port, preferred);
+    }
 
     fn server() -> Server {
         Server {

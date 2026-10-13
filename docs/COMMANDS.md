@@ -231,8 +231,10 @@ collapsed. Diffs are syntax highlighted (with a bundled copy of highlight.js) an
 split views. Changed files up to 1 MB embed their full text (up to 16 MB per tour), so unchanged lines
 around each hunk can be expanded.
 The review's description is rendered as Markdown, without its raw HTML, and images appear as links so
-opening a tour loads nothing from the network. Tick a step as reviewed to track progress; it is kept per
-head commit.
+opening a tour loads nothing from the network. Tick a file as viewed, or a whole step as reviewed, to track
+progress: a file stays viewed while its change does, so a push only clears the files it touched, and a step is
+reviewed once its files are. A repository's tours reuse one local address where they can, so what the page
+keeps (viewed files, drafted comments, the theme) carries from one tour to the next.
 
 When the review is part of a stack, the tour covers the whole stack, one review at a time: the sidebar lists it
 top review first, as `git stk list` does, with each review's progress, and each review shows only its own
@@ -295,11 +297,12 @@ confidence, out of 100, that the changeset reaches production without a defect, 
 high, or critical) for what an unfound one would cost, and a question for the author when the intent is
 unclear, which Ask in your review adds to the review's summary. Findings are listed most severe first,
 pre-existing ones last, counted on each file, and shown on their lines with a collapsible note on why each was
-flagged. Add to review turns a finding into a drafted line comment, with its replacement code as a suggestion
-on GitHub, to edit or submit with the rest of the review. Plans with findings are saved apart from plans
-without them. When a review has moved on to a new head, the agent follows up on its review of the last one:
-each earlier finding comes back fixed, still open, obsolete, or unclear, with a note, under "Since the review
-of" a commit, and the confidence shows its change since then.
+flagged. A finding on a line with an open thread is marked as also raised there, and Dismiss sets a finding
+aside, out of the counts, until it is restored. Add to review turns a finding into a drafted line comment,
+with its replacement code as a suggestion on GitHub, to edit or submit with the rest of the review. Plans with
+findings are saved apart from plans without them. When a review has moved on to a new head, the agent follows
+up on its review of the last one: each earlier finding comes back fixed, still open, obsolete, or unclear,
+with a note, under "Since the review of" a commit, and the confidence shows its change since then.
 
 The step sidebar can be hidden, and the sun/moon button switches between light and dark themes (the page
 follows the system theme until one is chosen). The tour is served from a local address only this machine
