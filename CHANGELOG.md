@@ -28,6 +28,18 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 - **tour:** an agent review of a review's new head follows up on its review
   of the last one: each earlier finding comes back fixed, still open,
   obsolete, or unclear, with a note, and the confidence shows how it moved.
+- **tour:** each file has its own Viewed box, kept while the file's change
+  stays the same, so a push only clears the files it touched; a step is
+  reviewed once its files are. An agent's finding on a line with an open
+  thread is marked as also raised there, and findings can be dismissed and
+  restored.
+
+### Fixed
+
+- **tour:** what the page keeps (reviewed steps, drafted comments, the theme)
+  now carries from one tour to the next. Each tour was served from a new local
+  port, and the browser kept the page's storage per port, so it started over
+  every time.
 
 ## 0.14.0
 

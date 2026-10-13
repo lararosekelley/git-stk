@@ -190,6 +190,15 @@ fn write_tour(
     Ok(())
 }
 
+/// The port this repository's tours prefer, the same from one tour to the
+/// next and unlikely to be another repository's.
+fn preferred_port() -> u16 {
+    let repository = git::git_common_path_absolute(".")
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    41_000 + (crate::tour::fnv1a(repository.as_bytes()) % 1_000) as u16
+}
+
 /// Serve the tour until the last tab showing it closes.
 fn serve(
     tour: &ReviewTour,
@@ -198,7 +207,7 @@ fn serve(
     summary: &str,
     open: bool,
 ) -> Result<()> {
-    let server = Server::bind()?;
+    let server = Server::bind(preferred_port())?;
     let url = server.url();
     anstream::println!(
         "touring {summary} at {}\nclose the page or press Ctrl-C to stop",

@@ -266,6 +266,9 @@ header h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; line-hei
 .risk-rationale { color: var(--fg-muted); }
 .assessment-question { margin-top: 8px; padding: 6px 12px; border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 11px; }
 .finding-evidence { margin: 2px 0 6px; font-size: 12px; }
+.finding-raised { font-size: 12px; color: var(--fg-muted); font-style: italic; }
+.finding-dismissed { display: flex; align-items: center; gap: 8px; opacity: .75; border-left-color: var(--border); }
+.thread-index li.dismissed { opacity: .6; text-decoration: line-through; }
 .confidence-delta { color: var(--fg-muted); }
 .follow-up { margin-top: 10px; font-size: 13px; }
 .follow-up > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -315,6 +318,7 @@ section.step { margin-bottom: 40px; }
 .step-number.done { border-color: var(--done); color: transparent; background: var(--done) var(--check-image) center / 16px no-repeat; }
 .state-reviewed { color: var(--done); border-color: var(--done); }
 .reviewed-toggle { display: inline-flex; align-items: center; gap: 6px; }
+.viewed-toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; font-size: 12px; color: var(--fg-muted); font-family: var(--font-ui); cursor: pointer; }
 .reviewed-toggle input[data-step] { background: var(--bg); }
 .step-head label { color: var(--fg-muted); white-space: nowrap; cursor: pointer; }
 /* The card clips its own corners, so its header can stick square-cornered
@@ -449,8 +453,10 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   // One review of the stack is shown at a time.
   var chapterIndex = 0;
   var chapter = null;
-  var reviewedKey = "";
-  var reviewed = {};
+  // Files marked viewed, by the id of their change: a step is reviewed once
+  // all its files are, and a push that leaves a file alone keeps its mark.
+  var viewedKey = "git-stk-tour:viewed";
+  var viewed = readStorage(viewedKey, {});
   var views = [];
   var observer = null;
 
@@ -474,6 +480,8 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
     Object.keys(attrs || {}).forEach(function (key) {
+      // An attribute given as null or undefined is left off.
+      if (attrs[key] === null || attrs[key] === undefined) return;
       if (key === "text") node.textContent = attrs[key];
       else if (key === "class") node.className = attrs[key];
       else node.setAttribute(key, attrs[key]);
@@ -576,6 +584,17 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     this.details = this.build(collapsed);
   }
 
+  // A file's own viewed box, in its header; clicking it leaves the file open
+  // or closed as it was.
+  function viewedBox(file) {
+    var box = el("input", { type: "checkbox", "data-patch": file.patchId, "aria-label": "Mark " + file.path + " viewed" });
+    box.checked = !!viewed[file.patchId];
+    box.addEventListener("change", function () { setViewed([file], box.checked); });
+    var label = el("label", { class: "viewed-toggle", title: "Viewed" }, [box, " Viewed"]);
+    label.addEventListener("click", function (event) { event.stopPropagation(); });
+    return label;
+  }
+
   FileView.prototype.build = function (collapsed) {
     var file = this.file;
     var label = file.status === "renamed" || file.status === "copied"
@@ -587,7 +606,8 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       el("span", { class: "count-add", text: "+" + file.additions }),
       el("span", { class: "count-del", text: "-" + file.deletions }),
       this.threads.length ? el("span", { class: "comment-count", title: "Comment threads", text: this.threads.length + " " + (this.threads.length === 1 ? "thread" : "threads") }) : null,
-      findingsOnFile(file).length ? el("span", { class: "comment-count finding-count", title: "Findings from the tour agent", text: "\u2728 " + findingsOnFile(file).length + (findingsOnFile(file).length === 1 ? " finding" : " findings") }) : null,
+      findingsOnFile(file).length ? el("span", { class: "comment-count finding-count", title: "Findings from the tour agent", text: findingCountText(file), hidden: findingCountText(file) ? null : "" }) : null,
+      viewedBox(file),
     ]);
     this.body = el("div");
     var details = el("details", { class: "file", id: this.anchor }, [summary, this.body]);
@@ -1050,6 +1070,44 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     });
   }
 
+  // Findings you set aside, per head, so they stop counting as open.
+  function dismissedKey() {
+    return "git-stk-tour:" + chapter.headSha + ":dismissed";
+  }
+
+  function isDismissed(finding) {
+    return !!readStorage(dismissedKey(), {})[findingKey(finding)];
+  }
+
+  function setDismissed(finding, on) {
+    var all = readStorage(dismissedKey(), {});
+    if (on) all[findingKey(finding)] = 1;
+    else delete all[findingKey(finding)];
+    writeStorage(dismissedKey(), all);
+  }
+
+  function openFindings(findings) {
+    return findings.filter(function (finding) { return !isDismissed(finding); });
+  }
+
+  function findingCountText(file) {
+    var count = openFindings(findingsOnFile(file)).length;
+    return count ? "\u2728 " + count + (count === 1 ? " finding" : " findings") : "";
+  }
+
+  // The plan's index and the file's count, after a finding is dismissed or
+  // restored.
+  function refreshFindings(view) {
+    var section = main.querySelector("section.plan");
+    if (section && chapter.plan) section.replaceWith(renderPlan(chapter.plan));
+    var count = view.details.querySelector(".finding-count");
+    if (count) {
+      count.textContent = findingCountText(view.file);
+      count.hidden = !count.textContent;
+    }
+    view.render();
+  }
+
   var SEVERITIES = { required: "Required", recommended: "Recommended", optional: "Optional" };
 
   // A finding as a comment for the review: its severity and title, its body,
@@ -1074,6 +1132,24 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
 
   FileView.prototype.renderFinding = function (finding, pairedLine) {
     var view = this;
+    if (isDismissed(finding)) {
+      var restore = el("button", { type: "button", text: "Restore" });
+      restore.addEventListener("click", function () {
+        setDismissed(finding, false);
+        refreshFindings(view);
+      });
+      return el("div", { class: "finding finding-dismissed" }, [
+        el("span", { class: "agent-mark", "aria-hidden": "true", text: "\u2728" }),
+        el("span", { class: "note-label", text: "Dismissed: " }),
+        el("span", { text: finding.title || "Finding" }),
+        restore,
+      ]);
+    }
+    // A reviewer's open thread on the same line may already say this.
+    var raised = view.threads.some(function (thread) {
+      return !thread.outdated && !thread.resolved && thread.line === finding.line
+        && (thread.side === "old") === (finding.side === "old");
+    });
     var body = el("div", { class: "markdown comment-body" });
     setMarkdown(body, finding.bodyHtml);
     var head = el("div", { class: "finding-head" }, [
@@ -1082,6 +1158,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       finding.category ? el("span", { class: "finding-category", text: finding.category.replace("-", " ") }) : null,
       finding.preExisting ? el("span", { class: "severity pre-existing", title: "A problem this changeset did not introduce", text: "pre-existing" }) : null,
       el("strong", { text: finding.title || "Finding" }),
+      raised ? el("span", { class: "finding-raised", title: "A reviewer's open thread on this line may already say this", text: "also raised in a thread above" }) : null,
     ]);
     var parts = [head, body];
     if (finding.evidenceHtml) {
@@ -1093,9 +1170,10 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       parts.push(el("div", { class: "note-label", text: "Suggested" + (finding.startLine ? " for lines " + finding.startLine + "-" + finding.line : "") + ":" }));
       parts.push(el("pre", { class: "finding-suggestion", text: finding.suggestion }));
     }
+    var add = null;
     if (data.served) {
       var added = drafts().some(function (draft) { return draft.finding === findingKey(finding); });
-      var add = el("button", { type: "button", text: added ? "Added to the review" : "Add to review" });
+      add = el("button", { type: "button", text: added ? "Added to the review" : "Add to review" });
       add.disabled = added;
       add.addEventListener("click", function () {
         saveDraft({
@@ -1110,8 +1188,13 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
         });
         view.render();
       });
-      parts.push(el("div", { class: "thread-actions" }, [add]));
     }
+    var dismiss = el("button", { type: "button", text: "Dismiss" });
+    dismiss.addEventListener("click", function () {
+      setDismissed(finding, true);
+      refreshFindings(view);
+    });
+    parts.push(el("div", { class: "thread-actions" }, [add, dismiss]));
     return el("div", { class: "finding finding-" + finding.severity }, parts);
   };
 
@@ -1232,14 +1315,18 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
         if (file.oldPath) anchors[file.oldPath] = anchors[file.path];
       });
     });
+    var open = openFindings(findings);
     var counts = ["required", "recommended", "optional"].map(function (severity) {
-      var count = findings.filter(function (finding) { return finding.severity === severity; }).length;
+      var count = open.filter(function (finding) { return finding.severity === severity; }).length;
       return count ? el("span", { class: "severity severity-" + severity, text: count + " " + severity }) : null;
     });
+    var dismissed = findings.length - open.length;
     return el("div", { class: "finding-index" }, [
-      el("div", { class: "finding-counts" }, [el("span", { class: "agent-mark", text: "\u2728" }), el("strong", { text: plural(findings.length, "finding", "findings") })].concat(counts)),
+      el("div", { class: "finding-counts" }, [el("span", { class: "agent-mark", text: "\u2728" }), el("strong", { text: plural(open.length, "finding", "findings") })].concat(counts, [
+        dismissed ? el("span", { class: "thread-excerpt", text: dismissed + " dismissed" }) : null,
+      ])),
       el("ul", { class: "thread-index" }, findings.map(function (finding) {
-        return el("li", {}, [
+        return el("li", { class: isDismissed(finding) ? "dismissed" : null }, [
           el("span", { class: "severity severity-" + finding.severity, text: finding.severity }),
           el("a", { href: "#" + (anchors[finding.path] || "") }, [el("code", { text: finding.path + ":" + finding.line })]),
           el("span", { class: "thread-excerpt", text: finding.title }),
@@ -1568,8 +1655,25 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     return "c" + chapterIndex + "-step-" + stepIndex;
   }
 
-  function reviewedKeyFor(other) {
-    return "git-stk-tour:" + other.headSha;
+  function stepReviewed(step) {
+    return step.files.length > 0 && step.files.every(function (file) { return viewed[file.patchId]; });
+  }
+
+  function setViewed(files, on) {
+    files.forEach(function (file) {
+      if (on) viewed[file.patchId] = 1;
+      else delete viewed[file.patchId];
+    });
+    writeStorage(viewedKey, viewed);
+    Array.prototype.forEach.call(document.querySelectorAll("input[data-patch]"), function (box) {
+      box.checked = !!viewed[box.getAttribute("data-patch")];
+    });
+    chapter.steps.forEach(function (step) {
+      Array.prototype.forEach.call(document.querySelectorAll('input[data-step="' + step.id + '"]'), function (box) {
+        box.checked = stepReviewed(step);
+      });
+    });
+    showProgress();
   }
 
   function renderHeader() {
@@ -1749,21 +1853,20 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   }
 
   function showProgress() {
-    var done = chapter.steps.filter(function (step) { return reviewed[step.id]; }).length;
+    var done = chapter.steps.filter(stepReviewed).length;
     document.getElementById("progress").textContent = done + " of " + chapter.steps.length + " steps reviewed";
     var badge = document.getElementById("reviewed-badge");
     if (badge) badge.hidden = done !== chapter.steps.length;
     chapter.steps.forEach(function (step) {
       var link = document.querySelector('[data-step-link="' + step.id + '"]');
-      if (link) link.classList.toggle("done", !!reviewed[step.id]);
+      if (link) link.classList.toggle("done", stepReviewed(step));
       var number = document.querySelector('[data-step-number="' + step.id + '"]');
-      if (number) number.classList.toggle("done", !!reviewed[step.id]);
+      if (number) number.classList.toggle("done", stepReviewed(step));
     });
     data.chapters.forEach(function (other, index) {
       var progress = document.querySelector('[data-chapter="' + index + '"]');
       if (!progress) return;
-      var marks = index === chapterIndex ? reviewed : readStorage(reviewedKeyFor(other), {});
-      var count = other.steps.filter(function (step) { return marks[step.id]; }).length;
+      var count = other.steps.filter(stepReviewed).length;
       var finished = count === other.steps.length;
       progress.textContent = count + "/" + other.steps.length;
       progress.classList.toggle("done", finished);
@@ -1777,16 +1880,8 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   function reviewedBox(step, label) {
     var box = el("input", { type: "checkbox", "data-step": step.id });
     if (label) box.setAttribute("aria-label", label);
-    box.checked = !!reviewed[step.id];
-    box.addEventListener("change", function () {
-      if (box.checked) reviewed[step.id] = true;
-      else delete reviewed[step.id];
-      writeStorage(reviewedKey, reviewed);
-      Array.prototype.forEach.call(document.querySelectorAll('input[data-step="' + step.id + '"]'), function (other) {
-        other.checked = box.checked;
-      });
-      showProgress();
-    });
+    box.checked = stepReviewed(step);
+    box.addEventListener("change", function () { setViewed(step.files, box.checked); });
     return box;
   }
 
@@ -1849,8 +1944,6 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   function renderChapter(index) {
     chapterIndex = index;
     chapter = data.chapters[index];
-    reviewedKey = reviewedKeyFor(chapter);
-    reviewed = readStorage(reviewedKey, {});
     if (observer) observer.disconnect();
     views = [];
     main.textContent = "";
