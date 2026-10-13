@@ -717,10 +717,25 @@ fn in_batches<T: Sync, R: Send>(
 
 fn gitea_reviews_of(slug: &str, pulls: &[&Value]) -> Result<Vec<Value>> {
     in_batches(pulls, |pull| {
+        // Every page: the latest verdict is the last review, and the pages run
+        // oldest first.
+        const MAX_PAGES: usize = 10;
         let number = pull["number"].as_u64().unwrap_or(0);
-        let endpoint = format!("repos/{slug}/pulls/{number}/reviews");
-        serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
-            .context("failed to parse gitea reviews JSON")
+        let mut reviews = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let endpoint = format!(
+                "repos/{slug}/pulls/{number}/reviews?limit={CONVERSATION_PAGE}&page={page}"
+            );
+            let batch: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+                .context("failed to parse gitea reviews JSON")?;
+            let batch = batch.as_array().cloned().unwrap_or_default();
+            let full = batch.len() == CONVERSATION_PAGE;
+            reviews.extend(batch);
+            if !full {
+                break;
+            }
+        }
+        Ok(Value::Array(reviews))
     })
 }
 
