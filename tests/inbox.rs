@@ -178,6 +178,21 @@ fn a_list_github_cannot_answer_says_so_and_the_rest_still_show() {
         .on("team-review-requested-user:@me", "not json")
         .on("user-review-requested:@me", &search(0, &[]))
         .on("review:changes_requested", &search(0, &[]))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .arg("inbox")
+        .assert()
+        .success()
+        .stdout(contains("Requested of you (0)"))
+        .stdout(contains(
+            "Requested of your teams\n  could not list these: failed to parse gh inbox JSON",
+        ))
+        .stdout(contains("Yours (0)"));
+}
+
+#[test]
 fn a_gitlab_inbox_says_it_has_no_team_list() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "gitlab"]);
@@ -203,9 +218,6 @@ fn a_gitlab_inbox_says_it_has_no_team_list() {
         .arg("inbox")
         .assert()
         .success()
-        .stdout(contains("Requested of you (0)"))
-        .stdout(contains(
-            "Requested of your teams\n  could not list these: failed to parse gh inbox JSON",
         .stdout(contains("Requested of you (1)\n  🔴 !8 Speed up sync"))
         .stdout(contains("ann, "))
         .stdout(contains("draft"))
