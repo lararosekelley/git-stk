@@ -481,19 +481,20 @@ fn plan_chapters(
             let path = (!planner.refresh)
                 .then(|| plan_cache(chapter, agent, planner.review).ok())
                 .flatten();
-            let saved = path.as_ref().and_then(|path| {
-                let answer = std::fs::read_to_string(path).ok()?;
-                let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-                Some((answer, modified))
-            });
-            // A saved plan followed up on the reviews saved before it.
-            let before = saved.as_ref().map(|(_, modified)| *modified);
-            match saved {
-                Some((answer, _)) => answers[index] = Some((Ok(answer), true)),
-                None => to_ask.push(index),
-            }
+            let saved = path
+                .as_ref()
+                .and_then(|path| std::fs::read_to_string(path).ok());
             if planner.review {
-                previous[index] = previous_review(chapter, before);
+                // A saved plan keeps the review it followed up on; a new one
+                // follows up on the latest.
+                previous[index] = match (&saved, &path) {
+                    (Some(_), Some(path)) => followed_review(path),
+                    _ => previous_review(chapter),
+                };
+            }
+            match saved {
+                Some(answer) => answers[index] = Some((Ok(answer), true)),
+                None => to_ask.push(index),
             }
         }
         for (chapter, previous) in chapters.iter_mut().zip(previous) {
@@ -600,8 +601,12 @@ fn plan_chapters(
                     && let Some(agent) = &planner.agent
                     && let Ok(path) = plan_cache(chapter, agent, planner.review)
                 {
-                    let shown =
+                    let mut shown =
                         plan::Previous::shown(&applied.findings, applied.assessment.as_ref());
+                    shown["followed"] = chapter
+                        .previous
+                        .as_ref()
+                        .map_or(Value::Null, plan::Previous::to_json);
                     let _ = std::fs::write(path.with_extension(SHOWN_EXTENSION), shown.to_string());
                 }
                 if !applied.corrections.is_empty() {
@@ -712,11 +717,8 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
 const SHOWN_EXTENSION: &str = "shown.json";
 
 /// The latest saved agent review of an earlier head of `chapter`'s review,
-/// from any agent and saved before `before` when given, for a follow-up.
-fn previous_review(
-    chapter: &Chapter,
-    before: Option<std::time::SystemTime>,
-) -> Option<plan::Previous> {
+/// from any agent, for a follow-up.
+fn previous_review(chapter: &Chapter) -> Option<plan::Previous> {
     let dir = git::git_common_path_absolute("stk/tours/plans").ok()?;
     let prefix = format!("{}-", chapter.review.id_value());
     let head = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
@@ -730,8 +732,7 @@ fn previous_review(
                     .then_some(())?;
                 let earlier = name.strip_prefix(&prefix)?.split('-').next()?.to_owned();
                 let modified = entry.metadata().ok()?.modified().ok()?;
-                let in_time = before.is_none_or(|before| modified < before);
-                (earlier != head && in_time).then(|| (modified, earlier, entry.path()))
+                (earlier != head).then(|| (modified, earlier, entry.path()))
             })
             .collect();
     saved.sort_by_key(|(modified, _, _)| std::cmp::Reverse(*modified));
@@ -739,6 +740,14 @@ fn previous_review(
         let shown: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
         plan::Previous::from_shown(&earlier, &shown)
     })
+}
+
+/// The review the plan saved at `plan` followed up on, as saved beside it.
+fn followed_review(plan: &std::path::Path) -> Option<plan::Previous> {
+    let shown: Value =
+        serde_json::from_str(&std::fs::read_to_string(plan.with_extension(SHOWN_EXTENSION)).ok()?)
+            .ok()?;
+    plan::Previous::from_json(&shown["followed"])
 }
 
 /// A CI rollup as the tour agent is told it.

@@ -1602,6 +1602,7 @@ fn an_agent_review_of_a_new_head_follows_up_on_the_last_one() {
         "fn one() {}\nfn two() {}\nfn three() {}\nfn four() {}\n",
     );
     repo.git(["commit", "-qam", "add four"]);
+    let third_head = repo.git(["rev-parse", "HEAD"]).trim().to_owned();
     repo.git(["push", "-q", "-f", "origin", "HEAD:refs/pull/12/head"]);
     repo.git(["switch", "-q", "main"]);
     repo.stack_faked(&fake)
@@ -1629,6 +1630,37 @@ fn an_agent_review_of_a_new_head_follows_up_on_the_last_one() {
     assert_eq!(
         again["chapters"][0]["plan"]["followUp"]["head"],
         &first_head[..12]
+    );
+
+    // Planning the second head again leaves the third's saved follow-up as it
+    // was: still of the second.
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--refresh-plan",
+            "--no-open",
+            "--output",
+            "refreshed.html",
+        ])
+        .assert()
+        .success();
+    repo.git([
+        "push",
+        "-q",
+        "-f",
+        "origin",
+        &format!("{third_head}:refs/pull/12/head"),
+    ]);
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "later.html"])
+        .assert()
+        .success();
+    let later = tour_data(&fs::read_to_string(repo.path().join("later.html")).unwrap());
+    assert_eq!(later["chapters"][0]["plan"]["cached"], true);
+    assert_eq!(
+        later["chapters"][0]["plan"]["followUp"]["head"],
+        &second_head[..12]
     );
 }
 
