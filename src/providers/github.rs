@@ -930,8 +930,6 @@ fn github_review_request(submission: &Submission) -> serde_json::Value {
     })
 }
 
-/// A pull request's discussion in one request. Each listing stops at 100,
-/// and the counts say whether anything was left out.
 /// The search behind each inbox list. A review requested of you both by name
 /// and through a team is only in `incoming`, and one returned to you only in
 /// `returned`.
@@ -1007,6 +1005,8 @@ fn github_inbox_entry(node: &serde_json::Value) -> Result<InboxEntry> {
     })
 }
 
+/// A pull request's discussion in one request. Each listing stops at 100,
+/// and the counts say whether anything was left out.
 const CONVERSATION_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){\
 repository(owner:$owner,name:$name){pullRequest(number:$number){\
 comments(first:100){totalCount nodes{id author{login} body createdAt url}}\
