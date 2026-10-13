@@ -593,6 +593,17 @@ fn plan_chapters(
         });
         match applied {
             Ok((applied, follow_up)) => {
+                // What this review showed, for the next head's to follow up on.
+                if planner.review
+                    && !from_file
+                    && !cached
+                    && let Some(agent) = &planner.agent
+                    && let Ok(path) = plan_cache(chapter, agent, planner.review)
+                {
+                    let shown =
+                        plan::Previous::shown(&applied.findings, applied.assessment.as_ref());
+                    let _ = std::fs::write(path.with_extension(SHOWN_EXTENSION), shown.to_string());
+                }
                 if !applied.corrections.is_empty() {
                     warnings.push(format!(
                         "the plan for {} from {source} {}; that was set right",
@@ -697,6 +708,9 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
     }
 }
 
+/// Beside each saved review plan, what the review showed once checked.
+const SHOWN_EXTENSION: &str = "shown.json";
+
 /// The latest saved agent review of an earlier head of `chapter`'s review,
 /// from any agent and saved before `before` when given, for a follow-up.
 fn previous_review(
@@ -712,6 +726,8 @@ fn previous_review(
             .filter_map(Result::ok)
             .filter_map(|entry| {
                 let name = entry.file_name().into_string().ok()?;
+                name.ends_with(&format!(".{SHOWN_EXTENSION}"))
+                    .then_some(())?;
                 let earlier = name.strip_prefix(&prefix)?.split('-').next()?.to_owned();
                 let modified = entry.metadata().ok()?.modified().ok()?;
                 let in_time = before.is_none_or(|before| modified < before);
@@ -720,8 +736,8 @@ fn previous_review(
             .collect();
     saved.sort_by_key(|(modified, _, _)| std::cmp::Reverse(*modified));
     saved.into_iter().find_map(|(_, earlier, path)| {
-        let plan = plan::parse(&std::fs::read_to_string(path).ok()?).ok()?;
-        plan::Previous::from_plan(&earlier, plan)
+        let shown: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        plan::Previous::from_shown(&earlier, &shown)
     })
 }
 
