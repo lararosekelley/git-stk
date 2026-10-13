@@ -1719,6 +1719,48 @@ fn an_interrupted_agent_tour_keeps_the_plans_it_finished() {
     assert_eq!(saved(), 2, "the two finished plans are saved");
 }
 
+/// An agent review is told CI is unknown when it cannot be read, rather than
+/// that there is none.
+#[cfg(unix)]
+#[test]
+fn an_agent_review_hears_ci_is_unknown_when_it_cannot_be_read() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let prompt = repo.path().join(".git/prompt.txt");
+    let script = repo.path().join(".git/agent.sh");
+    fs::write(
+        &script,
+        format!(
+            "PATH=/usr/bin:/bin\ncat > {}\necho '{{\"version\":1,\"overview\":\"O\",\"steps\":[]}}'\n",
+            prompt.display()
+        ),
+    )
+    .unwrap();
+    let agent = format!("/bin/sh {}", script.display());
+    repo.git(["config", "stk.tourAgent", &agent]);
+    repo.git(["config", "stk.tourAgentAllowed", &agent]);
+    let fake = github_tour_fake_after(FakeProvider::new().on("statusCheckRollup", "not json"))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "12",
+            "--style",
+            "agentReview",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .success();
+    let prompt = fs::read_to_string(prompt).unwrap();
+    let changeset: Value =
+        serde_json::from_str(prompt.split_once("The changeset:\n\n").unwrap().1).unwrap();
+    assert_eq!(changeset["ci"], "unknown");
+}
+
 /// The agent hears the repository's guidance as it stood at the review's
 /// base, from the root and the changed files' directories only, and the open
 /// discussion.

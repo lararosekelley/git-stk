@@ -1149,7 +1149,6 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     ]);
   }
 
-  // The findings by severity, each linking to its file.
   // The agent's overall judgment: how confident it is the changeset ships
   // without a defect, what an unfound one would cost, and any question for
   // the author.
@@ -1190,6 +1189,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     return el("div", { class: "assessment" }, rows);
   }
 
+  // The findings by severity, each linking to its file.
   function renderFindingIndex(plan) {
     var findings = plan.findings || [];
     if (!findings.length) return null;
