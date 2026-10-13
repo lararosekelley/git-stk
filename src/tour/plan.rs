@@ -116,6 +116,26 @@ impl Previous {
         })
     }
 
+    /// This review as JSON, to save with the plan that followed it up.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "head": self.head,
+            "confidence": self.confidence,
+            "findings": self.findings.iter().map(|finding| json!({
+                "path": finding.path,
+                "line": finding.line,
+                "severity": finding.severity,
+                "title": finding.title,
+                "body": finding.body,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    /// A review saved by [`Previous::to_json`].
+    pub fn from_json(value: &Value) -> Option<Self> {
+        Self::from_shown(value["head"].as_str()?, value)
+    }
+
     /// The review of the head `head`, from what it showed; None when it
     /// showed nothing to follow up on.
     pub fn from_shown(head: &str, shown: &Value) -> Option<Self> {
