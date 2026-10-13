@@ -1178,7 +1178,13 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 /// An id for a file's change: the same for the same change at any head, so
 /// marking it viewed outlasts a push that leaves it alone.
 fn patch_id(file: &FileDiff) -> String {
-    let mut text = format!("{}\0{}\0", file.old_path, file.path());
+    let mut text = format!(
+        "{}\0{}\0{}\0{}\0",
+        file.old_path,
+        file.path(),
+        file.status.as_str(),
+        file.header.join("\n")
+    );
     for hunk in &file.hunks {
         for line in &hunk.lines {
             text.push(match line.kind {
@@ -1255,6 +1261,24 @@ mod tests {
         let id = |line: &str| patch_id(&patch(line)[0]);
         assert_eq!(id("new"), id("new"));
         assert_ne!(id("new"), id("newer"));
+        // No lines change in a binary file or a mode change, so its header
+        // tells one version from the next.
+        let binary = |blob: &str| {
+            patch_id(
+                &diff::parse(&format!(
+                    "diff --git a/logo.png b/logo.png\nindex 1111111..{blob} 100644\nBinary files a/logo.png and b/logo.png differ\n"
+                ))[0],
+            )
+        };
+        assert_ne!(binary("2222222"), binary("3333333"));
+        let mode = |to: &str| {
+            patch_id(
+                &diff::parse(&format!(
+                    "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode {to}\n"
+                ))[0],
+            )
+        };
+        assert_ne!(mode("100755"), mode("100644"));
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
     }
 
