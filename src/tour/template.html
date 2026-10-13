@@ -2228,6 +2228,13 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     if (key === "Escape") {
       cancelLeader();
       closeViSettings();
+      // The review panel keeps its summary and drafts, so closing loses none.
+      var panel = document.getElementById("review-panel");
+      if (panel) {
+        panel.remove();
+        var opener = document.querySelector(".review-button");
+        if (opener) opener.focus();
+      }
       return;
     }
     if (!vi.enabled || event.ctrlKey || event.metaKey || event.altKey || typing(event.target)) return;
