@@ -241,26 +241,12 @@ impl Tour {
             chapter_of[index] = Some(chapters.len());
             chapters.push(chapter);
         }
-        if planner.is_some_and(|planner| planner.review) {
-            // One batched lookup where the forge allows, so the agent need not
-            // report what CI checks.
-            let branches: Vec<String> = chapters
-                .iter()
-                .map(|chapter| chapter.review.branch.clone())
-                .collect();
-            if let Ok(annotations) = provider.annotate_branches(&branches, false) {
-                for chapter in &mut chapters {
-                    if let Some(annotation) = annotations.get(&chapter.review.branch) {
-                        chapter.ci = ci_state(annotation.checks);
-                    }
-                }
-            }
-        }
         if let Some(planner) = planner {
             plan_chapters(
                 &mut chapters,
                 current_chapter,
                 planner,
+                provider,
                 progress,
                 &mut warnings,
             );
@@ -459,6 +445,7 @@ fn plan_chapters(
     chapters: &mut [Chapter],
     current: usize,
     planner: &Planner,
+    provider: &dyn ReviewProvider,
     progress: &Progress,
     warnings: &mut Vec<String>,
 ) {
@@ -481,6 +468,25 @@ fn plan_chapters(
             match saved {
                 Some(answer) => answers[index] = Some((Ok(answer), true)),
                 None => to_ask.push(index),
+            }
+        }
+        if planner.review {
+            // How CI stands, so the agent need not report what it checks;
+            // asked only for the reviews about to be planned.
+            let states: Vec<&'static str> = thread::scope(|scope| {
+                let asked: Vec<_> = to_ask
+                    .iter()
+                    .map(|&index| {
+                        let review = &chapters[index].review;
+                        scope.spawn(move || {
+                            provider.check_status(review).map_or("unknown", ci_state)
+                        })
+                    })
+                    .collect();
+                joined(asked)
+            });
+            for (&index, state) in to_ask.iter().zip(states) {
+                chapters[index].ci = state;
             }
         }
         // A plan made without the guidance is used but not saved.

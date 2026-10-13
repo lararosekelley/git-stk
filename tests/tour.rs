@@ -1761,16 +1761,20 @@ fn an_agent_tour_tells_the_agent_the_repos_guidance_and_discussion() {
     let agent = format!("/bin/sh {}", script.display());
     repo.git(["config", "stk.tourAgent", &agent]);
     repo.git(["config", "stk.tourAgentAllowed", &agent]);
-    let fake = github_tour_fake()
-        .fallback_fail("unexpected provider call")
-        .install(&repo);
+    // A failing check, for the agent to be told how CI stands.
+    let fake = github_tour_fake_after(FakeProvider::new().on(
+        "statusCheckRollup",
+        r#"{"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]}"#,
+    ))
+    .fallback_fail("unexpected provider call")
+    .install(&repo);
 
     repo.stack_faked(&fake)
         .args([
             "tour",
             "12",
             "--style",
-            "agentTour",
+            "agentReview",
             "--no-open",
             "--output",
             "tour.html",
@@ -1808,6 +1812,7 @@ fn an_agent_tour_tells_the_agent_the_repos_guidance_and_discussion() {
     assert_eq!(discussion["comments"][0]["body"], "Thanks!");
     assert_eq!(discussion["reviews"][0]["state"], "approved");
     assert_eq!(discussion["openThreads"][0]["path"], "src/lib.rs");
+    assert_eq!(changeset["ci"], "failing");
     let lib = changeset["files"]
         .as_array()
         .unwrap()
