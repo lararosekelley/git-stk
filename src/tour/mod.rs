@@ -77,6 +77,8 @@ struct Chapter {
     discussion: Value,
     /// The repository's instructions for contributors, for the tour agent.
     guidance: Vec<(String, String)>,
+    /// How the review's CI stands, for an agent review.
+    ci: &'static str,
     /// The plan the review's steps follow, for an agent tour.
     plan: Option<PlanInfo>,
 }
@@ -86,6 +88,7 @@ struct PlanInfo {
     overview: String,
     notes: Vec<plan::Note>,
     findings: Vec<plan::Finding>,
+    assessment: Option<plan::Assessment>,
     reported: plan::Reported,
     /// The agent command that wrote it, or None for a plan given as a file.
     command: Option<String>,
@@ -238,6 +241,21 @@ impl Tour {
             chapter_of[index] = Some(chapters.len());
             chapters.push(chapter);
         }
+        if planner.is_some_and(|planner| planner.review) {
+            // One batched lookup where the forge allows, so the agent need not
+            // report what CI checks.
+            let branches: Vec<String> = chapters
+                .iter()
+                .map(|chapter| chapter.review.branch.clone())
+                .collect();
+            if let Ok(annotations) = provider.annotate_branches(&branches, false) {
+                for chapter in &mut chapters {
+                    if let Some(annotation) = annotations.get(&chapter.review.branch) {
+                        chapter.ci = ci_state(annotation.checks);
+                    }
+                }
+            }
+        }
         if let Some(planner) = planner {
             plan_chapters(
                 &mut chapters,
@@ -364,6 +382,7 @@ impl Chapter {
             conversation: Value::Null,
             discussion: Value::Null,
             guidance: Vec::new(),
+            ci: "unknown",
             plan: None,
         }))
     }
@@ -406,7 +425,16 @@ impl Chapter {
                     "body": finding.body,
                     "bodyHtml": markdown::to_html(&finding.body),
                     "suggestion": finding.suggestion,
+                    "evidenceHtml": markdown::to_html(&finding.evidence),
+                    "preExisting": finding.pre_existing,
                 })).collect::<Vec<_>>(),
+                "assessment": plan.assessment.as_ref().map(|assessment| json!({
+                    "confidence": assessment.confidence,
+                    "risk": assessment.risk.map(plan::Risk::as_str),
+                    "rationale": assessment.rationale,
+                    "questionHtml": assessment.question.as_deref().map(markdown::to_html),
+                    "question": assessment.question,
+                })),
             })),
             "baseSha": self.base_sha,
             "headSha": self.head_sha,
@@ -516,6 +544,7 @@ fn plan_chapters(
             plan::check(&parsed, &chapter.steps)?;
             if !planner.review && !from_file {
                 parsed.findings.clear();
+                parsed.assessment = plan::RawAssessment::default();
             }
             let steps = std::mem::take(&mut chapter.steps);
             Ok(plan::apply(parsed, steps))
@@ -534,6 +563,7 @@ fn plan_chapters(
                     overview: applied.overview,
                     notes: applied.notes,
                     findings: applied.findings,
+                    assessment: applied.assessment,
                     reported: applied.reported,
                     command: (!from_file)
                         .then(|| planner.agent.as_ref().map(Agent::display))
@@ -619,6 +649,19 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
         below,
         guidance: &chapter.guidance,
         discussion: &chapter.discussion,
+        ci: chapter.ci,
+    }
+}
+
+/// A CI rollup as the tour agent is told it.
+fn ci_state(checks: crate::providers::CheckStatus) -> &'static str {
+    use crate::providers::CheckStatus;
+    match checks {
+        CheckStatus::Passing => "passing",
+        CheckStatus::Failing => "failing",
+        CheckStatus::Pending => "pending",
+        CheckStatus::Inconclusive => "inconclusive",
+        CheckStatus::None => "none",
     }
 }
 

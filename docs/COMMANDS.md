@@ -282,13 +282,22 @@ nothing new, even after new discussion, and an interrupted one keeps what it fin
 again. `--plan <file>` follows a plan written ahead of time, by a harness for example, for the review asked
 for.
 
-An agent review (`--style agentReview`) is an agent tour whose agent also reviews the changes. Each finding
-sits on a line of the diff with a severity (required, recommended, or optional), a category (bug, security,
-performance, design, tests, docs, or style), an explanation, and optionally replacement code for its lines.
-Findings are listed most severe first under the overview, counted on each file, and shown on their lines;
-findings off the diff are dropped with a warning. Add to review turns a finding into a drafted line comment,
-with its replacement code as a suggestion on GitHub, to edit or submit with the rest of the review. Plans
-with findings are saved apart from plans without them.
+An agent review (`--style agentReview`) is an agent tour whose agent also reviews the changes, held to what a
+careful maintainer would ask to change: bugs and unhandled failures, safety and security regressions, broken
+boundaries, unexplained escape hatches, error-handling regressions, missing coverage, documentation that no
+longer matches, and complexity that hides bugs; never style, praise, or what CI already checks, and the agent
+is told how CI stands. Each finding sits on a line of the diff with a severity (required, recommended, or
+optional), a category (bug, safety, security, architecture, escape-hatch, error-handling, coverage,
+surface-drift, or complexity), an explanation, the evidence behind it (the input, the branch taken, the line
+that misbehaves), optionally replacement code for its lines, and a mark when the changeset did not introduce
+it; findings without evidence, or off the diff, are dropped with a warning. Above them the agent gives its
+confidence, out of 100, that the changeset reaches production without a defect, a risk level (low, standard,
+high, or critical) for what an unfound one would cost, and a question for the author when the intent is
+unclear, which Ask in your review adds to the review's summary. Findings are listed most severe first,
+pre-existing ones last, counted on each file, and shown on their lines with a collapsible note on why each was
+flagged. Add to review turns a finding into a drafted line comment, with its replacement code as a suggestion
+on GitHub, to edit or submit with the rest of the review. Plans with findings are saved apart from plans
+without them.
 
 The step sidebar can be hidden, and the sun/moon button switches between light and dark themes (the page
 follows the system theme until one is chosen). The tour is served from a local address only this machine
