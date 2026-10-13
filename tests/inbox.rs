@@ -168,3 +168,26 @@ fn the_demo_inbox_lists_your_demo_reviews() {
         .stdout(contains("Yours (1)"))
         .stdout(contains("#1 add a"));
 }
+
+#[test]
+fn a_list_github_cannot_answer_says_so_and_the_rest_still_show() {
+    let repo = github_repo();
+    // No rule answers the team search, so it fails on its own.
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"owner/repo"}"#)
+        .on("team-review-requested-user:@me", "not json")
+        .on("user-review-requested:@me", &search(0, &[]))
+        .on("review:changes_requested", &search(0, &[]))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .arg("inbox")
+        .assert()
+        .success()
+        .stdout(contains("Requested of you (0)"))
+        .stdout(contains(
+            "Requested of your teams\n  could not list these: failed to parse gh inbox JSON",
+        ))
+        .stdout(contains("Yours (0)"));
+}
