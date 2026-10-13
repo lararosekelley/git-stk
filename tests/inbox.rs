@@ -250,7 +250,8 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
         "[{},{},{},{}]",
         pull(1, "ann", r#"{"login":"me"}"#, ""),
         pull(2, "bo", "", r#"{"id":7}"#),
-        pull(3, "me", "", ""),
+        // Gitea leaves the line counts out of its listing.
+        pull(3, "me", "", "").replace(r#""additions":7,"deletions":1,"#, ""),
         pull(4, "me", r#"{"login":"ann"}"#, ""),
     );
     let fake = FakeProvider::new()
@@ -263,6 +264,7 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
             r#"[{"user":{"login":"ann"},"state":"REQUEST_CHANGES","dismissed":false}]"#,
         )
         .on("/reviews", "[]")
+        .on("api repos/o/r/pulls/3", r#"{"additions":40,"deletions":9}"#)
         .on(
             "commits/sha1/status",
             r#"{"state":"failure","total_count":1}"#,
@@ -280,7 +282,7 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
         .stdout(contains("Returned to you (1)\n  🟢 #4 Pull 4"))
         .stdout(contains("changes requested"))
         .stdout(contains("Requested of your teams (1)\n  🟢 #2 Pull 2"))
-        .stdout(contains("Yours (1)\n  🟢 #3 Pull 3"));
+        .stdout(contains("Yours (1)\n  🟢 #3 Pull 3  +40/-9"));
     let calls = std::fs::read_to_string(repo.path().join("calls")).unwrap();
     assert_eq!(
         calls.matches("pulls/4/reviews").count(),
