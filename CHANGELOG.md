@@ -14,8 +14,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   age, approval or requested changes, open threads, and draft state.
   `--filter` picks lists (`incoming`, `returned`, `team`, `mine`), `--limit`
   how many each shows (default 10), and `--sort` their order (`updated`,
-  `created`, or `size`). On GitLab, which has no team review requests,
-  `team` says so.
+  `created`, or `size`). It works on GitHub, GitLab, Gitea, and Forgejo; on
+  GitLab, which has no team review requests, `team` says so.
 
 ## 0.14.0
 

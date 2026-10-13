@@ -226,3 +226,58 @@ fn a_gitlab_inbox_says_it_has_no_team_list() {
         ))
         .stdout(contains("Yours (0)"));
 }
+
+#[test]
+fn a_gitea_inbox_reads_requests_teams_and_reviews() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitea"]);
+    repo.git([
+        "remote",
+        "add",
+        "origin",
+        "https://gitea.example.com/o/r.git",
+    ]);
+    let pull = |number: u32, author: &str, users: &str, teams: &str| {
+        format!(
+            r#"{{"number":{number},"title":"Pull {number}","html_url":"https://gitea.example.com/o/r/pulls/{number}",
+            "draft":false,"user":{{"login":"{author}"}},"created_at":"2026-10-01T00:00:00+02:00",
+            "updated_at":"2026-10-02T00:00:00+02:00","additions":7,"deletions":1,
+            "head":{{"ref":"b{number}","sha":"sha{number}"}},"base":{{"ref":"main"}},
+            "requested_reviewers":[{users}],"requested_reviewers_teams":[{teams}]}}"#
+        )
+    };
+    let pulls = format!(
+        "[{},{},{},{}]",
+        pull(1, "ann", r#"{"login":"me"}"#, ""),
+        pull(2, "bo", "", r#"{"id":7}"#),
+        pull(3, "me", "", ""),
+        pull(4, "me", r#"{"login":"ann"}"#, ""),
+    );
+    let fake = FakeProvider::new()
+        .commands(&["tea"])
+        .on("api user/teams", r#"[{"id":7,"name":"core"}]"#)
+        .on("api user", r#"{"login":"me"}"#)
+        .on("pulls?state=open", &pulls)
+        .on(
+            "pulls/4/reviews",
+            r#"[{"user":{"login":"ann"},"state":"REQUEST_CHANGES","dismissed":false}]"#,
+        )
+        .on("/reviews", "[]")
+        .on(
+            "commits/sha1/status",
+            r#"{"state":"failure","total_count":1}"#,
+        )
+        .on("/status", r#"{"state":"success","total_count":1}"#)
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .arg("inbox")
+        .assert()
+        .success()
+        .stdout(contains("Requested of you (1)\n  🔴 #1 Pull 1"))
+        .stdout(contains("Returned to you (1)\n  🟢 #4 Pull 4"))
+        .stdout(contains("changes requested"))
+        .stdout(contains("Requested of your teams (1)\n  🟢 #2 Pull 2"))
+        .stdout(contains("Yours (1)\n  🟢 #3 Pull 3"));
+}

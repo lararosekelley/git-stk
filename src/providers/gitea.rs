@@ -7,10 +7,11 @@ use super::json::{
     all_reviews, optional_bool, optional_string, parse_issue_state, parse_state, required_string,
 };
 use super::{
-    Anchor, CHECK_GRACE_POLLS, CheckStatus, Comment, Conversation, IssueState, MergeBlocker,
-    ReviewEvent, ReviewProvider, ReviewRequest, ReviewState, ReviewSummary, Side, Submission,
-    Thread, Verdict, VerdictState, WaitOutcome, check_poll_interval, checks_timed_out,
-    command_output, merge_with_resettle, review_merged_out_of_band,
+    Anchor, CHECK_GRACE_POLLS, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT,
+    InboxEntry, InboxList, IssueState, Listing, MergeBlocker, ReviewEvent, ReviewProvider,
+    ReviewRequest, ReviewState, ReviewSummary, Side, Submission, Thread, Verdict, VerdictState,
+    WaitOutcome, check_poll_interval, checks_timed_out, command_output, merge_with_resettle,
+    review_merged_out_of_band,
 };
 
 pub(super) struct GiteaProvider;
@@ -277,6 +278,62 @@ impl ReviewProvider for GiteaProvider {
 
     fn open_reviews(&self) -> Result<Vec<ReviewRequest>> {
         Ok(list_pulls("open")?.0)
+    }
+
+    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
+        let user: Value = serde_json::from_str(&command_output("tea", &["api", "user"])?)
+            .context("failed to parse gitea user JSON")?;
+        let me = required_string(&user, &["login"])?;
+        let teams: Vec<u64> = if lists.contains(&InboxList::Team) {
+            let value: Value =
+                serde_json::from_str(&command_output("tea", &["api", "user/teams"])?)
+                    .context("failed to parse gitea teams JSON")?;
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|team| team["id"].as_u64())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let (pulls, complete) = open_pull_values()?;
+        let slug = repo_slug()?;
+        lists
+            .iter()
+            .map(|&list| {
+                let mut chosen: Vec<&Value> = pulls
+                    .iter()
+                    .filter(|pull| in_gitea_list(pull, list, &me, &teams))
+                    .collect();
+                let more = chosen.len() > FETCH_LIMIT || !complete;
+                chosen.truncate(FETCH_LIMIT);
+                // Your own pulls split on their reviews, so fetch those first.
+                let reviews = gitea_reviews_of(&slug, &chosen)?;
+                let entries: Vec<(InboxEntry, &Value)> = chosen
+                    .drain(..)
+                    .zip(reviews)
+                    .filter(|(_, reviews)| match list {
+                        InboxList::Returned => {
+                            latest_decision(reviews) == Decision::ChangesRequested
+                        }
+                        InboxList::Mine => latest_decision(reviews) != Decision::ChangesRequested,
+                        InboxList::Incoming | InboxList::Team => true,
+                    })
+                    .map(|(pull, reviews)| (gitea_inbox_entry(pull, &reviews), pull))
+                    .collect();
+                let statuses = gitea_statuses(&slug, entries.iter().map(|(_, pull)| *pull))?;
+                let entries = entries
+                    .into_iter()
+                    .zip(statuses)
+                    .map(|((mut entry, _), checks)| {
+                        entry.checks = checks;
+                        entry
+                    })
+                    .collect();
+                Ok((list, Listing::Found { entries, more }))
+            })
+            .collect()
     }
 
     fn all_open_reviews(&self) -> Result<(Vec<ReviewRequest>, bool)> {
@@ -563,6 +620,170 @@ fn api_pull(id_value: &str) -> Result<Value> {
 /// branch's review can't fall off the first page on a busy repo.
 /// The pulls in `state`, and whether that is all of them rather than as many
 /// as the page bound allows.
+/// Gitea answers per pull, so the inbox's per-pull calls go this many at once.
+const INBOX_CALLS_AT_ONCE: usize = 8;
+
+/// Every open pull as Gitea gives it, most recently updated first, and whether
+/// the walk reached the end.
+fn open_pull_values() -> Result<(Vec<Value>, bool)> {
+    const PAGE_SIZE: usize = 50;
+    const MAX_PAGES: usize = 20;
+    let slug = repo_slug()?;
+    let mut pulls = Vec::new();
+    for page in 1..=MAX_PAGES {
+        let endpoint = format!(
+            "repos/{slug}/pulls?state=open&sort=recentupdate&page={page}&limit={PAGE_SIZE}"
+        );
+        let batch: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+            .context("failed to parse gitea pulls JSON")?;
+        let batch = batch.as_array().cloned().unwrap_or_default();
+        let full_page = batch.len() == PAGE_SIZE;
+        pulls.extend(batch);
+        if !full_page {
+            return Ok((pulls, true));
+        }
+    }
+    Ok((pulls, false))
+}
+
+/// Whether `pull` belongs in `list` for `me`, a member of `teams`. Returned
+/// and mine both hold `me`'s pulls; their reviews tell them apart.
+fn in_gitea_list(pull: &Value, list: InboxList, me: &str, teams: &[u64]) -> bool {
+    let author = pull["user"]["login"].as_str() == Some(me);
+    let named = pull["requested_reviewers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|reviewer| reviewer["login"].as_str() == Some(me));
+    let teamed = pull["requested_reviewers_teams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|team| team["id"].as_u64())
+        .any(|id| teams.contains(&id));
+    match list {
+        InboxList::Incoming => named && !author,
+        InboxList::Team => teamed && !named && !author,
+        InboxList::Mine | InboxList::Returned => author,
+    }
+}
+
+/// Run `call` on each item, [`INBOX_CALLS_AT_ONCE`] at a time, in order.
+fn in_batches<T: Sync, R: Send>(
+    items: &[T],
+    call: impl Fn(&T) -> Result<R> + Sync,
+) -> Result<Vec<R>> {
+    let mut results = Vec::with_capacity(items.len());
+    for chunk in items.chunks(INBOX_CALLS_AT_ONCE) {
+        let answers = std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|item| scope.spawn(|| call(item)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect::<Vec<_>>()
+        });
+        for answer in answers {
+            results.push(answer?);
+        }
+    }
+    Ok(results)
+}
+
+fn gitea_reviews_of(slug: &str, pulls: &[&Value]) -> Result<Vec<Value>> {
+    in_batches(pulls, |pull| {
+        let number = pull["number"].as_u64().unwrap_or(0);
+        let endpoint = format!("repos/{slug}/pulls/{number}/reviews");
+        serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+            .context("failed to parse gitea reviews JSON")
+    })
+}
+
+fn gitea_statuses<'a>(
+    slug: &str,
+    pulls: impl Iterator<Item = &'a Value>,
+) -> Result<Vec<CheckStatus>> {
+    let shas: Vec<String> = pulls
+        .map(|pull| pull["head"]["sha"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    in_batches(&shas, |sha| {
+        if sha.is_empty() {
+            return Ok(CheckStatus::None);
+        }
+        let endpoint = format!("repos/{slug}/commits/{sha}/status");
+        let value: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+            .context("failed to parse gitea status JSON")?;
+        let total = value["total_count"].as_u64().unwrap_or(0);
+        Ok(map_gitea_state(&optional_string(&value, "state"), total))
+    })
+}
+
+/// Where a pull's reviewing stands, from each reviewer's latest approval or
+/// request for changes; comments and dismissed reviews leave it as it was.
+fn latest_decision(reviews: &Value) -> Decision {
+    let mut latest: Vec<(&str, &str)> = Vec::new();
+    for review in reviews.as_array().into_iter().flatten() {
+        let state = review["state"].as_str().unwrap_or_default();
+        if !matches!(state, "APPROVED" | "REQUEST_CHANGES") || review["dismissed"] == true {
+            continue;
+        }
+        let reviewer = review["user"]["login"].as_str().unwrap_or_default();
+        latest.retain(|(who, _)| *who != reviewer);
+        latest.push((reviewer, state));
+    }
+    if latest.iter().any(|(_, state)| *state == "REQUEST_CHANGES") {
+        Decision::ChangesRequested
+    } else if latest.is_empty() {
+        Decision::None
+    } else {
+        Decision::Approved
+    }
+}
+
+fn gitea_inbox_entry(pull: &Value, reviews: &Value) -> InboxEntry {
+    let text = |key: &str| pull[key].as_str().unwrap_or_default().to_owned();
+    let number = pull["number"].as_u64().unwrap_or(0);
+    let requested = pull["requested_reviewers"]
+        .as_array()
+        .is_some_and(|users| !users.is_empty())
+        || pull["requested_reviewers_teams"]
+            .as_array()
+            .is_some_and(|teams| !teams.is_empty());
+    let decision = match latest_decision(reviews) {
+        Decision::None if requested => Decision::ReviewRequired,
+        decision => decision,
+    };
+    InboxEntry {
+        review: ReviewRequest {
+            id: format!("#{number}"),
+            branch: pull["head"]["ref"].as_str().unwrap_or_default().to_owned(),
+            base: pull["base"]["ref"].as_str().unwrap_or_default().to_owned(),
+            state: ReviewState::Open,
+            url: text("html_url"),
+            title: text("title"),
+            draft: pull["draft"].as_bool().unwrap_or(false) || is_draft_title(&text("title")),
+        },
+        author: pull["user"]["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        created_at: text("created_at"),
+        updated_at: text("updated_at"),
+        additions: pull["additions"].as_u64().unwrap_or(0),
+        deletions: pull["deletions"].as_u64().unwrap_or(0),
+        checks: CheckStatus::None,
+        decision,
+        // Gitea has no count of open conversations short of reading them all.
+        unresolved: None,
+    }
+}
+
 fn list_pulls(state: &str) -> Result<(Vec<ReviewRequest>, bool)> {
     // Gitea caps page size at 50, so request exactly that and page past it.
     const PAGE_SIZE: usize = 50;
@@ -707,6 +928,57 @@ fn slug_from_url(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inbox_lists_sort_pulls_by_who_is_asked() {
+        let pull = |author: &str, users: &[&str], teams: &[u64]| {
+            serde_json::json!({
+                "user": {"login": author},
+                "requested_reviewers": users.iter().map(|login| serde_json::json!({"login": login})).collect::<Vec<_>>(),
+                "requested_reviewers_teams": teams.iter().map(|id| serde_json::json!({"id": id})).collect::<Vec<_>>(),
+            })
+        };
+        let in_list = |pull: &Value, list| in_gitea_list(pull, list, "me", &[7]);
+        let named = pull("ann", &["me"], &[7]);
+        assert!(in_list(&named, InboxList::Incoming));
+        assert!(
+            !in_list(&named, InboxList::Team),
+            "named requests are incoming only"
+        );
+        let teamed = pull("ann", &[], &[7]);
+        assert!(in_list(&teamed, InboxList::Team) && !in_list(&teamed, InboxList::Incoming));
+        assert!(!in_list(&pull("ann", &[], &[8]), InboxList::Team));
+        let mine = pull("me", &["me"], &[]);
+        assert!(in_list(&mine, InboxList::Mine) && !in_list(&mine, InboxList::Incoming));
+    }
+
+    #[test]
+    fn a_reviewers_latest_say_decides() {
+        let review = |user: &str, state: &str, dismissed: bool| serde_json::json!({"user": {"login": user}, "state": state, "dismissed": dismissed});
+        let decide = |reviews: Vec<Value>| latest_decision(&Value::Array(reviews));
+        assert_eq!(decide(vec![]), Decision::None);
+        assert_eq!(
+            decide(vec![
+                review("ann", "REQUEST_CHANGES", false),
+                review("ann", "APPROVED", false)
+            ]),
+            Decision::Approved
+        );
+        assert_eq!(
+            decide(vec![
+                review("ann", "APPROVED", false),
+                review("bo", "REQUEST_CHANGES", false)
+            ]),
+            Decision::ChangesRequested
+        );
+        assert_eq!(
+            decide(vec![
+                review("bo", "REQUEST_CHANGES", true),
+                review("ann", "COMMENT", false)
+            ]),
+            Decision::None
+        );
+    }
 
     #[test]
     fn gitea_review_request_places_comments_by_side() {
