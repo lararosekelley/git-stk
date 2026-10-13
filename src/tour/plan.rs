@@ -46,6 +46,8 @@ pub struct Plan {
 #[derive(Default)]
 pub struct RawAssessment {
     pub confidence: Option<i64>,
+    /// A confidence given as something other than a whole number.
+    pub unusable_confidence: Option<String>,
     pub risk: String,
     pub rationale: String,
     pub question: String,
@@ -339,7 +341,11 @@ pub fn parse(answer: &str) -> Result<Plan> {
     let agent = value.get("agent").cloned().unwrap_or_default();
     let risk = value.get("risk").cloned().unwrap_or_default();
     let assessment = RawAssessment {
-        confidence: value.get("confidence").and_then(Value::as_i64),
+        confidence: value.get("confidence").and_then(whole_number),
+        unusable_confidence: value
+            .get("confidence")
+            .filter(|confidence| whole_number(confidence).is_none() && !confidence.is_null())
+            .map(Value::to_string),
         risk: text(&risk, "level"),
         rationale: text(&risk, "rationale"),
         question: text(&value, "question"),
@@ -357,11 +363,27 @@ pub fn parse(answer: &str) -> Result<Plan> {
     })
 }
 
+/// A whole number, also when written as a string.
+fn whole_number(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+}
+
 /// The agent's judgment, checked; None when it gave none.
 fn assess(raw: RawAssessment, corrections: &mut Vec<String>) -> Option<Assessment> {
     let question = Some(raw.question.trim().to_owned()).filter(|question| !question.is_empty());
-    if raw.confidence.is_none() && raw.risk.is_empty() && question.is_none() {
+    if raw.confidence.is_none()
+        && raw.unusable_confidence.is_none()
+        && raw.risk.is_empty()
+        && question.is_none()
+    {
         return None;
+    }
+    if let Some(confidence) = &raw.unusable_confidence {
+        corrections.push(format!(
+            "gave a confidence of {confidence}, not a whole number from 0 to 100, so none is shown"
+        ));
     }
     let confidence = raw.confidence.and_then(|confidence| {
         let checked = u8::try_from(confidence).ok().filter(|&value| value <= 100);
@@ -1025,6 +1047,18 @@ diff --git a/Cargo.lock b/Cargo.lock
             })
         );
         assert!(corrections.is_empty());
+        let (assessment, _) = judged(r#","confidence":"82""#);
+        assert_eq!(
+            assessment.unwrap().confidence,
+            Some(82),
+            "a quoted number is a number"
+        );
+        let (assessment, corrections) = judged(r#","confidence":0.85"#);
+        assert_eq!(assessment.unwrap().confidence, None);
+        assert_eq!(
+            corrections,
+            ["gave a confidence of 0.85, not a whole number from 0 to 100, so none is shown"]
+        );
         let (assessment, corrections) =
             judged(r#","confidence":140,"risk":{"level":"spicy"},"question":"""#);
         let assessment = assessment.unwrap();
