@@ -698,15 +698,7 @@ pub trait ReviewProvider: Sync {
 
     /// Each of `lists` for this repository, in the order asked, with up to
     /// [`FETCH_LIMIT`] reviews each, for `inbox`.
-    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
-        Ok(lists
-            .iter()
-            .map(|&list| {
-                let why = "this forge has no review lists in git-stk".to_owned();
-                (list, Listing::Unsupported(why))
-            })
-            .collect())
-    }
+    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>>;
 }
 
 /// Detect the provider and build its review client together - the pair nearly

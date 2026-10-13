@@ -333,6 +333,7 @@ fn core_lifecycle(provider: Provider, slug: &str, work: &Path) -> Result<(), Str
 
     review_lookup_and_tour(provider, slug, work, body)?;
     review_submit(provider, slug, work)?;
+    inbox_lists_your_reviews(provider, slug, work)?;
 
     // --title retitles an existing review through each host's own CLI flag,
     // which only a live run exercises.
@@ -531,6 +532,33 @@ fn review_submit(provider: Provider, slug: &str, work: &Path) -> Result<(), Stri
         return Err(format!("the thread was not resolved: {thread}"));
     }
     Ok(())
+}
+
+/// `inbox` runs every list's query against the live host, and finds the
+/// review this run opened among yours. Search indexes trail a new review, so
+/// it is asked a few times.
+fn inbox_lists_your_reviews(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
+    let review = open_review(provider, slug, "feat/b")?
+        .ok_or_else(|| "no open review for feat/b".to_owned())?;
+    let number = match provider {
+        Provider::Gitlab => format!("!{}", review["iid"]),
+        _ => format!("#{}", review["number"]),
+    }
+    .replace('"', "");
+    let mut listed = String::new();
+    for attempt in 0..10 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(3));
+        }
+        listed = stk(work, &["inbox", "--limit", "50"])?;
+        let yours = listed.split("Yours").nth(1).unwrap_or_default();
+        if yours.contains(&format!("{number} ")) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "inbox did not list {number} among yours:\n{listed}"
+    ))
 }
 
 /// The tour data a `--output` snapshot of review `number` holds.
