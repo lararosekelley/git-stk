@@ -335,12 +335,17 @@ impl ReviewProvider for GiteaProvider {
                 })
                 .collect();
             let statuses = gitea_statuses(&slug, kept.iter().map(|(pull, _)| *pull))?;
+            let sizes = gitea_sizes(kept.iter().map(|(pull, _)| *pull))?;
             let entries = kept
                 .into_iter()
-                .zip(statuses)
-                .map(|((pull, reviews), checks)| {
+                .zip(statuses.into_iter().zip(sizes))
+                .map(|((pull, reviews), (checks, size))| {
                     let mut entry = gitea_inbox_entry(pull, reviews);
                     entry.checks = checks;
+                    if let Some((additions, deletions)) = size {
+                        entry.additions = additions;
+                        entry.deletions = deletions;
+                    }
                     entry
                 })
                 .collect();
@@ -716,6 +721,29 @@ fn gitea_reviews_of(slug: &str, pulls: &[&Value]) -> Result<Vec<Value>> {
         let endpoint = format!("repos/{slug}/pulls/{number}/reviews");
         serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
             .context("failed to parse gitea reviews JSON")
+    })
+}
+
+/// The lines added and deleted by each pull whose listing leaves them out, as
+/// Gitea's does (Forgejo's includes them), from the pull itself.
+fn gitea_sizes<'a>(pulls: impl Iterator<Item = &'a Value>) -> Result<Vec<Option<(u64, u64)>>> {
+    let missing: Vec<Option<u64>> = pulls
+        .map(|pull| {
+            pull.get("additions")
+                .is_none()
+                .then(|| pull["number"].as_u64())
+                .flatten()
+        })
+        .collect();
+    in_batches(&missing, |number| {
+        let Some(number) = number else {
+            return Ok(None);
+        };
+        let pull = api_pull(&number.to_string())?;
+        Ok(Some((
+            pull["additions"].as_u64().unwrap_or(0),
+            pull["deletions"].as_u64().unwrap_or(0),
+        )))
     })
 }
 
