@@ -376,6 +376,87 @@ fn tour_posts_a_review_once_the_terminal_confirms_it() {
     assert!(repo.path().join("posted").exists(), "the review was posted");
 }
 
+/// Now as GitHub writes it, for a discussion that has just changed.
+fn now_utc() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let (days, rest) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    // Civil date from days since the epoch, after Howard Hinnant.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest / 60 % 60,
+        rest % 60
+    )
+}
+
+#[test]
+fn a_review_whose_answer_was_lost_is_not_posted_again() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    // The review reaches GitHub, but its answer is lost on the way back.
+    let now = now_utc();
+    let landed = format!(
+        r#"{{"data":{{"repository":{{"pullRequest":{{
+        "comments":{{"totalCount":0,"nodes":[]}},
+        "reviews":{{"totalCount":1,"nodes":[{{"author":{{"login":"me"}},"state":"APPROVED","body":"Ship it","submittedAt":"{now}","url":"u"}}]}},
+        "reviewThreads":{{"totalCount":1,"nodes":[{{"id":"T9","isResolved":false,"isOutdated":false,"path":"src/lib.rs","line":2,"originalLine":2,"startLine":null,"originalStartLine":null,"diffSide":"RIGHT","subjectType":"LINE",
+            "comments":{{"totalCount":1,"nodes":[{{"id":"C9","author":{{"login":"me"}},"body":"Name it two?","createdAt":"{now}","url":"u","diffHunk":"@@ -1 +1,2 @@"}}]}}}}]}}}}}}}}}}"#
+    );
+    let fake = github_tour_fake_after(
+        FakeProvider::new()
+            .on_after("api graphql", "attempted", &landed)
+            .record_fail(
+                "pulls/12/reviews --input -",
+                "attempted",
+                "gh: HTTP 504: Gateway Timeout",
+            ),
+    )
+    .fallback_fail("unexpected provider call")
+    .install(&repo);
+    let mut served = Served::start(&repo, &fake, "12");
+
+    let (status, answer) = served.submit(A_REVIEW, "y\n");
+    assert_ne!(status, 200, "{answer}");
+    assert!(
+        answer["error"].as_str().unwrap().contains(
+            "if it reached #12 anyway, submitting the same review again checks before posting it twice"
+        ),
+        "{answer}"
+    );
+
+    // The same review again: GitHub already has it, so nothing is posted and
+    // the terminal is not asked.
+    let (status, answer) = served.submit(A_REVIEW, "");
+    assert_eq!(status, 200, "{answer}");
+    let terminal = served.close();
+    assert!(
+        terminal.contains("this review already reached #12; not posting it again"),
+        "{terminal}"
+    );
+    assert_eq!(
+        terminal.matches("post this review to #12?").count(),
+        1,
+        "{terminal}"
+    );
+}
+
 #[test]
 fn tour_posts_nothing_when_the_terminal_declines() {
     let (repo, _origin) = repo_with_review("refs/pull/12/head");

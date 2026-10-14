@@ -24,6 +24,7 @@ pub mod seen;
 pub mod server;
 pub mod stack;
 mod steps;
+pub mod submitted;
 
 use stack::Stack;
 

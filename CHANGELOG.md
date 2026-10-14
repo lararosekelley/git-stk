@@ -14,6 +14,11 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   count, including machine users listed in `stk.inboxBots`, and a review you
   have never looked at isn't marked. A list any forge answers with a server
   error is asked again before it reports the error.
+- **tour:** submitting a review is safe to retry. A review whose post fails
+  is kept on record, and submitting the same review again first checks the
+  forge: if it arrived anyway, as when only the answer was lost, it is not
+  posted twice, and if only part of it did, the tour says so rather than
+  posting it again.
 
 ## 0.15.0
 

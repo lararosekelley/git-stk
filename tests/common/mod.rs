@@ -225,6 +225,15 @@ impl FakeProvider {
         self
     }
 
+    /// Fail (exit 1) with `stderr` and record the call to `record_file` - for
+    /// a request that reached the provider though its answer was lost.
+    pub fn record_fail(mut self, needle: &str, record_file: &str, stderr: &str) -> Self {
+        self.rules.push(serde_json::json!({
+            "contains": needle, "stderr": stderr, "record": record_file, "exit": 1,
+        }));
+        self
+    }
+
     /// Like [`fail`](Self::fail), but only once `marker_file` exists - for a
     /// call that succeeds the first time and fails the next.
     pub fn fail_after(mut self, needle: &str, marker_file: &str, stderr: &str) -> Self {

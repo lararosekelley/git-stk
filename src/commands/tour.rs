@@ -320,6 +320,34 @@ fn submit(
         comments,
         commit: head.to_owned(),
     };
+    // The same review was sent before and never confirmed: its answer may
+    // have been lost after it was posted, so look before posting it again.
+    if let Some(since) = tour::submitted::pending(review, &submission) {
+        let conversation = provider.conversation(review).with_context(|| {
+            format!(
+                "could not check whether the last attempt reached {}",
+                review.id
+            )
+        })?;
+        match tour::submitted::landed(&submission, &conversation, since) {
+            tour::submitted::Landed::All => {
+                tour::submitted::finish(review);
+                anstream::println!(
+                    "this review already reached {}; not posting it again",
+                    review.id
+                );
+                return Ok(Posted::Done(review.url.clone()));
+            }
+            tour::submitted::Landed::Part => {
+                tour::submitted::finish(review);
+                bail!(
+                    "part of this review already reached {}; check it there, then submit again to post all of it",
+                    review.id
+                );
+            }
+            tour::submitted::Landed::Nothing => {}
+        }
+    }
 
     let _turn = prompting
         .lock()
@@ -330,7 +358,14 @@ fn submit(
     )? {
         return Ok(Posted::Declined);
     }
-    let link = provider.submit_review(review, &submission)?;
+    let _ = tour::submitted::start(review, &submission);
+    let link = provider.submit_review(review, &submission).map_err(|error| {
+        anyhow!(
+            "{error:#}; if it reached {} anyway, submitting the same review again checks before posting it twice",
+            review.id
+        )
+    })?;
+    tour::submitted::finish(review);
     anstream::println!("posted a review on {} {}", review.id, style::dim(&link));
     Ok(Posted::Done(link))
 }
