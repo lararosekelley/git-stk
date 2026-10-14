@@ -323,7 +323,7 @@ Everything is optional; defaults shown below:
     tourAgentAllowed = claude -p
     ; Machine users your forge reports as people, comma-separated, so their
     ; comments do not mark an inbox review new. Default: none.
-    inboxBots = higharcbuildbot
+    inboxBots = buildbot, deploy-user
 ```
 
 The tool also manages per-branch metadata: `branch.<name>.stkParent` (the stack parent),
