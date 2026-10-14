@@ -121,8 +121,11 @@ pub fn landed(
         ReviewEvent::Comment => None,
     };
     if let Some(state) = outcome {
+        // GitLab keeps an approval as standing state, with no time on it.
         parts.push(conversation.verdicts.iter().any(|verdict| {
-            verdict.author == me && verdict.state == state && recent(&verdict.submitted_at)
+            verdict.author == me
+                && verdict.state == state
+                && (verdict.submitted_at.is_empty() || recent(&verdict.submitted_at))
         }));
     }
     match (
@@ -223,6 +226,19 @@ mod tests {
             landed(&sent, &all, since, "ann"),
             Landed::Nothing,
             "someone else's approval and comments are not yours"
+        );
+        let mut timeless = conversation(
+            Some((VerdictState::Approved, "Looks good")),
+            &["Nit", "Typo"],
+        );
+        timeless.verdicts[0].submitted_at = String::new();
+        timeless
+            .comments
+            .push(comment("Looks good", "2026-10-14T12:00:00Z"));
+        assert_eq!(
+            landed(&sent, &timeless, since, "me"),
+            Landed::All,
+            "a GitLab approval has no time, and its summary is a note"
         );
         let mut cut = conversation(None, &["Nit"]);
         cut.incomplete = true;
