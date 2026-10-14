@@ -2198,10 +2198,12 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   }
 
   function jumpToThread(forward) {
-    var line = readingLine();
-    // A thread just jumped to sits within this of the line, clear of its
-    // file's pinned header; it is the current one, not the next or previous.
-    var margin = 80;
+    // Where a jump lands a thread: below the pinned header and the page's
+    // scroll padding (16px), plus the row's own scroll margin (48px). A thread
+    // within a few pixels of it is the current one.
+    var header = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--header-height")) || 0;
+    var line = header + 16 + 48;
+    var margin = 12;
     var placed = openThreadRows().map(function (entry) {
       // A folded file's rows are hidden; its threads sit at its header.
       var at = entry.view.details.open ? entry.row : entry.view.details;
