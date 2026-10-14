@@ -124,6 +124,8 @@ pub fn update_description_note(
             .trim_end()
             .to_owned()
     } else {
+        let subject = crate::git::commit_subject(branch).unwrap_or_default();
+        let body = without_subject_echo(&body, &[review.title.as_str(), subject.as_str()]);
         body_with_description_note(&body, description)
     };
     if updated == body {
@@ -272,6 +274,23 @@ fn body_with_closes_note(body: &str, note: &str) -> String {
     body_with_section_before(body, CLOSES_SECTION, note, &[STACK_SECTION])
 }
 
+/// `body` without the title `create_review` echoes as the whole body of a
+/// review whose commit had none, which a description replaces. Any other
+/// freeform text is the author's and stays.
+fn without_subject_echo(body: &str, echoes: &[&str]) -> String {
+    if body.contains(&marker_start(DESCRIPTION_SECTION)) {
+        return body.to_owned();
+    }
+    let freeform = strip_sections(&strip_sections(body, STACK_SECTION), CLOSES_SECTION);
+    let freeform = freeform.trim();
+    if freeform.is_empty() || !echoes.iter().any(|echo| echo.trim() == freeform) {
+        return body.to_owned();
+    }
+    body.trim_start()
+        .strip_prefix(freeform)
+        .map_or_else(|| body.to_owned(), |rest| rest.trim_start().to_owned())
+}
+
 /// Splice the user's description in, above every managed section so it
 /// reads as the opening of the body.
 fn body_with_description_note(body: &str, description: &str) -> String {
@@ -404,6 +423,26 @@ mod tests {
             updated
                 .contains("<!-- git-stk:description -->\nSummary.\n<!-- /git-stk:description -->")
         );
+    }
+
+    #[test]
+    fn a_description_replaces_the_subject_echo() {
+        let body = "Add two\n\n<!-- git-stk:stack -->\nstack list\n<!-- /git-stk:stack -->";
+        let updated = body_with_description_note(&without_subject_echo(body, &["Add two"]), "Why.");
+        assert!(
+            updated.starts_with("<!-- git-stk:description -->\nWhy."),
+            "{updated}"
+        );
+        assert!(updated.contains("stack list"));
+        assert!(!updated.contains("Add two"));
+    }
+
+    #[test]
+    fn a_description_keeps_freeform_text_that_is_not_the_echo() {
+        let body = "Add two\n\nMore context.\n\n<!-- git-stk:stack -->\nstack list\n<!-- /git-stk:stack -->";
+        assert_eq!(without_subject_echo(body, &["Add two"]), body);
+        let described = "<!-- git-stk:description -->\nOld.\n<!-- /git-stk:description -->";
+        assert_eq!(without_subject_echo(described, &["Old."]), described);
     }
 
     #[test]

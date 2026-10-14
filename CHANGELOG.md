@@ -4,6 +4,16 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.15.5
+
+### Fixed
+
+- **submit:** setting a description on a review that was opened without one
+  replaces the commit subject it was opened with, instead of leaving that
+  subject above the description. This happened to every review but the
+  current one when `submit --stack --desc` opened a stack, once you later
+  gave each its own description.
+
 ## 0.15.4
 
 0.15.3 was tagged but never released; its fixes ship here.
