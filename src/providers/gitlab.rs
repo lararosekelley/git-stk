@@ -1351,6 +1351,31 @@ mod tests {
     }
 
     #[test]
+    fn gitlab_activity_reads_notes_but_not_bots() {
+        let node = serde_json::json!({
+            "iid": "3", "title": "T", "webUrl": "u", "draft": false, "sourceBranch": "b",
+            "targetBranch": "main", "createdAt": "2026-10-01T00:00:00Z",
+            "updatedAt": "2026-10-02T00:00:00Z", "author": {"username": "ann"},
+            "approved": false, "reviewers": {"nodes": []},
+            "notes": {"nodes": [
+                {"author": {"username": "me", "bot": false}, "createdAt": "2026-10-10T00:00:00Z"},
+                {"author": {"username": "ann", "bot": false}, "createdAt": "2026-10-11T00:00:00Z"},
+                {"author": {"username": "ann-helper", "bot": true}, "createdAt": "2026-10-12T00:00:00Z"},
+                {"author": {"username": "gitlab-bot", "bot": false}, "createdAt": "2026-10-13T00:00:00Z"},
+            ]},
+        });
+        let entry = gitlab_inbox_entry(&node, "me").unwrap();
+        assert_eq!(
+            entry.activity.yours.as_deref(),
+            Some("2026-10-10T00:00:00Z")
+        );
+        assert_eq!(
+            entry.activity.others.as_deref(),
+            Some("2026-10-11T00:00:00Z")
+        );
+    }
+
+    #[test]
     fn the_inbox_drops_reviewed_requests_and_returns_changes_requested() {
         let node = |iid: u32, author: &str, reviewers: &str, approved: bool| {
             format!(

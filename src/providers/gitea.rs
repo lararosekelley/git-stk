@@ -1058,6 +1058,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gitea_activity_reads_reviews_and_comments_but_not_bots() {
+        let reviews = serde_json::json!([
+            {"user": {"login": "me"}, "submitted_at": "2026-10-10T00:00:00+02:00"},
+            {"user": {"login": "ann"}, "submitted_at": "2026-10-09T00:00:00Z"},
+        ]);
+        let comments = serde_json::json!([
+            {"user": {"login": "ann"}, "created_at": "2026-10-11T00:00:00Z"},
+            {"user": {"login": "renovate-bot"}, "created_at": "2026-10-12T00:00:00Z"},
+        ]);
+        let activity = gitea_activity("me", &reviews, &comments);
+        assert_eq!(activity.yours.as_deref(), Some("2026-10-10T00:00:00+02:00"));
+        assert_eq!(activity.others.as_deref(), Some("2026-10-11T00:00:00Z"));
+    }
+
+    #[test]
     fn inbox_lists_sort_pulls_by_who_is_asked() {
         let pull = |author: &str, users: &[&str], teams: &[u64]| {
             serde_json::json!({
