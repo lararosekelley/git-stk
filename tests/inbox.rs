@@ -354,3 +354,39 @@ fn inbox_marks_a_review_someone_came_back_to_since_you_looked() {
     assert!(!line("#6 Untouched").contains("new"), "{text}");
     assert!(!line("#7 Botted").contains("new"), "{text}");
 }
+
+#[test]
+fn a_tour_counts_as_looking_for_the_inbox() {
+    let repo = github_repo();
+    // You never commented on #6, but you toured it before bo's comment.
+    let commented = pull(6, "Toured", "ann", "SUCCESS", "REVIEW_REQUIRED", 0).replacen(
+        r#""reviewThreads""#,
+        r#""comments":{"nodes":[{"author":{"__typename":"User","login":"bo"},"createdAt":"2026-10-11T00:00:00Z"}]},
+        "reviewThreads""#,
+        1,
+    );
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"owner/repo"}"#)
+        .on("user-review-requested:@me", &search(1, &[&commented]))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let listed = |repo: &TestRepo| {
+        let output = repo
+            .stack_faked(&fake)
+            .args(["inbox", "--filter", "incoming"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    assert!(!listed(&repo).contains("new"), "never looked at");
+
+    let tours = repo.path().join(".git/stk/tours");
+    std::fs::create_dir_all(&tours).unwrap();
+    // 2026-10-10T00:00:00Z: toured a day before bo came back.
+    std::fs::write(tours.join("seen.json"), r##"{"#6":1791590400}"##).unwrap();
+    assert!(listed(&repo).contains("new, ann"), "{}", listed(&repo));
+
+    // 2026-10-12T00:00:00Z: toured since.
+    std::fs::write(tours.join("seen.json"), r##"{"#6":1791763200}"##).unwrap();
+    assert!(!listed(&repo).contains("new"), "{}", listed(&repo));
+}
