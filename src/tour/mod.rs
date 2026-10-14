@@ -485,11 +485,17 @@ fn plan_chapters(
                 .as_ref()
                 .and_then(|path| std::fs::read_to_string(path).ok());
             if planner.review {
-                // A saved plan keeps the review it followed up on; a new one
-                // follows up on the latest.
+                // A saved plan keeps the review it followed up on. A new one
+                // follows up on the latest review of another head, and a head
+                // reviewed before only on those reviewed before it was.
                 previous[index] = match (&saved, &path) {
                     (Some(_), Some(path)) => followed_review(path),
-                    _ => previous_review(chapter),
+                    _ => {
+                        let own = plan_cache(chapter, agent, planner.review)
+                            .ok()
+                            .and_then(|path| first_reviewed(&path));
+                        previous_review(chapter, own)
+                    }
                 };
             }
             match saved {
@@ -607,6 +613,8 @@ fn plan_chapters(
                         .previous
                         .as_ref()
                         .map_or(Value::Null, plan::Previous::to_json);
+                    // When this head was first reviewed, kept through a refresh.
+                    shown["reviewedAt"] = first_reviewed(&path).unwrap_or_else(now_millis).into();
                     let _ = std::fs::write(path.with_extension(SHOWN_EXTENSION), shown.to_string());
                 }
                 if !applied.corrections.is_empty() {
@@ -716,30 +724,45 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
 /// Beside each saved review plan, what the review showed once checked.
 const SHOWN_EXTENSION: &str = "shown.json";
 
-/// The latest saved agent review of an earlier head of `chapter`'s review,
-/// from any agent, for a follow-up.
-fn previous_review(chapter: &Chapter) -> Option<plan::Previous> {
+/// The latest saved agent review of another head of `chapter`'s review, from
+/// any agent, first reviewed before `before` when given, for a follow-up.
+fn previous_review(chapter: &Chapter, before: Option<u64>) -> Option<plan::Previous> {
     let dir = git::git_common_path_absolute("stk/tours/plans").ok()?;
     let prefix = format!("{}-", chapter.review.id_value());
     let head = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
-    let mut saved: Vec<(std::time::SystemTime, String, std::path::PathBuf)> =
-        std::fs::read_dir(dir)
-            .ok()?
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let name = entry.file_name().into_string().ok()?;
-                name.ends_with(&format!(".{SHOWN_EXTENSION}"))
-                    .then_some(())?;
-                let earlier = name.strip_prefix(&prefix)?.split('-').next()?.to_owned();
-                let modified = entry.metadata().ok()?.modified().ok()?;
-                (earlier != head).then(|| (modified, earlier, entry.path()))
-            })
-            .collect();
-    saved.sort_by_key(|(modified, _, _)| std::cmp::Reverse(*modified));
-    saved.into_iter().find_map(|(_, earlier, path)| {
-        let shown: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-        plan::Previous::from_shown(&earlier, &shown)
-    })
+    let mut saved: Vec<(u64, String, Value)> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            name.ends_with(&format!(".{SHOWN_EXTENSION}"))
+                .then_some(())?;
+            let earlier = name.strip_prefix(&prefix)?.split('-').next()?.to_owned();
+            let shown: Value =
+                serde_json::from_str(&std::fs::read_to_string(entry.path()).ok()?).ok()?;
+            let reviewed = shown["reviewedAt"].as_u64()?;
+            let in_time = before.is_none_or(|before| reviewed < before);
+            (earlier != head && in_time).then_some((reviewed, earlier, shown))
+        })
+        .collect();
+    saved.sort_by_key(|(reviewed, _, _)| std::cmp::Reverse(*reviewed));
+    saved
+        .into_iter()
+        .find_map(|(_, earlier, shown)| plan::Previous::from_shown(&earlier, &shown))
+}
+
+/// When the head of the plan saved at `plan` was first reviewed.
+fn first_reviewed(plan: &std::path::Path) -> Option<u64> {
+    let shown: Value =
+        serde_json::from_str(&std::fs::read_to_string(plan.with_extension(SHOWN_EXTENSION)).ok()?)
+            .ok()?;
+    shown["reviewedAt"].as_u64()
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 /// The review the plan saved at `plan` followed up on, as saved beside it.

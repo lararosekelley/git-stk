@@ -1645,6 +1645,13 @@ fn an_agent_review_of_a_new_head_follows_up_on_the_last_one() {
         ])
         .assert()
         .success();
+    // A refresh follows up on the review before this head's first, never on a
+    // later head's.
+    let refreshed = tour_data(&fs::read_to_string(repo.path().join("refreshed.html")).unwrap());
+    assert_eq!(
+        refreshed["chapters"][0]["plan"]["followUp"]["head"],
+        &first_head[..12]
+    );
     repo.git([
         "push",
         "-q",
