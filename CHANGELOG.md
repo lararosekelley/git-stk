@@ -6,6 +6,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ## 0.15.4
 
+0.15.3 was tagged but never released; its fixes ship here.
+
 ### Fixed
 
 - **merge:** a pull request in a GitHub stack merges through the endpoint
