@@ -12,6 +12,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   Until GitLab publishes the request's own ref, the tour reads its source
   branch, as long as that branch is at the head GitLab reports, so a fork's
   branch of the same name is never read in its place.
+- **merge:** when the forge refuses a merge as conflicting but the review's
+  branch merges cleanly into its base as the remote has them, `merge` says
+  the forge may still be rechecking after a push and to rerun it, instead of
+  asking you to resolve conflicts that are not there.
 
 ## 0.15.2
 

@@ -4,6 +4,7 @@ use clap::ArgAction;
 use crate::cli::PushMode;
 use crate::commands::Run;
 use crate::commands::sync::sync;
+use crate::git;
 use crate::prompt::confirm;
 use crate::providers::{
     BaseGap, MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
@@ -662,6 +663,25 @@ fn enqueue_whole_stack(
     }
 }
 
+/// Whether the review's branch merges into its base without conflicts as the
+/// remote has them now. Best effort: anything that cannot be read says no, so
+/// the forge's verdict stands.
+fn merges_cleanly_on_remote(review: &ReviewRequest) -> bool {
+    let tips = settings::remote().and_then(|remote| {
+        git::fetch_commits(
+            &remote,
+            &[
+                format!("refs/heads/{}", review.base),
+                format!("refs/heads/{}", review.branch),
+            ],
+        )
+    });
+    match tips.as_deref() {
+        Ok([base, head]) => git::merges_cleanly(base, head).unwrap_or(false),
+        _ => false,
+    }
+}
+
 /// Whether the review is sitting in a merge queue. Best-effort: the default
 /// implementation is empty and a failed lookup degrades to `false`, which only
 /// costs the queue wording, so it is never worth failing a merge over.
@@ -700,6 +720,14 @@ fn explain_merge_failure(
         .unwrap_or(MergeBlocker::None)
     {
         MergeBlocker::ChecksPending => checks_not_green_error(review, can_schedule),
+        // A forge recomputes mergeability after a push, and can report the
+        // old verdict until it has.
+        MergeBlocker::Conflicts if merges_cleanly_on_remote(review) => anyhow::anyhow!(
+            "{} reports a conflict with {}, but the two merge cleanly - the forge may still be \
+             rechecking after a push; rerun `git stk merge` in a moment",
+            review.id,
+            review.base
+        ),
         MergeBlocker::Conflicts => anyhow::anyhow!(
             "{} conflicts with {} - resolve the conflicts, push, and rerun `git stk merge`",
             review.id,
