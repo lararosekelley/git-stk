@@ -13,7 +13,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   delete the branch, and `list` and `status` mark the worktree `(missing)`.
 - **cleanup:** a landed branch checked out in a worktree you made yourself is
   no longer just kept: when that worktree has no changes or untracked files,
-  `cleanup` and `sync` offer to remove it and delete the branch. The hint for
+  `cleanup` and `sync` offer to remove it, naming any ignored files that
+  would go with it, and delete the branch. The hint for
   a kept landed branch now says what will free it.
 
 ## 0.15.1
