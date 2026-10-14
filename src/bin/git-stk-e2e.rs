@@ -986,11 +986,36 @@ fn clone(provider: Provider, slug: &str) -> Result<PathBuf, String> {
         }
         let _ = std::fs::remove_dir_all(&dir);
         match sh("git", &["clone", &url, &dir.to_string_lossy()], None) {
-            Ok(_) => return Ok(dir),
+            Ok(_) => return seed_main(&dir).map(|()| dir),
             Err(error) => last = error,
         }
     }
     Err(format!("clone failed after retries: {last}"))
+}
+
+/// Push the initial commit on `main` when the host left the repo empty, as
+/// GitLab sometimes does despite `--readme`.
+fn seed_main(dir: &Path) -> Result<(), String> {
+    if git(dir, &["rev-parse", "--verify", "--quiet", "origin/main"]).is_ok() {
+        return Ok(());
+    }
+    eprintln!("e2e: the host left the repo empty; seeding main");
+    git(dir, &["checkout", "-B", "main"])?;
+    write(dir, "README.md", "# git-stk e2e\n")?;
+    git(dir, &["add", "README.md"])?;
+    git(
+        dir,
+        &[
+            "-c",
+            "user.name=git-stk e2e",
+            "-c",
+            "user.email=e2e@git-stk.test",
+            "commit",
+            "-m",
+            "seed",
+        ],
+    )?;
+    git(dir, &["push", "-u", "origin", "main"]).map(|_| ())
 }
 
 /// Poll the open-review count until it matches `want`. `submit`/`merge` then
