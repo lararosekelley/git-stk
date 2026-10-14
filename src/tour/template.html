@@ -697,7 +697,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       if (here) view.placed[index] = true;
       return here;
     }).map(function (thread) {
-      return el("tr", { class: "thread-row" }, [el("td", { colspan: "4" }, [renderThread(thread)])]);
+      return el("tr", { class: "thread-row", "data-thread": thread.id }, [el("td", { colspan: "4" }, [renderThread(thread)])]);
     });
     findingsOnFile(this.file).filter(function (finding) {
       return finding.side === "old" ? finding.line === oldNum : finding.line === newNum;
@@ -2042,6 +2042,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     ["gg / G", "top / bottom"],
     ["] / [", "next / previous file"],
     ["} / {", "next / previous step"],
+    ["n / p", "next / previous open thread"],
     ["?", "this popup"],
     ["Esc", "cancel"],
   ];
@@ -2166,6 +2167,45 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     var target = forward ? all[index + 1]
       : current && current.getBoundingClientRect().top < line - 30 ? current : all[index - 1];
     if (target) target.scrollIntoView({ behavior: scrollBehavior() });
+  }
+
+  // The open threads on the current diff, in reading order, each with the
+  // file it is on: files are drawn lazily, so a thread may not be on the
+  // page until its file is.
+  function openThreads() {
+    var found = [];
+    views.forEach(function (view) {
+      view.threads.forEach(function (thread) {
+        if (!thread.outdated && !thread.resolved && thread.line !== null) found.push({ view: view, thread: thread });
+      });
+    });
+    return found;
+  }
+
+  function threadRow(id) {
+    return main.querySelector('tr[data-thread="' + id + '"]');
+  }
+
+  function jumpToThread(forward) {
+    var line = readingLine();
+    // Where each thread is, or its file's header for one not drawn yet.
+    var placed = openThreads().map(function (entry) {
+      var row = threadRow(entry.thread.id);
+      var top = (row || entry.view.details).getBoundingClientRect().top;
+      return { entry: entry, top: top };
+    });
+    // A thread just jumped to sits a little above the line; it is the
+    // current one, not the previous.
+    var margin = 30;
+    var target = forward
+      ? placed.filter(function (spot) { return spot.top > line + margin; })[0]
+      : placed.filter(function (spot) { return spot.top < line - margin; }).pop();
+    if (!target) return;
+    var view = target.entry.view;
+    view.details.open = true;
+    if (!view.rendered) view.render();
+    var row = threadRow(target.entry.thread.id);
+    if (row) row.scrollIntoView({ behavior: scrollBehavior() });
   }
 
   function currentStep() {
@@ -2295,6 +2335,8 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       jump("details.file", key === "]");
     } else if (key === "}" || key === "{") {
       jump("section.step", key === "}");
+    } else if (key === "n" || key === "p") {
+      jumpToThread(key === "n");
     } else if (key === "?") {
       toggleViSettings();
     } else {
