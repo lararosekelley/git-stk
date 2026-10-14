@@ -280,6 +280,12 @@ impl ReviewProvider for GiteaProvider {
         Ok(list_pulls("open")?.0)
     }
 
+    fn viewer(&self) -> Result<String> {
+        let user: Value = serde_json::from_str(&command_output("tea", &["api", "user"])?)
+            .context("failed to parse gitea user JSON")?;
+        required_string(&user, &["login"])
+    }
+
     fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
         let user: Value = serde_json::from_str(&inbox_read("user")?)
             .context("failed to parse gitea user JSON")?;

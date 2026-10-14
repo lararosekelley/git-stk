@@ -18,6 +18,8 @@ pub enum Landed {
     All,
     Part,
     Nothing,
+    /// The discussion was cut short before all of it could be checked.
+    Unsure,
 }
 
 /// A submission's contents as a short id, to tell a retry from a new review.
@@ -53,10 +55,11 @@ pub fn pending(review: &ReviewRequest, submission: &Submission) -> Option<i64> {
 }
 
 /// Note that `submission` to `review` is being posted.
-pub fn start(review: &ReviewRequest, submission: &Submission) -> std::io::Result<()> {
-    let Some(path) = path(review) else {
-        return Ok(());
-    };
+pub fn start(review: &ReviewRequest, submission: &Submission) -> anyhow::Result<()> {
+    let path = git::git_common_path_absolute(&format!(
+        "stk/tours/submissions/{}.json",
+        review.id_value()
+    ))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -66,7 +69,8 @@ pub fn start(review: &ReviewRequest, submission: &Submission) -> std::io::Result
     std::fs::write(
         path,
         json!({ "fingerprint": fingerprint(submission), "at": at }).to_string(),
-    )
+    )?;
+    Ok(())
 }
 
 /// Forget the record once the forge has confirmed, or ruled on, it.
@@ -76,27 +80,32 @@ pub fn finish(review: &ReviewRequest) {
     }
 }
 
-/// What of `submission` shows in `conversation` since `since`: its outcome,
-/// its summary, and each line comment.
-pub fn landed(submission: &Submission, conversation: &Conversation, since: i64) -> Landed {
+/// What of `submission` shows in `conversation` since `since`, written by
+/// `me`: its outcome, its summary, and each line comment.
+pub fn landed(
+    submission: &Submission,
+    conversation: &Conversation,
+    since: i64,
+    me: &str,
+) -> Landed {
     let recent =
         |when: &str| epoch_seconds(when).is_some_and(|at| at >= since - CLOCK_SLACK_SECONDS);
     let said = |body: &str| {
         let body = body.trim();
-        conversation
-            .verdicts
+        conversation.verdicts.iter().any(|verdict| {
+            verdict.author == me && recent(&verdict.submitted_at) && verdict.body.trim() == body
+        }) || conversation
+            .comments
             .iter()
-            .any(|verdict| recent(&verdict.submitted_at) && verdict.body.trim() == body)
-            || conversation
-                .comments
-                .iter()
-                .chain(
-                    conversation
-                        .threads
-                        .iter()
-                        .flat_map(|thread| &thread.comments),
-                )
-                .any(|comment| recent(&comment.created_at) && comment.body.trim() == body)
+            .chain(
+                conversation
+                    .threads
+                    .iter()
+                    .flat_map(|thread| &thread.comments),
+            )
+            .any(|comment| {
+                comment.author == me && recent(&comment.created_at) && comment.body.trim() == body
+            })
     };
     let mut parts: Vec<bool> = submission
         .comments
@@ -112,18 +121,17 @@ pub fn landed(submission: &Submission, conversation: &Conversation, since: i64) 
         ReviewEvent::Comment => None,
     };
     if let Some(state) = outcome {
-        parts.push(
-            conversation
-                .verdicts
-                .iter()
-                .any(|verdict| verdict.state == state && recent(&verdict.submitted_at)),
-        );
+        parts.push(conversation.verdicts.iter().any(|verdict| {
+            verdict.author == me && verdict.state == state && recent(&verdict.submitted_at)
+        }));
     }
     match (
         parts.iter().all(|&found| found),
         parts.iter().any(|&found| found),
     ) {
         (true, _) => Landed::All,
+        // What was not seen may lie past where the listing stopped.
+        _ if conversation.incomplete => Landed::Unsure,
         (false, true) => Landed::Part,
         (false, false) => Landed::Nothing,
     }
@@ -203,16 +211,24 @@ mod tests {
             Some((VerdictState::Approved, "Looks good")),
             &["Nit", "Typo"],
         );
-        assert_eq!(landed(&sent, &all, since), Landed::All);
+        assert_eq!(landed(&sent, &all, since, "me"), Landed::All);
         let part = conversation(None, &["Nit"]);
-        assert_eq!(landed(&sent, &part, since), Landed::Part);
+        assert_eq!(landed(&sent, &part, since, "me"), Landed::Part);
         assert_eq!(
-            landed(&sent, &conversation(None, &[]), since),
+            landed(&sent, &conversation(None, &[]), since, "me"),
             Landed::Nothing
         );
         let later = epoch_seconds("2026-10-14T13:00:00Z").unwrap();
         assert_eq!(
-            landed(&sent, &all, later),
+            landed(&sent, &all, since, "ann"),
+            Landed::Nothing,
+            "someone else's approval and comments are not yours"
+        );
+        let mut cut = conversation(None, &["Nit"]);
+        cut.incomplete = true;
+        assert_eq!(landed(&sent, &cut, since, "me"), Landed::Unsure);
+        assert_eq!(
+            landed(&sent, &all, later, "me"),
             Landed::Nothing,
             "only what came since counts"
         );

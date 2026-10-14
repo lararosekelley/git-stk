@@ -329,7 +329,10 @@ fn submit(
                 review.id
             )
         })?;
-        match tour::submitted::landed(&submission, &conversation, since) {
+        let me = provider
+            .viewer()
+            .context("could not tell who you are on the forge, to check the last attempt")?;
+        match tour::submitted::landed(&submission, &conversation, since, &me) {
             tour::submitted::Landed::All => {
                 tour::submitted::finish(review);
                 anstream::println!(
@@ -342,6 +345,13 @@ fn submit(
                 tour::submitted::finish(review);
                 bail!(
                     "part of this review already reached {}; check it there, then submit again to post all of it",
+                    review.id
+                );
+            }
+            tour::submitted::Landed::Unsure => {
+                tour::submitted::finish(review);
+                bail!(
+                    "the discussion on {} is too long to check whether the last attempt reached it; check it there, then submit again to post it",
                     review.id
                 );
             }
@@ -358,7 +368,9 @@ fn submit(
     )? {
         return Ok(Posted::Declined);
     }
-    let _ = tour::submitted::start(review, &submission);
+    // Without a record, a lost answer could be posted twice, so refuse.
+    tour::submitted::start(review, &submission)
+        .context("could not record this review before posting it, so it was not posted")?;
     let link = provider.submit_review(review, &submission).map_err(|error| {
         anyhow!(
             "{error:#}; if it reached {} anyway, submitting the same review again checks before posting it twice",

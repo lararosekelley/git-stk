@@ -421,6 +421,7 @@ fn a_review_whose_answer_was_lost_is_not_posted_again() {
     );
     let fake = github_tour_fake_after(
         FakeProvider::new()
+            .on("api user --jq .login", "me")
             .on_after("api graphql", "attempted", &landed)
             .record_fail(
                 "pulls/12/reviews --input -",
