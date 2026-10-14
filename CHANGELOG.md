@@ -38,7 +38,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   and `}`/`{` between steps, and a leader key (comma, space, backslash, or
   semicolon, with a timeout you set) then a letter moves along the stack,
   jumps to a step, marks a step reviewed or a file viewed, or switches the
-  view, theme, or sidebar.
+  view, theme, or sidebar. Esc, with or without Vi mode, closes the review
+  panel or a comment editor with nothing typed in it.
 
 ### Fixed
 
