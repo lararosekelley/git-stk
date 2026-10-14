@@ -25,8 +25,7 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   asking you to resolve conflicts that are not there.
 - **submit:** a branch named like a path in the repository, such as
   `eval/harness` beside an `eval/harness/` directory, no longer fails to
-  read its commit subject for the review's title. Every git call that takes
-  a branch name now ends its revisions with `--`.
+  read its commit subject for the review's title.
 
 ## 0.15.2
 
