@@ -36,7 +36,7 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
     // Where the branch actually lives, when that is not here. Best effort: a
     // failed listing just omits the line.
     if let Some(path) = git::worktree_holding(&branch).ok().flatten() {
-        anstream::println!("worktree: {}", git::display_path(&path));
+        anstream::println!("worktree: {}", git::worktree_label(&path));
     }
     match parent.as_deref() {
         Some(parent) => anstream::println!("parent: {}", style::paint(style::BRANCH, parent)),
@@ -188,8 +188,9 @@ pub fn print_status(branch: Option<&str>) -> Result<()> {
         // `sync` already ran and had to keep the branch.
         Some(review) if review.state == ReviewState::Merged && stack::is_landed(&branch) => {
             hints.push(format!(
-                "review {} is merged - `git stk cleanup {branch}` finishes it once its ref is free",
-                review.id
+                "review {} is merged - {}",
+                review.id,
+                stack::landed_cleanup(&branch)
             ));
         }
         Some(review) if review.state == ReviewState::Merged => {

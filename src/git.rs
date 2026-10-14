@@ -138,6 +138,77 @@ pub fn worktree_remove(path: &std::path::Path) -> Result<()> {
         .with_context(|| format!("failed to remove the worktree at {path}"))
 }
 
+/// Remove a worktree only if git finds nothing in it to lose, refusing on
+/// changes or untracked files. A worktree whose directory is already gone just
+/// loses its registration, leaving every other worktree's alone - unlike `git
+/// worktree prune`.
+pub fn worktree_remove_clean(path: &std::path::Path) -> Result<()> {
+    let path = path.to_string_lossy().into_owned();
+    status(&["worktree", "remove", &path])
+        .with_context(|| format!("failed to remove the worktree at {path}"))
+}
+
+/// Whether the worktree registered at `path` has lost its directory, so the
+/// registration alone holds its branch. A locked worktree never counts: its
+/// directory may just be on a volume that is not mounted. Nor does a directory
+/// that still exists, even when git calls it prunable because its gitfile is
+/// gone.
+pub fn is_missing_worktree(path: &std::path::Path) -> bool {
+    matches!(path.try_exists(), Ok(false))
+        && output(&["worktree", "list", "--porcelain"]).is_ok_and(|porcelain| {
+            parse_missing_worktrees(&porcelain)
+                .iter()
+                .any(|missing| same_path(missing, path))
+        })
+}
+
+/// Whether the worktree at `path` is locked against removal.
+pub fn is_locked_worktree(path: &std::path::Path) -> bool {
+    output(&["worktree", "list", "--porcelain"]).is_ok_and(|porcelain| {
+        parse_worktree_records(&porcelain).iter().any(|record| {
+            record
+                .lines()
+                .any(|line| line == "locked" || line.starts_with("locked "))
+                && record_path(record).is_some_and(|locked| same_path(&locked, path))
+        })
+    })
+}
+
+/// A worktree path for display, marked when its directory is gone.
+pub fn worktree_label(path: &std::path::Path) -> String {
+    let shown = display_path(path);
+    if is_missing_worktree(path) {
+        format!("{shown} (missing)")
+    } else {
+        shown
+    }
+}
+
+/// Paths of the records git reports as prunable. Git leaves locked worktrees
+/// out on its own.
+fn parse_missing_worktrees(porcelain: &str) -> Vec<std::path::PathBuf> {
+    parse_worktree_records(porcelain)
+        .into_iter()
+        .filter(|record| record.lines().any(|line| line.starts_with("prunable")))
+        .filter_map(record_path)
+        .collect()
+}
+
+/// The blank-line separated records of `git worktree list --porcelain`.
+fn parse_worktree_records(porcelain: &str) -> Vec<&str> {
+    porcelain
+        .split("\n\n")
+        .filter(|record| !record.trim().is_empty())
+        .collect()
+}
+
+fn record_path(record: &str) -> Option<std::path::PathBuf> {
+    record
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .map(std::path::PathBuf::from)
+}
+
 /// Move an existing worktree's detached HEAD to `commit`, without touching any
 /// branch.
 pub fn checkout_detached_in(worktree: &std::path::Path, commit: &str) -> Result<()> {
@@ -1549,6 +1620,29 @@ detached
                 Some(std::path::Path::new("/repo/../wt-detached"))
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn only_prunable_records_read_as_missing() {
+        let porcelain = "\
+worktree /repo
+HEAD f7cff917cf874d0c6ff3108260fda91ac3271baf
+branch refs/heads/main
+
+worktree /gone
+HEAD f7cff917cf874d0c6ff3108260fda91ac3271baf
+branch refs/heads/feat/a
+prunable gitdir file points to non-existent location
+
+worktree /unmounted
+HEAD f7cff917cf874d0c6ff3108260fda91ac3271baf
+branch refs/heads/feat/b
+locked
+";
+        assert_eq!(
+            parse_missing_worktrees(porcelain),
+            vec![std::path::PathBuf::from("/gone")]
         );
     }
 

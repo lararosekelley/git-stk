@@ -4,6 +4,7 @@ use clap_complete::engine::ArgValueCompleter;
 
 use crate::commands::Run;
 use crate::completions;
+use crate::prompt;
 use crate::providers::{
     BaseGap, ReviewProvider, ReviewState, detect_review_provider, owned_review_for_branch,
 };
@@ -136,7 +137,7 @@ pub fn cleanup(branch: Option<&str>, dry_run: bool, keep_branch: bool) -> Result
         // `--keep-branch` keeps the ref on purpose, so the deletion guards do
         // not apply: clean the metadata and stop there. Otherwise a ref that
         // cannot go yet keeps its metadata too, and stays in the stack.
-        if !keep_branch && let Some(reason) = deletion_blocker(&branch, &current_branch)? {
+        if !keep_branch && let Some(reason) = deletion_blocker(&branch, &current_branch, dry_run)? {
             report_kept(&branch, &reason);
             if !dry_run && landing == Landing::Merged && !stack::landed_marker_retired(&branch) {
                 stack::set_landed(&branch)?;
@@ -336,8 +337,13 @@ pub(crate) fn retarget_children(
 /// Why `branch`'s ref cannot go yet, or `None` when it can. Asked *before*
 /// anything is written: a branch that has to stay keeps its stack metadata too,
 /// so it stays in the stack for a later cleanup rather than being silently
-/// unstacked.
-pub(crate) fn deletion_blocker(branch: &str, current_branch: &str) -> Result<Option<String>> {
+/// unstacked. The user's own worktree is let go of here: without asking when
+/// its directory is already gone, and on a yes when it is clean.
+pub(crate) fn deletion_blocker(
+    branch: &str,
+    current_branch: &str,
+    dry_run: bool,
+) -> Result<Option<String>> {
     // The checked out branch cannot be deleted; keep it and let the user
     // switch away instead of failing the rest of the cleanup.
     if branch == current_branch {
@@ -361,14 +367,11 @@ pub(crate) fn deletion_blocker(branch: &str, current_branch: &str) -> Result<Opt
         }
         return Ok(None);
     };
+    if git::is_missing_worktree(&path) {
+        return Ok(None);
+    }
     if !stack::owned_worktree(branch).is_some_and(|owned| git::same_path(&owned, &path)) {
-        // The user's own worktree. Naming where it lives keeps the rest of the
-        // cleanup running - a landed stack should not stop halfway because one
-        // branch has a worktree parked on it.
-        return Ok(Some(format!(
-            "checked out in the worktree at {}",
-            git::display_path(&path)
-        )));
+        return user_worktree_blocker(branch, &path, dry_run);
     }
     // Ours, but not ours to throw away: uncommitted work in it is not covered
     // by any snapshot.
@@ -376,6 +379,42 @@ pub(crate) fn deletion_blocker(branch: &str, current_branch: &str) -> Result<Opt
         return Ok(Some(uncommitted_work(&path)));
     }
     Ok(None)
+}
+
+/// Whether the user's own worktree at `path` keeps `branch`. Naming where it
+/// lives keeps the rest of the cleanup running - a landed stack should not stop
+/// halfway because one branch has a worktree parked on it.
+fn user_worktree_blocker(
+    branch: &str,
+    path: &std::path::Path,
+    dry_run: bool,
+) -> Result<Option<String>> {
+    let held = || {
+        format!(
+            "checked out in the worktree at {}",
+            git::describe_worktree(path)
+        )
+    };
+    if git::is_main_worktree(path) {
+        return Ok(Some(held()));
+    }
+    if git::is_locked_worktree(path) {
+        return Ok(Some(format!(
+            "checked out in the locked worktree at {}",
+            git::display_path(path)
+        )));
+    }
+    if git::worktree_has_changes(path) {
+        return Ok(Some(uncommitted_work(path)));
+    }
+    if dry_run {
+        return Ok(None);
+    }
+    let remove = prompt::confirm(&format!(
+        "{branch} is checked out in the worktree at {}, which is clean. Remove that worktree? [y/N] ",
+        git::display_path(path)
+    ))?;
+    Ok((!remove).then(held))
 }
 
 fn uncommitted_work(path: &std::path::Path) -> String {
@@ -422,7 +461,31 @@ pub(crate) fn report_kept(branch: &str, reason: &str) {
 /// to delete a branch a worktree still holds. Call [`deletion_blocker`] first -
 /// this assumes the ref is free to go.
 pub(crate) fn cleanup_branch_deletion(branch: &str, landing: Landing, dry_run: bool) -> Result<()> {
-    if let Some(path) = removable_owned_worktree(branch)? {
+    let owned = removable_owned_worktree(branch)?;
+    let user_worktree = match owned {
+        Some(_) => None,
+        None => git::worktree_holding(branch)?,
+    };
+    if let Some(path) = user_worktree {
+        // Left to git to refuse anything with work in it, should the worktree
+        // have changed since the user agreed.
+        let action = if git::is_missing_worktree(&path) {
+            "prune the missing worktree"
+        } else if dry_run {
+            "offer to remove worktree"
+        } else {
+            "remove worktree"
+        };
+        anstream::println!(
+            "{} {action} {}",
+            if dry_run { "would" } else { "will" },
+            git::display_path(&path)
+        );
+        if !dry_run {
+            git::worktree_remove_clean(&path)?;
+        }
+    }
+    if let Some(path) = owned {
         anstream::println!(
             "{} remove worktree {}",
             if dry_run { "would" } else { "will" },
