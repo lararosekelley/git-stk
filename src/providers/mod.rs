@@ -698,6 +698,9 @@ pub trait ReviewProvider: Sync {
         Ok(false)
     }
 
+    /// The login of whoever the forge CLI is signed in as.
+    fn viewer(&self) -> Result<String>;
+
     /// Each of `lists` for this repository, in the order asked, with up to
     /// [`FETCH_LIMIT`] reviews each, for `inbox`.
     fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>>;

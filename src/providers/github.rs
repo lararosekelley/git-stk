@@ -412,6 +412,12 @@ impl ReviewProvider for GitHubProvider {
         parse_github_reviews(&output)
     }
 
+    fn viewer(&self) -> Result<String> {
+        Ok(command_output("gh", &["api", "user", "--jq", ".login"])?
+            .trim()
+            .to_owned())
+    }
+
     fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
         let (owner, repo) = repo_owner_name_result()?;
         let slug = format!("{owner}/{repo}");

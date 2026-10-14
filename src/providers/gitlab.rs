@@ -613,6 +613,13 @@ impl ReviewProvider for GitLabProvider {
         Ok(gitlab_summary(&mr, approvals.as_deref()))
     }
 
+    fn viewer(&self) -> Result<String> {
+        let user: serde_json::Value =
+            serde_json::from_str(&command_output("glab", &["api", "user"])?)
+                .context("failed to parse glab user JSON")?;
+        required_string(&user, &["username"])
+    }
+
     fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
         let user: serde_json::Value = serde_json::from_str(&super::retry_server_errors(|| {
             command_output("glab", &["api", "user"])

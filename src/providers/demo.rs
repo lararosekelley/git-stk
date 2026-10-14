@@ -168,6 +168,10 @@ impl ReviewProvider for DemoProvider {
         Ok(WaitOutcome::Passed)
     }
 
+    fn viewer(&self) -> Result<String> {
+        Ok("you".to_owned())
+    }
+
     fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
         // Every demo review is yours, and nobody else reviews them.
         let mut mine = self
