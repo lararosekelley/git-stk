@@ -4,6 +4,16 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.15.1
+
+### Added
+
+- **inbox:** a review is marked `new` when someone else has commented,
+  reviewed, or pushed since you last looked at it, on the forge or in a
+  `git stk tour`, which now notes when you toured each review. Bots don't
+  count, and a review you have never looked at isn't marked. A list the forge
+  answers with a server error is asked again before it reports the error.
+
 ## 0.15.0
 
 ### Added

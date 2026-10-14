@@ -7,7 +7,7 @@ use super::json::{
     all_reviews, optional_bool, optional_string, parse_issue_state, parse_state, required_string,
 };
 use super::{
-    Anchor, CHECK_GRACE_POLLS, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT,
+    Activity, Anchor, CHECK_GRACE_POLLS, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT,
     InboxEntry, InboxList, IssueState, Listing, MergeBlocker, ReviewEvent, ReviewProvider,
     ReviewRequest, ReviewState, ReviewSummary, Side, Submission, Thread, Verdict, VerdictState,
     WaitOutcome, check_poll_interval, checks_timed_out, command_output, merge_with_resettle,
@@ -336,12 +336,14 @@ impl ReviewProvider for GiteaProvider {
                 .collect();
             let statuses = gitea_statuses(&slug, kept.iter().map(|(pull, _)| *pull))?;
             let sizes = gitea_sizes(kept.iter().map(|(pull, _)| *pull))?;
+            let comments = gitea_comments(&slug, kept.iter().map(|(pull, _)| *pull))?;
             let entries = kept
                 .into_iter()
-                .zip(statuses.into_iter().zip(sizes))
-                .map(|((pull, reviews), (checks, size))| {
+                .zip(statuses.into_iter().zip(sizes).zip(comments))
+                .map(|((pull, reviews), ((checks, size), comments))| {
                     let mut entry = gitea_inbox_entry(pull, reviews);
                     entry.checks = checks;
+                    entry.activity = gitea_activity(&me, reviews, &comments);
                     if let Some((additions, deletions)) = size {
                         entry.additions = additions;
                         entry.deletions = deletions;
@@ -739,6 +741,64 @@ fn gitea_reviews_of(slug: &str, pulls: &[&Value]) -> Result<Vec<Value>> {
     })
 }
 
+/// Each pull's conversation comments, every page of them.
+fn gitea_comments<'a>(slug: &str, pulls: impl Iterator<Item = &'a Value>) -> Result<Vec<Value>> {
+    let numbers: Vec<u64> = pulls
+        .map(|pull| pull["number"].as_u64().unwrap_or(0))
+        .collect();
+    in_batches(&numbers, |number| {
+        const MAX_PAGES: usize = 10;
+        let mut comments = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let endpoint = format!(
+                "repos/{slug}/issues/{number}/comments?limit={CONVERSATION_PAGE}&page={page}"
+            );
+            let batch: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+                .context("failed to parse gitea comments JSON")?;
+            let batch = batch.as_array().cloned().unwrap_or_default();
+            let full = batch.len() == CONVERSATION_PAGE;
+            comments.extend(batch);
+            if !full {
+                break;
+            }
+        }
+        Ok(Value::Array(comments))
+    })
+}
+
+/// Reviews and comments by who left them. Gitea gives no cheap way to see
+/// when a pull was last pushed, so pushes are not counted.
+fn gitea_activity(me: &str, reviews: &Value, comments: &Value) -> Activity {
+    // A bot's reviews and comments are not news.
+    let user = |item: &Value| {
+        item["user"]["login"]
+            .as_str()
+            .filter(|login| !super::is_bot(login))
+            .map(str::to_owned)
+    };
+    let events: Vec<(String, String)> = reviews
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|review| Some((user(review)?, review["submitted_at"].as_str()?.to_owned())))
+        .chain(
+            comments
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|comment| {
+                    Some((user(comment)?, comment["created_at"].as_str()?.to_owned()))
+                }),
+        )
+        .collect();
+    Activity::of(
+        me,
+        events
+            .iter()
+            .map(|(who, when)| (who.as_str(), when.as_str())),
+    )
+}
+
 /// The lines added and deleted by each pull whose listing leaves them out, as
 /// Gitea's does (Forgejo's includes them), from the pull itself.
 fn gitea_sizes<'a>(pulls: impl Iterator<Item = &'a Value>) -> Result<Vec<Option<(u64, u64)>>> {
@@ -838,6 +898,7 @@ fn gitea_inbox_entry(pull: &Value, reviews: &Value) -> InboxEntry {
         decision,
         // Gitea has no count of open conversations short of reading them all.
         unresolved: None,
+        activity: Activity::default(),
     }
 }
 

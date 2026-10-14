@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 
 use crate::commands::Run;
@@ -44,6 +46,7 @@ impl Run for Inbox {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs() as i64);
+        let toured = crate::tour::seen::read();
         let mut first = true;
         let mut waiting = false;
         for (list, listing) in provider.inbox(&lists)? {
@@ -53,7 +56,7 @@ impl Run for Inbox {
             first = false;
             waiting |= list != InboxList::Mine
                 && matches!(&listing, Listing::Found { entries, .. } if !entries.is_empty());
-            for line in render(list, listing, self.limit, self.sort, now) {
+            for line in render(list, listing, self.limit, self.sort, now, &toured) {
                 anstream::println!("{line}");
             }
         }
@@ -74,6 +77,7 @@ fn render(
     limit: usize,
     sort: InboxSort,
     now: i64,
+    toured: &BTreeMap<String, i64>,
 ) -> Vec<String> {
     let (mut entries, more) = match listing {
         Listing::Found { entries, more } => (entries, more),
@@ -113,7 +117,7 @@ fn render(
         .max()
         .unwrap_or(0);
     for entry in entries.iter().take(limit) {
-        lines.push(row(entry, list, width, now));
+        lines.push(row(entry, list, width, now, toured));
     }
     let left = if found > limit {
         let plus = if more { "+" } else { "" };
@@ -150,8 +154,20 @@ fn sort_entries(entries: &mut [InboxEntry], sort: InboxSort) {
 }
 
 /// `🟢 #12  Add two  ann, 2d, +40/-3, approved, 1 open thread`
-fn row(entry: &InboxEntry, list: InboxList, width: usize, now: i64) -> String {
+fn row(
+    entry: &InboxEntry,
+    list: InboxList,
+    width: usize,
+    now: i64,
+    toured: &BTreeMap<String, i64>,
+) -> String {
     let mut details = Vec::new();
+    if entry
+        .activity
+        .new_since(toured.get(&entry.review.id).copied())
+    {
+        details.push(style::paint(style::CURRENT, "new"));
+    }
     // Your own reviews need no author.
     if !matches!(list, InboxList::Mine | InboxList::Returned) {
         details.push(entry.author.clone());
@@ -215,7 +231,18 @@ mod tests {
             checks: CheckStatus::None,
             decision: Decision::None,
             unresolved: Some(0),
+            activity: Default::default(),
         }
+    }
+
+    fn render_untoured(
+        list: InboxList,
+        listing: Listing,
+        limit: usize,
+        sort: InboxSort,
+        now: i64,
+    ) -> Vec<String> {
+        render(list, listing, limit, sort, now, &BTreeMap::new())
     }
 
     fn plain(lines: Vec<String>) -> Vec<String> {
@@ -236,7 +263,7 @@ mod tests {
             ],
             more: false,
         };
-        let lines = plain(render(
+        let lines = plain(render_untoured(
             InboxList::Incoming,
             listing,
             2,
@@ -252,7 +279,7 @@ mod tests {
                 "  1 more; raise --limit to see them",
             ]
         );
-        let by_size = plain(render(
+        let by_size = plain(render_untoured(
             InboxList::Mine,
             Listing::Found {
                 entries: vec![entry(1, "", 5), entry(2, "", 50)],
@@ -272,7 +299,7 @@ mod tests {
 
     #[test]
     fn an_empty_or_unsupported_list_says_so() {
-        let empty = plain(render(
+        let empty = plain(render_untoured(
             InboxList::Returned,
             Listing::Found {
                 entries: Vec::new(),
@@ -283,7 +310,7 @@ mod tests {
             0,
         ));
         assert_eq!(empty, ["Returned to you (0)", "  nothing here"]);
-        let unsupported = plain(render(
+        let unsupported = plain(render_untoured(
             InboxList::Team,
             Listing::Unsupported("GitLab has no team review requests".into()),
             10,

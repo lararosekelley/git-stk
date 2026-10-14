@@ -56,6 +56,61 @@ pub struct InboxEntry {
     pub decision: Decision,
     /// Open review threads, when the forge counts them.
     pub unresolved: Option<u32>,
+    /// The latest comment, review, or push by someone else, and by you.
+    pub activity: Activity,
+}
+
+/// Whether `login` is a bot's: GitHub apps end in `[bot]`, and machine users
+/// are named for what they are, as `buildbot` or `gitlab-bot` are. A bot's
+/// comments are not news.
+pub fn is_bot(login: &str) -> bool {
+    login.to_ascii_lowercase().ends_with("bot") || login.ends_with("[bot]")
+}
+
+/// When a review was last touched by someone else and by you, as RFC 3339
+/// timestamps, for marking what is new since you looked.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Activity {
+    pub others: Option<String>,
+    pub yours: Option<String>,
+}
+
+impl Activity {
+    /// The latest of `events`, each a who and a when, split between `me` and
+    /// everyone else.
+    pub fn of<'a>(me: &str, events: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        let mut activity = Self::default();
+        for (who, when) in events {
+            let Some(at) = epoch_seconds(when) else {
+                continue;
+            };
+            let slot = if who == me {
+                &mut activity.yours
+            } else {
+                &mut activity.others
+            };
+            if slot
+                .as_deref()
+                .and_then(epoch_seconds)
+                .is_none_or(|kept| at > kept)
+            {
+                *slot = Some(when.to_owned());
+            }
+        }
+        activity
+    }
+
+    /// Whether someone else has been at the review since you last were, on
+    /// the forge or in a tour (`toured`, seconds since the epoch). A review
+    /// you have never looked at is not marked.
+    pub fn new_since(&self, toured: Option<i64>) -> bool {
+        let yours = self.yours.as_deref().and_then(epoch_seconds);
+        let looked = yours.max(toured);
+        match (looked, self.others.as_deref().and_then(epoch_seconds)) {
+            (Some(looked), Some(others)) => others > looked,
+            _ => false,
+        }
+    }
 }
 
 /// One list as the forge answered it.
@@ -134,6 +189,33 @@ mod tests {
             epoch_seconds("2026-10-13T21:32:09Z")
         );
         assert_eq!(epoch_seconds("yesterday"), None);
+    }
+
+    #[test]
+    fn a_review_is_new_when_someone_else_was_at_it_since_you_looked() {
+        let activity = Activity::of(
+            "me",
+            [
+                ("ann", "2026-10-10T00:00:00Z"),
+                ("me", "2026-10-11T00:00:00Z"),
+                ("bo", "2026-10-12T00:00:00Z"),
+                ("ann", "garbage"),
+            ],
+        );
+        assert_eq!(activity.others.as_deref(), Some("2026-10-12T00:00:00Z"));
+        assert_eq!(activity.yours.as_deref(), Some("2026-10-11T00:00:00Z"));
+        assert!(activity.new_since(None), "bo came back after you");
+        let toured_later = epoch_seconds("2026-10-13T00:00:00Z");
+        assert!(
+            !activity.new_since(toured_later),
+            "a tour since counts as looking"
+        );
+
+        assert!(is_bot("higharcbuildbot") && is_bot("gitlab-bot") && is_bot("renovate[bot]"));
+        assert!(!is_bot("botanist") && !is_bot("ann"));
+        let never = Activity::of("me", [("ann", "2026-10-10T00:00:00Z")]);
+        assert!(!never.new_since(None), "never looked at is not new");
+        assert!(never.new_since(epoch_seconds("2026-10-09T00:00:00Z")));
     }
 
     #[test]

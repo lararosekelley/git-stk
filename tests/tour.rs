@@ -291,6 +291,25 @@ fn github_tour_fake_after(first: FakeProvider) -> FakeProvider {
 }
 
 #[test]
+fn a_tour_notes_when_you_looked_for_the_inbox() {
+    let (repo, _origin) = repo_with_review("refs/pull/12/head");
+    repo.git(["config", "stk.provider", "github"]);
+    let fake = github_tour_fake()
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "tour.html"])
+        .assert()
+        .success();
+    let seen: Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".git/stk/tours/seen.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(seen["#12"].as_i64().unwrap() > 1_700_000_000, "{seen}");
+}
+
+#[test]
 fn tour_serves_the_page_until_its_last_tab_closes() {
     let (repo, _origin) = repo_with_review("refs/pull/12/head");
     repo.git(["config", "stk.provider", "github"]);

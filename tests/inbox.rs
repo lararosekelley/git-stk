@@ -7,7 +7,7 @@ use predicates::str::contains;
 /// A GitHub search answer holding `reviews`, of `total` found.
 fn search(total: u32, reviews: &[&str]) -> String {
     format!(
-        r#"{{"data":{{"search":{{"issueCount":{total},"nodes":[{}]}}}}}}"#,
+        r#"{{"data":{{"viewer":{{"login":"me"}},"search":{{"issueCount":{total},"nodes":[{}]}}}}}}"#,
         reviews.join(",")
     )
 }
@@ -275,6 +275,7 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
         )
         .on("pulls/5/reviews?limit=50&page=1", &approvals)
         .on("/reviews", "[]")
+        .on("/comments", "[]")
         .on("api repos/o/r/pulls/3", r#"{"additions":40,"deletions":9}"#)
         .on(
             "commits/sha1/status",
@@ -302,4 +303,51 @@ fn a_gitea_inbox_reads_requests_teams_and_reviews() {
         1,
         "returned and mine share one read of your pulls' reviews: {calls}"
     );
+}
+
+#[test]
+fn inbox_marks_a_review_someone_came_back_to_since_you_looked() {
+    let repo = github_repo();
+    // You reviewed #5, then ann answered; #6 you have never looked at.
+    let answered = pull(5, "Answered", "ann", "SUCCESS", "REVIEW_REQUIRED", 0).replacen(
+        r#""reviewThreads""#,
+        r#""reviews":{"nodes":[{"author":{"login":"me"},"submittedAt":"2026-10-10T00:00:00Z"}]},
+        "comments":{"nodes":[{"author":{"login":"ann"},"createdAt":"2026-10-11T00:00:00Z"}]},
+        "reviewThreads""#,
+        1,
+    );
+    let untouched = pull(6, "Untouched", "bo", "SUCCESS", "REVIEW_REQUIRED", 0);
+    // Only a bot came back to #7 after you.
+    let botted = pull(7, "Botted", "cy", "SUCCESS", "REVIEW_REQUIRED", 0).replacen(
+        r#""reviewThreads""#,
+        r#""reviews":{"nodes":[{"author":{"__typename":"User","login":"me"},"submittedAt":"2026-10-10T00:00:00Z"}]},
+        "comments":{"nodes":[{"author":{"__typename":"Bot","login":"ci"},"createdAt":"2026-10-11T00:00:00Z"},
+            {"author":{"__typename":"User","login":"review[bot]"},"createdAt":"2026-10-11T00:00:00Z"}]},
+        "reviewThreads""#,
+        1,
+    );
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"owner/repo"}"#)
+        .on(
+            "user-review-requested:@me",
+            &search(3, &[&answered, &untouched, &botted]),
+        )
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    let output = repo
+        .stack_faked(&fake)
+        .args(["inbox", "--filter", "incoming"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = |id: &str| {
+        text.lines()
+            .find(|line| line.contains(id))
+            .unwrap()
+            .to_owned()
+    };
+    assert!(line("#5 Answered").contains("new, ann"), "{text}");
+    assert!(!line("#6 Untouched").contains("new"), "{text}");
+    assert!(!line("#7 Botted").contains("new"), "{text}");
 }
