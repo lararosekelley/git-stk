@@ -4,10 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
-## 0.15.3
+## 0.15.4
 
 ### Fixed
 
+- **merge:** a pull request in a GitHub stack merges through the endpoint
+  GitHub requires even when the stack listing could not be read. A listing
+  that fails with a server error is asked again, and only a missing stacks
+  feature is remembered for the rest of the command, so one failed read no
+  longer makes every stacked pull request look unstacked.
 - **tour:** a GitLab merge request can be toured as soon as it is opened.
   Until GitLab publishes the request's own ref, the tour reads its source
   branch, as long as that branch is at the head GitLab reports, so a fork's
