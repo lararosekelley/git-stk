@@ -2215,6 +2215,10 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     return target.isContentEditable || /^(TEXTAREA|SELECT)$/.test(target.tagName);
   }
 
+  function pressable(target) {
+    return !!target && /^(BUTTON|INPUT|SELECT|SUMMARY|A|LABEL)$/.test(target.tagName);
+  }
+
   function closeViSettings() {
     var settings = document.getElementById("vi-settings");
     if (!settings) return;
@@ -2223,18 +2227,38 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     if (button) button.focus();
   }
 
-  document.addEventListener("keydown", function (event) {
-    var key = event.key;
-    if (key === "Escape") {
-      cancelLeader();
+  // Esc closes the innermost thing open: an empty comment editor being
+  // typed in, then the vi popup, then the review panel (which keeps its
+  // summary and drafts), then any empty comment editor left open. An editor
+  // holding text stays, so nothing typed is lost.
+  function escape(target) {
+    var editor = target && target.closest ? target.closest("tr.editor-row") : null;
+    if (editor) {
+      if (!editor.text.value.trim()) editor.remove();
+      return;
+    }
+    if (document.getElementById("vi-settings")) {
       closeViSettings();
-      // The review panel keeps its summary and drafts, so closing loses none.
-      var panel = document.getElementById("review-panel");
-      if (panel) {
-        panel.remove();
-        var opener = document.querySelector(".review-button");
-        if (opener) opener.focus();
-      }
+      return;
+    }
+    var panel = document.getElementById("review-panel");
+    if (panel) {
+      panel.remove();
+      var opener = document.querySelector(".review-button");
+      if (opener) opener.focus();
+      return;
+    }
+    Array.prototype.forEach.call(document.querySelectorAll("tr.editor-row"), function (row) {
+      if (!row.text.value.trim()) row.remove();
+    });
+  }
+
+  // On the window, before the page's own handlers, so nothing swallows Esc.
+  window.addEventListener("keydown", function (event) {
+    var key = event.key;
+    if (key === "Escape" || key === "Esc") {
+      cancelLeader();
+      escape(event.target);
       return;
     }
     if (!vi.enabled || event.ctrlKey || event.metaKey || event.altKey || typing(event.target)) return;
@@ -2245,6 +2269,8 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       runLeader(key);
       return;
     }
+    // Space and Enter still press a focused control, even as the leader.
+    if ((key === " " || key === "Enter") && pressable(event.target)) return;
     if (key === vi.leader) {
       event.preventDefault();
       startLeader();
@@ -2275,7 +2301,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       handled = false;
     }
     if (handled) event.preventDefault();
-  });
+  }, true);
 
   // While the page is open, the tour server stays up; it stops once the last
   // tab closes or stops checking in.
