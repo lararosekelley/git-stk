@@ -19,6 +19,8 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   forge: if it arrived anyway, as when only the answer was lost, it is not
   posted twice, and if only part of it did, the tour says so rather than
   posting it again.
+- **tour:** in Vi mode, `n` and `p` jump to the next and previous open
+  review thread, opening the file it is on if it was not shown yet.
 
 ## 0.15.0
 
