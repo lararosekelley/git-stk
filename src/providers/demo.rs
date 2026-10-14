@@ -50,7 +50,7 @@ impl ReviewProvider for DemoProvider {
         state["next_id"] = json!(id + 1);
         let title = match title {
             Some(title) => title.to_owned(),
-            None => command_output("git", &["log", "-1", "--format=%s", branch])?,
+            None => command_output("git", &["log", "-1", "--format=%s", branch, "--"])?,
         };
         state["reviews"]
             .as_array_mut()
