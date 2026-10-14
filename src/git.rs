@@ -803,6 +803,7 @@ pub fn tour_diff(base: &str, head: &str) -> Result<String> {
         "--dst-prefix=b/",
         base,
         head,
+        "--",
     ])
     .with_context(|| format!("failed to diff {base}..{head}"))
 }
@@ -1107,7 +1108,7 @@ pub fn blame_line_shas(file: &str, start: usize, len: usize) -> Result<Vec<Strin
 
 /// The commits in `range` (e.g. "main..HEAD"), newest first.
 pub fn rev_list(range: &str) -> Result<Vec<String>> {
-    Ok(output(&["rev-list", range])
+    Ok(output(&["rev-list", range, "--"])
         .with_context(|| format!("failed to list commits in {range}"))?
         .lines()
         .map(str::to_owned)
@@ -1117,7 +1118,7 @@ pub fn rev_list(range: &str) -> Result<Vec<String>> {
 /// `(short-sha, subject)` for each commit in `range` (e.g. "main..HEAD"),
 /// newest first - one git call, for listing a branch's own commits.
 pub fn log_oneline(range: &str) -> Result<Vec<(String, String)>> {
-    Ok(output(&["log", "--format=%h%x09%s", range])
+    Ok(output(&["log", "--format=%h%x09%s", range, "--"])
         .with_context(|| format!("failed to log {range}"))?
         .lines()
         .filter_map(|line| {
@@ -1129,13 +1130,14 @@ pub fn log_oneline(range: &str) -> Result<Vec<(String, String)>> {
 
 /// A commit's subject line.
 pub fn commit_subject(sha: &str) -> Result<String> {
-    output(&["show", "--no-patch", "--format=%s", sha])
+    // `--`: a branch named like a path in the tree is otherwise ambiguous.
+    output(&["show", "--no-patch", "--format=%s", sha, "--"])
         .with_context(|| format!("failed to read subject of {sha}"))
 }
 
 /// A commit's body - everything after the subject line; empty when there is none.
 pub fn commit_body(sha: &str) -> Result<String> {
-    output(&["show", "--no-patch", "--format=%b", sha])
+    output(&["show", "--no-patch", "--format=%b", sha, "--"])
         .with_context(|| format!("failed to read body of {sha}"))
 }
 
@@ -1229,7 +1231,7 @@ pub fn is_ancestor(ancestor: &str, descendant: &str) -> Result<bool> {
 /// since it diverged). Binary files, which `--numstat` marks with `-`, count
 /// as zero.
 pub fn diff_numstat(base: &str, branch: &str) -> Result<(usize, usize)> {
-    let output = output(&["diff", "--numstat", &format!("{base}...{branch}")])?;
+    let output = output(&["diff", "--numstat", &format!("{base}...{branch}"), "--"])?;
     let mut added = 0;
     let mut deleted = 0;
     for line in output.lines() {
@@ -1356,6 +1358,7 @@ pub fn remote_only_commits(branch: &str, tracking: &str) -> Result<Vec<(String, 
         "--no-merges",
         "--format=%h%x09%s",
         &range,
+        "--",
     ])
     .with_context(|| format!("failed to list remote-only commits in {range}"))?
     .lines()

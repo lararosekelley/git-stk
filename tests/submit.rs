@@ -33,6 +33,40 @@ fn submit_creates_github_pr_when_none_exists() {
 }
 
 #[test]
+fn submit_titles_a_branch_named_like_a_directory() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    std::fs::create_dir_all(repo.path().join("eval/harness")).unwrap();
+    repo.commit_file("eval/harness/run.sh", "run\n", "add the harness");
+    repo.stack()
+        .args(["new", "eval/harness"])
+        .assert()
+        .success();
+    repo.commit_file(
+        "eval/harness/run.sh",
+        "run faster\n",
+        "speed up the harness",
+    );
+    let fake = FakeProvider::new()
+        .on("pr list", "[]")
+        .record(
+            "pr create",
+            "created.txt",
+            "https://github.com/lararosekelley/git-stk/pull/12",
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--no-push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("created eval/harness -> main"));
+    let created = std::fs::read_to_string(repo.path().join("created.txt")).unwrap();
+    assert!(created.contains("speed up the harness"), "{created}");
+}
+
+#[test]
 fn submit_dry_run_reports_create_without_calling_create() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
