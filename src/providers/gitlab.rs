@@ -614,13 +614,15 @@ impl ReviewProvider for GitLabProvider {
     }
 
     fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
-        let user: serde_json::Value =
-            serde_json::from_str(&command_output("glab", &["api", "user"])?)
-                .context("failed to parse glab user JSON")?;
+        let user: serde_json::Value = serde_json::from_str(&super::retry_server_errors(|| {
+            command_output("glab", &["api", "user"])
+        })?)
+        .context("failed to parse glab user JSON")?;
         let me = required_string(&user, &["username"])?;
-        let project: serde_json::Value =
-            serde_json::from_str(&command_output("glab", &["api", "projects/:id"])?)
-                .context("failed to parse glab project JSON")?;
+        let project: serde_json::Value = serde_json::from_str(&super::retry_server_errors(|| {
+            command_output("glab", &["api", "projects/:id"])
+        })?)
+        .context("failed to parse glab project JSON")?;
         let path = required_string(&project, &["path_with_namespace"])?;
         let wants = |list| lists.contains(&list);
         let mut searches = String::new();
@@ -640,19 +642,21 @@ impl ReviewProvider for GitLabProvider {
             let query = format!(
                 "query($path: ID!, $me: String!) {{ project(fullPath: $path) {{ {searches}}} }} {GITLAB_INBOX_FRAGMENT}"
             );
-            command_output(
-                "glab",
-                &[
-                    "api",
-                    "graphql",
-                    "-f",
-                    &format!("query={query}"),
-                    "-f",
-                    &format!("path={path}"),
-                    "-f",
-                    &format!("me={me}"),
-                ],
-            )?
+            super::retry_server_errors(|| {
+                command_output(
+                    "glab",
+                    &[
+                        "api",
+                        "graphql",
+                        "-f",
+                        &format!("query={query}"),
+                        "-f",
+                        &format!("path={path}"),
+                        "-f",
+                        &format!("me={me}"),
+                    ],
+                )
+            })?
         };
         parse_gitlab_inbox(&output, lists, &me)
     }

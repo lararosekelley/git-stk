@@ -317,12 +317,15 @@ fn inbox_marks_a_review_someone_came_back_to_since_you_looked() {
         1,
     );
     let untouched = pull(6, "Untouched", "bo", "SUCCESS", "REVIEW_REQUIRED", 0);
-    // Only a bot came back to #7 after you.
+    // Only bots came back to #7 after you, one of them a machine user named in
+    // stk.inboxBots.
+    repo.git(["config", "stk.inboxBots", "@BuildBot, other"]);
     let botted = pull(7, "Botted", "cy", "SUCCESS", "REVIEW_REQUIRED", 0).replacen(
         r#""reviewThreads""#,
         r#""reviews":{"nodes":[{"author":{"__typename":"User","login":"me"},"submittedAt":"2026-10-10T00:00:00Z"}]},
         "comments":{"nodes":[{"author":{"__typename":"Bot","login":"ci"},"createdAt":"2026-10-11T00:00:00Z"},
-            {"author":{"__typename":"User","login":"review[bot]"},"createdAt":"2026-10-11T00:00:00Z"}]},
+            {"author":{"__typename":"User","login":"review[bot]"},"createdAt":"2026-10-11T00:00:00Z"},
+            {"author":{"__typename":"User","login":"buildbot"},"createdAt":"2026-10-11T00:00:00Z"}]},
         "reviewThreads""#,
         1,
     );

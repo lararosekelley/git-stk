@@ -322,13 +322,14 @@ the page to a file and exits.
 (`team`), and the rest of yours (`mine`). Each review shows its CI status, number, title, size, author, last
 update, approval or requested changes, open threads, and whether it is a draft. A review is marked `new` when
 someone else has commented, reviewed, or pushed since you last looked, on the forge or with `git stk tour`,
-which notes when you toured each review; one you have never looked at is not marked, and bots (GitHub apps,
-and accounts named like `buildbot` or `gitlab-bot`) do not count. Gitea and Forgejo count comments and reviews
-but not pushes. `--filter` takes a comma-separated subset of the lists, `--limit` how many reviews each shows
-(default 10), and `--sort` their order: most recently `updated` (the default), most recently `created`, or
-largest `size` first. Up to 50 reviews are fetched per list. GitLab has no team review requests, so `team`
-says so there, and a merge request you have reviewed leaves `incoming` until it is requested of you again.
-Gitea and Forgejo are asked per pull for reviews and CI, and have no count of open threads to show.
+which notes when you toured each review; one you have never looked at is not marked, and bots do not count:
+GitHub apps, accounts named like `gitlab-bot` or `ci_bot`, and machine users you list in `stk.inboxBots`.
+Gitea and Forgejo count comments and reviews but not pushes. `--filter` takes a comma-separated subset of the
+lists, `--limit` how many reviews each shows (default 10), and `--sort` their order: most recently `updated`
+(the default), most recently `created`, or largest `size` first. Up to 50 reviews are fetched per list. GitLab
+has no team review requests, so `team` says so there, and a merge request you have reviewed leaves `incoming`
+until it is requested of you again. Gitea and Forgejo are asked per pull for reviews and CI, and have no count
+of open threads to show.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider
 CLI - handy for a review bot that answers a mention: `git stk comment "@claude review"`.

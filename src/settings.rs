@@ -43,6 +43,9 @@ pub const TOUR_AGENT_KEY: &str = "stk.tourAgent";
 /// The tour agent command the user agreed, in the repository's own config,
 /// to send this repository's reviews to; another command asks again.
 pub const TOUR_AGENT_ALLOWED_KEY: &str = "stk.tourAgentAllowed";
+/// Accounts the inbox treats as bots, comma-separated: machine users the forge
+/// reports as people, whose comments should not mark a review new.
+pub const INBOX_BOTS_KEY: &str = "stk.inboxBots";
 pub const DEFAULT_REMOTE: &str = "origin";
 
 /// How long `merge --wait` polls a review's checks before giving up, unless
@@ -84,6 +87,10 @@ pub const SETTINGS: &[(&str, &str)] = &[
         TOUR_AGENT_ALLOWED_KEY,
         "none; the first agent tour with a command asks, and records it here",
     ),
+    (
+        INBOX_BOTS_KEY,
+        "none; GitHub apps and logins ending in -bot, _bot, or [bot] count already",
+    ),
 ];
 
 /// How a tour lays out a review.
@@ -111,6 +118,21 @@ pub fn tour_style() -> Result<TourStyle> {
             bail!("{TOUR_STYLE_KEY} is {other:?}; it takes standard, agentTour, or agentReview")
         }
     }
+}
+
+/// The accounts `stk.inboxBots` names, lowercased.
+pub fn inbox_bots() -> Vec<String> {
+    git::config_get(INBOX_BOTS_KEY)
+        .ok()
+        .flatten()
+        .map(|value| {
+            value
+                .split(',')
+                .map(|login| login.trim().trim_start_matches('@').to_ascii_lowercase())
+                .filter(|login| !login.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The remote used for provider detection, trunk discovery, and pushes.

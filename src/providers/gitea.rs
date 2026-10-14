@@ -281,13 +281,12 @@ impl ReviewProvider for GiteaProvider {
     }
 
     fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
-        let user: Value = serde_json::from_str(&command_output("tea", &["api", "user"])?)
+        let user: Value = serde_json::from_str(&inbox_read("user")?)
             .context("failed to parse gitea user JSON")?;
         let me = required_string(&user, &["login"])?;
         let teams: Vec<u64> = if lists.contains(&InboxList::Team) {
-            let value: Value =
-                serde_json::from_str(&command_output("tea", &["api", "user/teams"])?)
-                    .context("failed to parse gitea teams JSON")?;
+            let value: Value = serde_json::from_str(&inbox_read("user/teams")?)
+                .context("failed to parse gitea teams JSON")?;
             value
                 .as_array()
                 .into_iter()
@@ -641,6 +640,11 @@ fn api_pull(id_value: &str) -> Result<Value> {
         .context("failed to parse gitea pull JSON")
 }
 
+/// One of the inbox's reads, asked again if the server hiccups.
+fn inbox_read(endpoint: &str) -> Result<String> {
+    super::retry_server_errors(|| command_output("tea", &["api", endpoint]))
+}
+
 /// Gitea answers per pull, so the inbox's per-pull calls go this many at once.
 const INBOX_CALLS_AT_ONCE: usize = 8;
 
@@ -655,7 +659,7 @@ fn open_pull_values() -> Result<(Vec<Value>, bool)> {
         let endpoint = format!(
             "repos/{slug}/pulls?state=open&sort=recentupdate&page={page}&limit={PAGE_SIZE}"
         );
-        let batch: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+        let batch: Value = serde_json::from_str(&inbox_read(&endpoint)?)
             .context("failed to parse gitea pulls JSON")?;
         let batch = batch.as_array().cloned().unwrap_or_default();
         let full_page = batch.len() == PAGE_SIZE;
@@ -728,7 +732,7 @@ fn gitea_reviews_of(slug: &str, pulls: &[&Value]) -> Result<Vec<Value>> {
             let endpoint = format!(
                 "repos/{slug}/pulls/{number}/reviews?limit={CONVERSATION_PAGE}&page={page}"
             );
-            let batch: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+            let batch: Value = serde_json::from_str(&inbox_read(&endpoint)?)
                 .context("failed to parse gitea reviews JSON")?;
             let batch = batch.as_array().cloned().unwrap_or_default();
             let full = batch.len() == CONVERSATION_PAGE;
@@ -753,7 +757,7 @@ fn gitea_comments<'a>(slug: &str, pulls: impl Iterator<Item = &'a Value>) -> Res
             let endpoint = format!(
                 "repos/{slug}/issues/{number}/comments?limit={CONVERSATION_PAGE}&page={page}"
             );
-            let batch: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+            let batch: Value = serde_json::from_str(&inbox_read(&endpoint)?)
                 .context("failed to parse gitea comments JSON")?;
             let batch = batch.as_array().cloned().unwrap_or_default();
             let full = batch.len() == CONVERSATION_PAGE;
@@ -814,7 +818,7 @@ fn gitea_sizes<'a>(pulls: impl Iterator<Item = &'a Value>) -> Result<Vec<Option<
         let Some(number) = number else {
             return Ok(None);
         };
-        let pull = api_pull(&number.to_string())?;
+        let pull = super::retry_server_errors(|| api_pull(&number.to_string()))?;
         Ok(Some((
             pull["additions"].as_u64().unwrap_or(0),
             pull["deletions"].as_u64().unwrap_or(0),
@@ -834,7 +838,7 @@ fn gitea_statuses<'a>(
             return Ok(CheckStatus::None);
         }
         let endpoint = format!("repos/{slug}/commits/{sha}/status");
-        let value: Value = serde_json::from_str(&command_output("tea", &["api", &endpoint])?)
+        let value: Value = serde_json::from_str(&inbox_read(&endpoint)?)
             .context("failed to parse gitea status JSON")?;
         let total = value["total_count"].as_u64().unwrap_or(0);
         Ok(map_gitea_state(&optional_string(&value, "state"), total))

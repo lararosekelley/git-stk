@@ -60,11 +60,18 @@ pub struct InboxEntry {
     pub activity: Activity,
 }
 
-/// Whether `login` is a bot's: GitHub apps end in `[bot]`, and machine users
-/// are named for what they are, as `buildbot` or `gitlab-bot` are. A bot's
-/// comments are not news.
+/// Whether `login` is a bot's: a GitHub app (`name[bot]`), an account named
+/// as one (`gitlab-bot`, `ci_bot`), or one listed in `stk.inboxBots`, for a
+/// machine user the forge reports as a person. A bot's comments are not news.
 pub fn is_bot(login: &str) -> bool {
-    login.to_ascii_lowercase().ends_with("bot") || login.ends_with("[bot]")
+    static LISTED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let lower = login.to_ascii_lowercase();
+    ["[bot]", "-bot", "_bot"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+        || LISTED
+            .get_or_init(crate::settings::inbox_bots)
+            .contains(&lower)
 }
 
 /// When a review was last touched by someone else and by you, as RFC 3339
@@ -211,8 +218,8 @@ mod tests {
             "a tour since counts as looking"
         );
 
-        assert!(is_bot("higharcbuildbot") && is_bot("gitlab-bot") && is_bot("renovate[bot]"));
-        assert!(!is_bot("botanist") && !is_bot("ann"));
+        assert!(is_bot("gitlab-bot") && is_bot("ci_bot") && is_bot("renovate[bot]"));
+        assert!(!is_bot("talbot") && !is_bot("botanist") && !is_bot("ann"));
         let never = Activity::of("me", [("ann", "2026-10-10T00:00:00Z")]);
         assert!(!never.new_since(None), "never looked at is not new");
         assert!(never.new_since(epoch_seconds("2026-10-09T00:00:00Z")));
