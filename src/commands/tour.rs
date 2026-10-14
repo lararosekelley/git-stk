@@ -308,7 +308,7 @@ fn submit(
     if event == ReviewEvent::Comment && comments.is_empty() && body.trim().is_empty() {
         bail!("there is nothing to post");
     }
-    if tour::head_moved(kind, review, head)? {
+    if tour::head_moved(kind, provider, review, head)? {
         bail!(
             "{} has new commits since this tour started; restart the tour to review them",
             review.id
@@ -538,7 +538,7 @@ fn reply(
     let thread = thread_from(&request["thread"])?;
     let body = body_of(&request)?;
     // A forge that places a reply by line needs the lines to be current.
-    if kind == ProviderKind::Gitea && tour::head_moved(kind, review, head)? {
+    if kind == ProviderKind::Gitea && tour::head_moved(kind, provider, review, head)? {
         bail!(
             "{} has new commits since this tour started; restart the tour to reply",
             review.id

@@ -4,6 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.15.3
+
+### Fixed
+
+- **tour:** a GitLab merge request can be toured as soon as it is opened.
+  Until GitLab publishes the request's own ref, the tour reads its source
+  branch, as long as that branch is at the head GitLab reports, so a fork's
+  branch of the same name is never read in its place.
+
 ## 0.15.2
 
 ### Fixed

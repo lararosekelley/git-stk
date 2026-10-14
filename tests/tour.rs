@@ -528,6 +528,55 @@ fn tour_fetches_a_gitlab_mr_head() {
     );
 }
 
+fn gitlab_mr_with_head(sha: &str) -> String {
+    format!(
+        r##"{{"iid":34,"state":"opened","target_branch":"main","source_branch":"contrib","web_url":"https://gitlab.com/group/repo/-/merge_requests/34","title":"Add two","description":"From GitLab.","sha":"{sha}"}}"##
+    )
+}
+
+#[test]
+fn tour_reads_a_gitlab_mr_from_its_branch_until_its_ref_is_published() {
+    let (repo, _origin) = repo_with_review("refs/heads/contrib");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let head = repo.git(["ls-remote", "origin", "refs/heads/contrib"]);
+    let head = head.split_whitespace().next().unwrap();
+    let fake = FakeProvider::new()
+        .on("mr view 34 --output json", &gitlab_mr_with_head(head))
+        .on("mr list", "[]")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "!34", "--no-open", "--output", "tour.html"])
+        .assert()
+        .success();
+
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    assert_eq!(data["chapters"][0]["review"]["id"], "!34");
+}
+
+#[test]
+fn a_same_named_branch_elsewhere_does_not_stand_in_for_a_gitlab_mr() {
+    // The merge request's head is some other commit, as for a fork's branch
+    // that happens to share the name.
+    let (repo, _origin) = repo_with_review("refs/heads/contrib");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let fake = FakeProvider::new()
+        .on(
+            "mr view 34 --output json",
+            &gitlab_mr_with_head("0123456789abcdef0123456789abcdef01234567"),
+        )
+        .on("mr list", "[]")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "!34", "--no-open", "--output", "tour.html"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("refs/merge-requests/34/head"));
+}
+
 #[test]
 fn tour_reports_a_review_with_no_changes() {
     let repo = TestRepo::new();

@@ -147,7 +147,7 @@ impl Tour {
                 .iter()
                 .map(|review| scope.spawn(move || provider.conversation(review)))
                 .collect();
-            let tips = stack_tips(kind, &reviews, current, &mut warnings);
+            let tips = stack_tips(kind, provider, &reviews, current, &mut warnings);
             (tips, joined(bodies), joined(conversations))
         });
         let tips = tips?;
@@ -910,16 +910,17 @@ fn joined<T>(handles: Vec<thread::ScopedJoinHandle<'_, T>>) -> Vec<T> {
 /// on its own, so one missing ref costs only that review.
 fn stack_tips(
     kind: ProviderKind,
+    provider: &dyn ReviewProvider,
     stack: &[ReviewRequest],
     current: usize,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Option<(String, String)>>> {
-    match review_tips(kind, stack) {
+    match review_tips(kind, provider, stack) {
         Ok(tips) => Ok(tips.into_iter().map(Some).collect()),
         Err(_) if stack.len() > 1 => {
             let mut tips = Vec::with_capacity(stack.len());
             for (index, review) in stack.iter().enumerate() {
-                match review_tips(kind, std::slice::from_ref(review)) {
+                match review_tips(kind, provider, std::slice::from_ref(review)) {
                     Ok(mut tip) => tips.push(tip.pop()),
                     // The asked-for review's own failure is the one to report.
                     Err(own) if index == current => return Err(own),
@@ -1006,17 +1007,30 @@ fn settle_same_named(
 
 /// Whether `review` has moved on from `head` on the remote, so comments
 /// written against `head`'s diff could land on the wrong lines.
-pub fn head_moved(kind: ProviderKind, review: &ReviewRequest, head: &str) -> Result<bool> {
+pub fn head_moved(
+    kind: ProviderKind,
+    provider: &dyn ReviewProvider,
+    review: &ReviewRequest,
+    head: &str,
+) -> Result<bool> {
     let Some(head_ref) = head_ref(kind, review.id_value()) else {
         return Ok(false);
     };
-    let current = git::remote_commits(&settings::remote()?, &[head_ref])?;
-    Ok(current.first().and_then(Option::as_deref) != Some(head))
+    let current = match git::remote_commits(&settings::remote()?, &[head_ref])?.pop() {
+        Some(Some(current)) => Some(current),
+        // Not published yet: the forge's own word is all there is.
+        _ => provider.review_head(review)?,
+    };
+    Ok(current.as_deref() != Some(head))
 }
 
 /// The tip of each review's base branch and its head commit, fetched from the
 /// remote in one round trip.
-fn review_tips(kind: ProviderKind, stack: &[ReviewRequest]) -> Result<Vec<(String, String)>> {
+fn review_tips(
+    kind: ProviderKind,
+    provider: &dyn ReviewProvider,
+    stack: &[ReviewRequest],
+) -> Result<Vec<(String, String)>> {
     let mut references = Vec::with_capacity(stack.len() * 2);
     for review in stack {
         let Some(head_ref) = head_ref(kind, review.id_value()) else {
@@ -1034,13 +1048,53 @@ fn review_tips(kind: ProviderKind, stack: &[ReviewRequest]) -> Result<Vec<(Strin
         references.push(format!("refs/heads/{}", review.base));
         references.push(head_ref);
     }
-    let commits = git::fetch_commits(&settings::remote()?, &references)?;
+    let remote = settings::remote()?;
+    let commits = match git::fetch_commits(&remote, &references) {
+        Ok(commits) => commits,
+        Err(error) => match with_unpublished_heads(provider, &remote, stack, &references)? {
+            Some(references) => git::fetch_commits(&remote, &references)?,
+            None => return Err(error),
+        },
+    };
     Ok(commits
         .as_chunks::<2>()
         .0
         .iter()
         .map(|[base, head]| (base.clone(), head.clone()))
         .collect())
+}
+
+/// `references`, base and head per review, with each head the remote has not
+/// published yet replaced by its source branch. GitLab publishes a merge
+/// request's ref some time after the request. The branch stands in only while
+/// it is at the head the forge reports, so a fork's same-named branch never
+/// does. None when no head is missing, or one cannot be stood in for.
+fn with_unpublished_heads(
+    provider: &dyn ReviewProvider,
+    remote: &str,
+    stack: &[ReviewRequest],
+    references: &[String],
+) -> Result<Option<Vec<String>>> {
+    let listed = git::remote_commits(remote, references)?;
+    let mut replaced = references.to_vec();
+    let mut missing = false;
+    for (index, review) in stack.iter().enumerate() {
+        let slot = index * 2 + 1;
+        if listed[slot].is_some() {
+            continue;
+        }
+        let Some(head) = provider.review_head(review)? else {
+            return Ok(None);
+        };
+        let branch = format!("refs/heads/{}", review.branch);
+        let tip = git::remote_commits(remote, std::slice::from_ref(&branch))?.pop();
+        if tip.flatten() != Some(head) {
+            return Ok(None);
+        }
+        replaced[slot] = branch;
+        missing = true;
+    }
+    Ok(missing.then_some(replaced))
 }
 
 /// The ref a review's head is published under on the remote, or None for a
