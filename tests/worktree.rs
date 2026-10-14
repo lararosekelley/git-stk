@@ -395,7 +395,8 @@ fn cleanup_keeps_a_worktree_held_branch_and_finishes_the_rest() {
 #[test]
 fn cleanup_dry_run_predicts_the_worktree_skip() {
     let repo = TestRepo::new();
-    let (_parent, _worktree) = landed_stack_with_worktree_on_a(&repo);
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    std::fs::write(worktree.join("notes.txt"), "draft\n").unwrap();
     let fake = merged_both(&repo);
 
     // A preview that promised "would delete branch feature/a" would be lying
@@ -404,9 +405,7 @@ fn cleanup_dry_run_predicts_the_worktree_skip() {
         .args(["cleanup", "feature/a", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "kept feature/a: checked out in the worktree at",
-        ))
+        .stdout(predicates::str::contains("kept feature/a: its worktree at"))
         .stdout(predicates::str::contains("would delete branch feature/a").not());
 }
 
@@ -1273,7 +1272,8 @@ fn a_kept_landed_branch_is_pointed_at_cleanup_not_restack() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "feature/b has landed - `git stk cleanup feature/b` finishes it once its ref is free",
+            "feature/b has landed - `git stk cleanup feature/b` finishes it, offering to remove \
+             its worktree at",
         ))
         .stdout(predicates::str::contains("git stk restack").not());
     repo.stack_faked(&fake)
@@ -1281,7 +1281,8 @@ fn a_kept_landed_branch_is_pointed_at_cleanup_not_restack() {
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "review #13 is merged - `git stk cleanup feature/b` finishes it once its ref is free",
+            "review #13 is merged - `git stk cleanup feature/b` finishes it, offering to remove \
+             its worktree at",
         ))
         .stdout(predicates::str::contains("git stk restack").not())
         .stdout(predicates::str::contains("git stk submit").not())
@@ -1727,5 +1728,160 @@ fn sync_keeps_the_merged_parents_fork_point_after_a_worktree_blocked_restack() {
     assert_eq!(
         repo.git(["rev-parse", "feature/c~1"]),
         repo.git(["rev-parse", "feature/b"])
+    );
+}
+
+#[test]
+fn cleanup_prunes_a_missing_worktree_and_deletes_its_branch() {
+    let repo = TestRepo::new();
+    let (parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    // Another branch's missing worktree is not cleanup's to prune.
+    repo.git(["branch", "other"]);
+    let other = parent.path().join("wt-other");
+    repo.git(["worktree", "add", other.to_str().unwrap(), "other"]);
+    std::fs::remove_dir_all(&worktree).unwrap();
+    std::fs::remove_dir_all(&other).unwrap();
+    let fake = merged_both(&repo);
+
+    repo.stack_faked(&fake)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("wt-a (missing)"));
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would prune the missing worktree",
+        ))
+        .stdout(predicates::str::contains("would delete branch feature/a"));
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("will prune the missing worktree"))
+        .stdout(predicates::str::contains("will delete branch feature/a"))
+        .stdout(predicates::str::contains("kept").not());
+
+    assert_eq!(
+        repo.git_status(["rev-parse", "--verify", "feature/a"])
+            .status
+            .code(),
+        Some(128)
+    );
+    let listed = repo.git(["worktree", "list", "--porcelain"]);
+    assert!(!listed.contains("wt-a"), "{listed}");
+    assert!(listed.contains("wt-other"), "{listed}");
+}
+
+#[test]
+fn cleanup_leaves_a_locked_missing_worktree_alone() {
+    let repo = TestRepo::new();
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    repo.git(["worktree", "lock", worktree.to_str().unwrap()]);
+    std::fs::remove_dir_all(&worktree).unwrap();
+    let fake = merged_both(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: checked out in the locked worktree at",
+        ));
+    repo.git(["rev-parse", "--verify", "feature/a"]);
+}
+
+#[test]
+fn cleanup_removes_a_clean_worktree_the_user_agrees_to_drop() {
+    let repo = TestRepo::new();
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    let fake = merged_both(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("would offer to remove worktree"))
+        .stdout(predicates::str::contains("would delete branch feature/a"));
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "which is clean. Remove that worktree?",
+        ))
+        .stdout(predicates::str::contains("will remove worktree"))
+        .stdout(predicates::str::contains("will delete branch feature/a"));
+
+    assert!(!worktree.exists());
+    assert_eq!(
+        repo.git_status(["rev-parse", "--verify", "feature/a"])
+            .status
+            .code(),
+        Some(128)
+    );
+}
+
+#[test]
+fn cleanup_keeps_a_clean_worktree_the_user_wants_to_keep() {
+    let repo = TestRepo::new();
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    let fake = merged_both(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: checked out in the worktree at",
+        ));
+
+    assert!(worktree.exists());
+    repo.git(["rev-parse", "--verify", "feature/a"]);
+}
+
+#[test]
+fn cleanup_does_not_offer_to_remove_a_worktree_with_untracked_files() {
+    let repo = TestRepo::new();
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    std::fs::write(worktree.join("notes.txt"), "draft\n").unwrap();
+    let fake = merged_both(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Remove that worktree?").not())
+        .stdout(predicates::str::contains("kept feature/a: its worktree at"));
+
+    assert!(worktree.join("notes.txt").exists());
+}
+
+#[test]
+fn sync_prunes_a_landed_branchs_missing_worktree() {
+    let repo = TestRepo::new();
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    std::fs::remove_dir_all(&worktree).unwrap();
+    let fake = merged_both(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["sync", "--no-push"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("will prune the missing worktree"))
+        .stdout(predicates::str::contains("will delete branch feature/a"))
+        .stdout(predicates::str::contains("will delete branch feature/b"));
+
+    assert!(
+        !repo
+            .git(["worktree", "list", "--porcelain"])
+            .contains("wt-a")
     );
 }

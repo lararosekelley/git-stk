@@ -396,14 +396,35 @@ pub fn behind_parent_hint(branch: &str, parent: &str) -> Option<String> {
         .ok()
         .filter(|count| *count > 0)?;
     if super::is_landed(branch) {
-        return Some(format!(
-            "{branch} has landed - `git stk cleanup {branch}` finishes it once its ref is free"
-        ));
+        return Some(format!("{branch} has landed - {}", landed_cleanup(branch)));
     }
     Some(format!(
         "{branch} is {behind} commit{} behind {parent} - run `git stk restack`",
         if behind == 1 { "" } else { "s" }
     ))
+}
+
+/// How `cleanup` finishes a landed branch it had to keep, given what holds it.
+pub fn landed_cleanup(branch: &str) -> String {
+    let cleanup = format!("`git stk cleanup {branch}`");
+    if git::current_branch().is_ok_and(|current| current == branch) {
+        return format!("switch away, then {cleanup} finishes it");
+    }
+    match git::worktree_holding(branch).ok().flatten() {
+        Some(path) if git::is_missing_worktree(&path) => format!(
+            "{cleanup} finishes it and prunes its missing worktree at {}",
+            git::display_path(&path)
+        ),
+        Some(path) if git::is_main_worktree(&path) || git::is_locked_worktree(&path) => format!(
+            "{cleanup} finishes it once the worktree at {} lets it go",
+            git::describe_worktree(&path)
+        ),
+        Some(path) => format!(
+            "{cleanup} finishes it, offering to remove its worktree at {} if that is clean",
+            git::display_path(&path)
+        ),
+        None => format!("{cleanup} finishes it"),
+    }
 }
 
 /// The read-only context for rendering a stack tree, threaded through the
@@ -527,7 +548,7 @@ fn collect_tree_lines(
     if let Some(path) = ctx.worktrees.get(branch) {
         line.push_str(&style::paint(
             style::DIM,
-            &format!("  {}", git::display_path(path)),
+            &format!("  {}", git::worktree_label(path)),
         ));
     }
 

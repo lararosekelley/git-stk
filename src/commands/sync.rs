@@ -289,7 +289,7 @@ pub(crate) fn sync(dry_run: bool, push_mode: PushMode) -> Result<()> {
         } else {
             Landing::Merged
         };
-        if let Some(reason) = deletion_blocker(branch, &position)? {
+        if let Some(reason) = deletion_blocker(branch, &position, dry_run)? {
             report_kept(branch, &reason);
             // Decided before the restack, which may still move a branch
             // checked out here; the marker is written at the final tip below.

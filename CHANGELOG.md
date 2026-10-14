@@ -4,6 +4,18 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.15.2
+
+### Fixed
+
+- **cleanup:** a landed branch whose worktree directory was deleted no longer
+  stays behind. `cleanup` and `sync` prune that one stale worktree entry and
+  delete the branch, and `list` and `status` mark the worktree `(missing)`.
+- **cleanup:** a landed branch checked out in a worktree you made yourself is
+  no longer just kept: when that worktree has no changes or untracked files,
+  `cleanup` and `sync` offer to remove it and delete the branch. The hint for
+  a kept landed branch now says what will free it.
+
 ## 0.15.1
 
 ### Added
