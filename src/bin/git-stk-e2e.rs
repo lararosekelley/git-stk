@@ -397,6 +397,7 @@ fn review_lookup_and_tour(
         }
     }
 
+    wait_for_review_heads(provider, slug, work)?;
     let page = work.join(".git").join("e2e-tour.html");
     let page_arg = page.to_string_lossy().into_owned();
     let wrote = stk(work, &["tour", &number, "--no-open", "--output", &page_arg])?;
@@ -447,6 +448,36 @@ fn review_lookup_and_tour(
         ));
     }
     Ok(())
+}
+
+/// Wait until the host publishes each review's head ref, which `tour` fetches.
+/// GitLab creates `refs/merge-requests/N/head` some seconds after the merge
+/// request itself.
+fn wait_for_review_heads(provider: Provider, slug: &str, work: &Path) -> Result<(), String> {
+    let mut refs = Vec::new();
+    for branch in ["feat/a", "feat/b"] {
+        let review = open_review(provider, slug, branch)?
+            .ok_or_else(|| format!("no open review for {branch}"))?;
+        refs.push(match provider {
+            Provider::Gitlab => format!("refs/merge-requests/{}/head", review["iid"]),
+            _ => format!("refs/pull/{}/head", review["number"]),
+        });
+    }
+    for attempt in 0..15 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(2));
+        }
+        let mut args = vec!["ls-remote", "origin"];
+        args.extend(refs.iter().map(String::as_str));
+        let listed = git(work, &args)?;
+        if refs
+            .iter()
+            .all(|reference| listed.contains(reference.as_str()))
+        {
+            return Ok(());
+        }
+    }
+    Err(format!("the host never published {}", refs.join(" ")))
 }
 
 /// A review submitted from a served tour, confirmed at its terminal prompt,
