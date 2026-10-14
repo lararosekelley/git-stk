@@ -669,6 +669,86 @@ fn merge_reports_pending_checks_from_structured_status() {
         ));
 }
 
+/// A pushed `feature/a` whose merge GitHub refuses as conflicting.
+fn conflicting_review(repo: &TestRepo) -> common::FakeProviderEnv {
+    FakeProvider::new()
+        .fail("pr merge 12", "GraphQL: something went wrong")
+        .on(
+            "mergeStateStatus",
+            r#"{"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY"}"#,
+        )
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##,
+        )
+        .fallback("[]")
+        .install(repo)
+}
+
+#[test]
+fn merge_doubts_a_conflict_the_remote_branches_do_not_have() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    let _origin = repo.add_bare_origin(&["main"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.git(["push", "origin", "feature/a"]);
+    let fake = conflicting_review(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "#12 reports a conflict with main, but the two merge cleanly",
+        ));
+}
+
+#[test]
+fn merge_reports_a_conflict_the_remote_branches_have() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.commit_file("a.txt", "base\n", "base");
+    let origin = repo.add_bare_origin(&["main"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "ours\n", "a work");
+    repo.git(["push", "origin", "feature/a"]);
+    // main moves on the remote with a change to the same line.
+    let other = tempfile::tempdir().unwrap();
+    let clone = other.path().join("clone");
+    repo.git([
+        "clone",
+        "-q",
+        origin.path().to_str().unwrap(),
+        clone.to_str().unwrap(),
+    ]);
+    std::fs::write(clone.join("a.txt"), "theirs\n").unwrap();
+    for args in [
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qam",
+            "theirs",
+        ],
+        vec!["push", "-q", "origin", "main"],
+    ] {
+        let mut command = std::process::Command::new("git");
+        TestRepo::isolate_git_config(&mut command);
+        let status = command.arg("-C").arg(&clone).args(args).status().unwrap();
+        assert!(status.success());
+    }
+    let fake = conflicting_review(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("#12 conflicts with main"));
+}
+
 #[test]
 fn merge_reports_conflicts_from_structured_status() {
     let repo = TestRepo::new();

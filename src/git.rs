@@ -1398,6 +1398,16 @@ pub fn merge_adds_nothing(one: &str, other: &str) -> Result<bool> {
     Ok(merged.lines().next().unwrap_or_default().trim() == ours.trim())
 }
 
+/// Whether `one` and `other` merge without conflicts.
+pub fn merges_cleanly(one: &str, other: &str) -> Result<bool> {
+    Ok(output_codes(
+        &["merge-tree", "--write-tree", one, other],
+        &[1],
+        "git merge-tree --write-tree",
+    )?
+    .is_some())
+}
+
 pub fn config_get(key: &str) -> Result<Option<String>> {
     // git config --get exits 1 when the key is unset.
     output_codes(&["config", "--get", key], &[1], "git config --get")
