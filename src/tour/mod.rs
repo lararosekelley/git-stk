@@ -488,7 +488,12 @@ fn plan_chapters(
                 // A saved plan keeps the review it followed up on. A new one
                 // follows up on the latest review of another head, and a head
                 // reviewed before only on those reviewed before it was.
-                previous[index] = match (&saved, &path) {
+                // A plan saved by a tour stopped before it wrote what the
+                // review showed is followed up as a new one.
+                let shown = path
+                    .as_ref()
+                    .filter(|path| path.with_extension(SHOWN_EXTENSION).exists());
+                previous[index] = match (&saved, shown) {
                     (Some(_), Some(path)) => followed_review(path),
                     _ => {
                         let own = plan_cache(chapter, agent, planner.review)
@@ -600,12 +605,13 @@ fn plan_chapters(
         });
         match applied {
             Ok((applied, follow_up)) => {
-                // What this review showed, for the next head's to follow up on.
+                // What this review showed, for the next head's to follow up on;
+                // also for a saved plan missing it, as an interrupted tour leaves.
                 if planner.review
                     && !from_file
-                    && !cached
                     && let Some(agent) = &planner.agent
                     && let Ok(path) = plan_cache(chapter, agent, planner.review)
+                    && (!cached || !path.with_extension(SHOWN_EXTENSION).exists())
                 {
                     let mut shown =
                         plan::Previous::shown(&applied.findings, applied.assessment.as_ref());

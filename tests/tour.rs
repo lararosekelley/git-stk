@@ -1554,6 +1554,35 @@ fn an_agent_review_of_a_new_head_follows_up_on_the_last_one() {
     let first = tour_data(&fs::read_to_string(repo.path().join("first.html")).unwrap());
     assert_eq!(first["chapters"][0]["plan"]["followUp"], Value::Null);
 
+    // A tour stopped before it saved what the review showed leaves only the
+    // plan; touring it again saves the rest, so it can still be followed up.
+    let plans = repo.path().join(".git/stk/tours/plans");
+    let shown = || {
+        fs::read_dir(&plans)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".shown.json")
+            })
+            .count()
+    };
+    assert_eq!(shown(), 1);
+    for entry in fs::read_dir(&plans).unwrap() {
+        let path = entry.unwrap().path();
+        if path.to_string_lossy().ends_with(".shown.json") {
+            fs::remove_file(path).unwrap();
+        }
+    }
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--no-open", "--output", "first.html"])
+        .assert()
+        .success();
+    assert_eq!(shown(), 1, "the saved plan's review is written again");
+
     // A new push to the review.
     repo.git(["fetch", "-q", "origin", "refs/pull/12/head"]);
     let first_head = repo.git(["rev-parse", "FETCH_HEAD"]).trim().to_owned();
