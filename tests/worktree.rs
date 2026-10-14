@@ -1941,3 +1941,35 @@ fn the_removal_offer_names_ignored_files_that_would_go() {
         .stdout(predicates::str::contains("Its ignored files go too: .env."));
     assert!(worktree.join(".env").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_worktree_git_refuses_to_remove_keeps_its_branch_stacked() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TestRepo::new();
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    std::fs::remove_dir_all(&worktree).unwrap();
+    // An admin directory git cannot delete from makes the prune fail.
+    let admin = repo.path().join(".git/worktrees");
+    std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let fake = merged_both(&repo);
+
+    let assert = repo
+        .stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert();
+    std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert
+        .success()
+        .stdout(predicates::str::contains(
+            "kept feature/a: failed to remove the worktree",
+        ))
+        .stdout(predicates::str::contains("will delete branch feature/b"));
+
+    repo.git(["rev-parse", "--verify", "feature/a"]);
+    assert_eq!(
+        repo.git(["config", "--get", "branch.feature/a.stkParent"]),
+        "main"
+    );
+}
