@@ -1961,6 +1961,29 @@ fn count_latest_reviews(reviews: Option<&serde_json::Value>) -> ReviewSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn githubs_stacked_merge_refusal_reads_as_needing_the_async_endpoint() {
+        let refusal = anyhow!(
+            "gh failed: GraphQL: This pull request is part of a stack and must be merged using \
+             the asynchronous merge REST API. For more information, see \
+             https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously \
+             (mergePullRequest)"
+        );
+        assert!(needs_async_merge(&refusal));
+        assert!(!needs_async_merge(&anyhow!(
+            "gh failed: GraphQL: Pull request is not mergeable"
+        )));
+    }
+
+    #[test]
+    fn only_a_missing_stacks_feature_counts_as_not_found() {
+        assert!(is_not_found(&anyhow!("gh: Not Found (HTTP 404)")));
+        assert!(!is_not_found(&anyhow!("gh: Bad Gateway (HTTP 502)")));
+        assert!(!is_not_found(&anyhow!(
+            "error connecting to api.github.com"
+        )));
+    }
     use crate::providers::{CheckStatus, ReviewRequest, ReviewState};
 
     fn submission(event: ReviewEvent) -> Submission {
