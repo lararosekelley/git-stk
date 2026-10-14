@@ -57,7 +57,9 @@ use demo::DemoProvider;
 use gitea::GiteaProvider;
 use github::GitHubProvider;
 use gitlab::GitLabProvider;
-pub use inbox::{Decision, FETCH_LIMIT, InboxEntry, InboxList, Listing, age, epoch_seconds};
+pub use inbox::{
+    Activity, Decision, FETCH_LIMIT, InboxEntry, InboxList, Listing, age, epoch_seconds, is_bot,
+};
 pub use review_ref::ReviewRef;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1078,8 +1080,18 @@ fn is_transient_merge_error(error: &anyhow::Error) -> bool {
         "try the merge again",
         "method not allowed",
         "is it still open",
-        // Transient API 5xx (the server hiccupped - not a verdict on the
-        // merge): 502/503/504/500. Worth retrying rather than failing the run.
+    ]
+    .iter()
+    .any(|signature| text.contains(signature))
+        // A transient API 5xx is not a verdict on the merge either.
+        || is_server_error(error)
+}
+
+/// Whether a request failed because the server hiccupped (a 502, 503, 504,
+/// or 500), not because of anything asked of it: worth asking again.
+fn is_server_error(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    [
         "bad gateway",
         "service unavailable",
         "gateway time",
@@ -1087,6 +1099,19 @@ fn is_transient_merge_error(error: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|signature| text.contains(signature))
+}
+
+/// Run a read-only request, asking twice more if the server hiccups.
+pub(super) fn retry_server_errors<T>(mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    for remaining in (0..3).rev() {
+        match attempt() {
+            Err(error) if remaining > 0 && is_server_error(&error) => {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            result => return result,
+        }
+    }
+    Err(anyhow!("a request retried with no attempts left"))
 }
 
 /// Run a merge, retrying while it fails transiently so the "base branch was
@@ -1555,6 +1580,27 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(resettles, 0, "a non-transient failure must not re-poll");
+    }
+
+    #[test]
+    fn a_read_is_asked_again_after_a_server_hiccup_but_not_after_a_refusal() {
+        let mut calls = 0;
+        let answer = retry_server_errors(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(anyhow!("gh: HTTP 502: Bad Gateway"))
+            } else {
+                Ok("listed")
+            }
+        });
+        assert_eq!((answer.unwrap(), calls), ("listed", 2));
+        let mut calls = 0;
+        let refused: Result<()> = retry_server_errors(|| {
+            calls += 1;
+            Err(anyhow!("gh: HTTP 401: Bad credentials"))
+        });
+        assert!(refused.is_err());
+        assert_eq!(calls, 1);
     }
 
     #[test]

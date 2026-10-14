@@ -153,6 +153,10 @@ fn write_tour(
     };
     let tour = ReviewTour::load(provider.kind, review_provider, stack, planner, &progress)?;
     drop(progress);
+    tour::seen::record(
+        (0..tour.review_count())
+            .filter_map(|chapter| Some(tour.chapter_review(chapter)?.0.id.as_str())),
+    );
     for warning in warnings.borrow().iter().chain(tour.warnings()) {
         anstream::eprintln!("{}", style::warn(&format!("warning: {warning}")));
     }

@@ -9,10 +9,10 @@ use super::json::{
     parse_state, required_string,
 };
 use super::{
-    Anchor, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT, InboxEntry, InboxList,
-    IssueState, Listing, MergeBlocker, ReviewEvent, ReviewProvider, ReviewRequest, ReviewState,
-    ReviewSummary, Side, Submission, Thread, Verdict, VerdictState, WaitOutcome, command_output,
-    command_output_with_input, merge_with_resettle, merge_with_retry,
+    Activity, Anchor, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT, InboxEntry,
+    InboxList, IssueState, Listing, MergeBlocker, ReviewEvent, ReviewProvider, ReviewRequest,
+    ReviewState, ReviewSummary, Side, Submission, Thread, Verdict, VerdictState, WaitOutcome,
+    command_output, command_output_with_input, merge_with_resettle, merge_with_retry,
 };
 
 /// One draft note per comment, positioned on the MR's current diff, then the
@@ -743,7 +743,7 @@ impl ReviewProvider for GitLabProvider {
 }
 
 /// The fields each inbox merge request is asked for.
-const GITLAB_INBOX_FRAGMENT: &str = "fragment inboxReview on MergeRequest { iid title webUrl draft sourceBranch targetBranch createdAt updatedAt author { username } diffStatsSummary { additions deletions } headPipeline { status } approved resolvableDiscussionsCount resolvedDiscussionsCount reviewers { nodes { username mergeRequestInteraction { reviewState } } } }";
+const GITLAB_INBOX_FRAGMENT: &str = "fragment inboxReview on MergeRequest { iid title webUrl draft sourceBranch targetBranch createdAt updatedAt author { username } diffStatsSummary { additions deletions } headPipeline { status } approved resolvableDiscussionsCount resolvedDiscussionsCount reviewers { nodes { username mergeRequestInteraction { reviewState } } } notes(last: 30) { nodes { author { username bot } createdAt } } }";
 
 /// Review states that mean the reviewer has had their say, until the review
 /// is requested of them again.
@@ -816,7 +816,7 @@ fn parse_gitlab_inbox(
                                 .iter()
                                 .any(|state| REVIEWED_STATES.contains(&state.as_str()))
                         })
-                        .map(gitlab_inbox_entry)
+                        .map(|node| gitlab_inbox_entry(node, me))
                         .collect::<Result<Vec<_>>>()?;
                     Listing::Found {
                         more: more("requested", &requested),
@@ -833,7 +833,7 @@ fn parse_gitlab_inbox(
                                 .any(|state| state == "REQUESTED_CHANGES")
                                 == returned
                         })
-                        .map(gitlab_inbox_entry)
+                        .map(|node| gitlab_inbox_entry(node, me))
                         .collect::<Result<Vec<_>>>()?;
                     Listing::Found {
                         more: more("authored", &authored),
@@ -846,7 +846,7 @@ fn parse_gitlab_inbox(
         .collect()
 }
 
-fn gitlab_inbox_entry(node: &serde_json::Value) -> Result<InboxEntry> {
+fn gitlab_inbox_entry(node: &serde_json::Value, me: &str) -> Result<InboxEntry> {
     let iid = node["iid"]
         .as_str()
         .context("an inbox merge request has no iid")?;
@@ -893,6 +893,26 @@ fn gitlab_inbox_entry(node: &serde_json::Value) -> Result<InboxEntry> {
         unresolved: Some(
             count("resolvableDiscussionsCount").saturating_sub(count("resolvedDiscussionsCount"))
                 as u32,
+        ),
+        // Notes include GitLab's own, which log pushes and approvals by who
+        // made them.
+        activity: Activity::of(
+            me,
+            node["notes"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                // A bot's notes are not news.
+                .filter(|note| {
+                    note["author"]["bot"] != true
+                        && !super::is_bot(note["author"]["username"].as_str().unwrap_or_default())
+                })
+                .filter_map(|note| {
+                    Some((
+                        note["author"]["username"].as_str()?,
+                        note["createdAt"].as_str()?,
+                    ))
+                }),
         ),
     })
 }

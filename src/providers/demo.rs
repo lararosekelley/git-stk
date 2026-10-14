@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::{
-    CheckStatus, Conversation, Decision, InboxEntry, InboxList, Listing, MergeBlocker,
+    Activity, CheckStatus, Conversation, Decision, InboxEntry, InboxList, Listing, MergeBlocker,
     ReviewProvider, ReviewRequest, ReviewState, Submission, Thread, WaitOutcome, command_output,
 };
 use crate::git;
@@ -183,6 +183,7 @@ impl ReviewProvider for DemoProvider {
                 checks: CheckStatus::None,
                 decision: Decision::ReviewRequired,
                 unresolved: Some(0),
+                activity: Activity::default(),
             })
             .collect::<Vec<_>>();
         Ok(lists

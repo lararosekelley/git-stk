@@ -10,8 +10,8 @@ use super::json::{
     parse_state, required_string,
 };
 use super::{
-    Anchor, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT, InboxEntry, InboxList,
-    IssueState, Listing, MergeBlocker, NativeStack, NativeStackLayer, ReviewAnnotation,
+    Activity, Anchor, CheckStatus, Comment, Conversation, Decision, FETCH_LIMIT, InboxEntry,
+    InboxList, IssueState, Listing, MergeBlocker, NativeStack, NativeStackLayer, ReviewAnnotation,
     ReviewEvent, ReviewProvider, ReviewRequest, ReviewState, ReviewSummary, Side, StackPosition,
     Submission, Thread, Verdict, VerdictState, WaitOutcome, command_output,
     command_output_with_input, generic_annotate, merge_with_retry,
@@ -423,9 +423,11 @@ impl ReviewProvider for GitHubProvider {
                 .map(|&list| {
                     let query_arg = format!("query={}", inbox_query(&slug, list));
                     scope.spawn(move || {
-                        let listing = command_output("gh", &["api", "graphql", "-f", &query_arg])
-                            .and_then(|output| parse_github_inbox(&output))
-                            .unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
+                        let listing = super::retry_server_errors(|| {
+                            command_output("gh", &["api", "graphql", "-f", &query_arg])
+                        })
+                        .and_then(|output| parse_github_inbox(&output))
+                        .unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
                         (list, listing)
                     })
                 })
@@ -947,7 +949,7 @@ fn inbox_search(list: InboxList) -> &'static str {
 /// The GraphQL query searching `slug` for one list.
 fn inbox_query(slug: &str, list: InboxList) -> String {
     format!(
-        "query {{ search(type: ISSUE, first: {FETCH_LIMIT}, query: \"repo:{slug} is:pr is:open sort:updated-desc {}\") {{ issueCount nodes {{ ...inboxReview }} }} }} fragment inboxReview on PullRequest {{ number state title url isDraft headRefName baseRefName author {{ login }} createdAt updatedAt additions deletions reviewDecision commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }} reviewThreads(first: 100) {{ nodes {{ isResolved }} }} }}",
+        "query {{ viewer {{ login }} search(type: ISSUE, first: {FETCH_LIMIT}, query: \"repo:{slug} is:pr is:open sort:updated-desc {}\") {{ issueCount nodes {{ ...inboxReview }} }} }} fragment inboxReview on PullRequest {{ number state title url isDraft headRefName baseRefName author {{ login }} createdAt updatedAt additions deletions reviewDecision commits(last: 1) {{ nodes {{ commit {{ committedDate statusCheckRollup {{ state }} }} }} }} reviewThreads(first: 100) {{ nodes {{ isResolved }} }} comments(last: 20) {{ nodes {{ author {{ __typename login }} createdAt }} }} reviews(last: 20) {{ nodes {{ author {{ __typename login }} submittedAt }} }} }}",
         inbox_search(list)
     )
 }
@@ -956,17 +958,20 @@ fn parse_github_inbox(json: &str) -> Result<Listing> {
     let value: serde_json::Value =
         serde_json::from_str(json).context("failed to parse gh inbox JSON")?;
     let search = &value["data"]["search"];
+    let me = value["data"]["viewer"]["login"]
+        .as_str()
+        .unwrap_or_default();
     let entries = search["nodes"]
         .as_array()
         .context("gh answered the inbox search without results")?
         .iter()
-        .map(github_inbox_entry)
+        .map(|node| github_inbox_entry(node, me))
         .collect::<Result<Vec<_>>>()?;
     let more = search["issueCount"].as_u64().unwrap_or(0) > entries.len() as u64;
     Ok(Listing::Found { entries, more })
 }
 
-fn github_inbox_entry(node: &serde_json::Value) -> Result<InboxEntry> {
+fn github_inbox_entry(node: &serde_json::Value, me: &str) -> Result<InboxEntry> {
     let number = node["number"]
         .as_u64()
         .context("an inbox review has no number")?;
@@ -1004,7 +1009,34 @@ fn github_inbox_entry(node: &serde_json::Value) -> Result<InboxEntry> {
             _ => Decision::None,
         },
         unresolved,
+        activity: github_activity(node, me),
     })
+}
+
+/// Who an actor is, or None for a bot: a bot's comments are not news.
+fn login(actor: &serde_json::Value) -> Option<&str> {
+    let login = actor["login"].as_str().unwrap_or("ghost");
+    (actor["__typename"] != "Bot" && !super::is_bot(login)).then_some(login)
+}
+
+/// Comments and reviews by their authors, and the latest commit as the pull
+/// request's author's, for what is new since you looked.
+fn github_activity(node: &serde_json::Value, me: &str) -> Activity {
+    let nodes = |key: &str| node[key]["nodes"].as_array().cloned().unwrap_or_default();
+    let comments = nodes("comments");
+    let reviews = nodes("reviews");
+    let commit = &node["commits"]["nodes"][0]["commit"];
+    let events = comments
+        .iter()
+        .map(|comment| (login(&comment["author"]), comment["createdAt"].as_str()))
+        .chain(
+            reviews
+                .iter()
+                .map(|review| (login(&review["author"]), review["submittedAt"].as_str())),
+        )
+        .chain([(login(&node["author"]), commit["committedDate"].as_str())])
+        .filter_map(|(who, when)| Some((who?, when?)));
+    Activity::of(me, events)
 }
 
 /// A pull request's discussion in one request. Each listing stops at 100,

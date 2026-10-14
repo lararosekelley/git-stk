@@ -20,6 +20,7 @@ mod conversation;
 mod diff;
 mod markdown;
 pub mod plan;
+pub mod seen;
 pub mod server;
 pub mod stack;
 mod steps;
