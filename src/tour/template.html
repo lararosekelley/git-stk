@@ -2169,18 +2169,26 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     if (target) target.scrollIntoView({ behavior: scrollBehavior() });
   }
 
-  // The open threads on the current diff, in reading order: file by file,
-  // then by line. Files are drawn lazily, so a thread may not be on the page
-  // until its file is.
-  function openThreads() {
-    var found = [];
+  // The open threads on the current diff that have a row, in the order they
+  // appear on the page. A file with open threads is drawn first if it was
+  // not yet, since files are drawn lazily; a thread on a line the diff does
+  // not show has no row and is left out.
+  function openThreadRows() {
+    var rows = [];
     views.forEach(function (view) {
-      view.threads
-        .filter(function (thread) { return !thread.outdated && !thread.resolved && thread.line !== null; })
-        .sort(function (a, b) { return a.line - b.line; })
-        .forEach(function (thread) { found.push({ view: view, thread: thread }); });
+      var open = view.threads.filter(function (thread) {
+        return !thread.outdated && !thread.resolved && thread.line !== null;
+      });
+      if (!open.length) return;
+      if (!view.rendered) view.render();
+      open.forEach(function (thread) {
+        var row = threadRow(thread.id);
+        if (row) rows.push({ view: view, row: row });
+      });
     });
-    return found;
+    return rows.sort(function (a, b) {
+      return a.row.compareDocumentPosition(b.row) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
   }
 
   function threadRow(id) {
@@ -2192,26 +2200,17 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     // A thread just jumped to sits a little above the line; it is the
     // current one, not the previous.
     var margin = 30;
-    var threads = openThreads();
-    // Where each thread is, or its file's header for one not drawn yet.
-    var tops = threads.map(function (entry) {
-      return (threadRow(entry.thread.id) || entry.view.details).getBoundingClientRect().top;
+    var placed = openThreadRows().map(function (entry) {
+      // A folded file's rows are hidden; its threads sit at its header.
+      var at = entry.view.details.open ? entry.row : entry.view.details;
+      return { entry: entry, top: at.getBoundingClientRect().top };
     });
-    var order = threads.map(function (entry, index) { return index; });
-    var ahead = forward
-      ? order.filter(function (index) { return tops[index] > line + margin; })
-      : order.filter(function (index) { return tops[index] < line - margin; }).reverse();
-    // A thread on a line the diff does not show has no row; pass over it.
-    for (var step = 0; step < ahead.length; step++) {
-      var entry = threads[ahead[step]];
-      entry.view.details.open = true;
-      if (!entry.view.rendered) entry.view.render();
-      var row = threadRow(entry.thread.id);
-      if (row) {
-        row.scrollIntoView({ behavior: scrollBehavior() });
-        return;
-      }
-    }
+    var target = forward
+      ? placed.filter(function (spot) { return spot.top > line + margin; })[0]
+      : placed.filter(function (spot) { return spot.top < line - margin; }).pop();
+    if (!target) return;
+    target.entry.view.details.open = true;
+    target.entry.row.scrollIntoView({ behavior: scrollBehavior() });
   }
 
   function currentStep() {
