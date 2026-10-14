@@ -94,7 +94,7 @@ format:
 # -------
 
 # Lint with clippy and check formatting
-lint: lint-rust lint-md
+lint: lint-rust lint-md lint-tour
 
 lint-rust:
     cargo fmt --check
@@ -104,3 +104,7 @@ lint-rust:
 
 lint-md:
     npx markdownlint-cli2 "**/*.md"
+
+# Parse the tour page's inline scripts, which no Rust check sees
+lint-tour:
+    node scripts/check-tour-script.mjs

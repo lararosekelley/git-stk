@@ -18,6 +18,7 @@ Choose the affected integration targets, then expand if shared behavior changed:
 | Restack and recovery | `restack`, `worktree`, `repair`, `lock` |
 | Stack edits | `insert`, `split`, `absorb`, `rename` |
 | Provider operations | `provider`, `gitea`, `submit`, `merge`, `reviews`, `comment` |
+| Review inbox | `inbox`, and the providers' unit tests |
 | Review tours | `tour`, `reviews` |
 | CLI presentation | `list_status`, `list_markdown`, `completions`, `credits`, `demo` |
 | Shell setup and lifecycle | `setup`, `upgrade`, `run` |
@@ -37,9 +38,10 @@ just test
 just lint
 ```
 
-`just lint` runs formatting checks, Clippy across feature-gated binaries, and
-Markdown lint. `just check` also runs `cargo fmt`, so it is not a read-only check.
-Lint success is not evidence that a stack operation behaves correctly.
+`just lint` runs formatting checks, Clippy across feature-gated binaries,
+Markdown lint, and a parse of the tour page's inline scripts. `just check` also
+runs `cargo fmt`, so it is not a read-only check. Lint success is not evidence
+that a stack operation behaves correctly.
 
 ## Reuse the fixtures
 
@@ -67,6 +69,29 @@ Assert observable state, as applicable:
 If no test covers the important case, add a regression using these fixtures when
 implementation work is authorized. A verification-only request should report the
 gap and propose the check before editing. Do not build a parallel smoke-test framework.
+
+## Tour page changes
+
+The tour page is `src/tour/template.html`: CSS and JavaScript with no test harness
+of their own. Check what the Rust side can see, then what only a browser can.
+
+- The page data is asserted in `tests/tour.rs` through `tour_data`, from a
+  `--output` snapshot of a fixture review. Extend those assertions for new fields.
+- `just lint-tour` parses the page's scripts, catching syntax errors only.
+- Behavior (keys, clicks, storage, rendering) needs a headless browser against a
+  page built from this checkout: a `--output` snapshot of a fixture or `demo`
+  review, or a served tour (`--no-open`) for anything that talks to the server,
+  such as drafting, submitting, or replying. Drive it read-only; the page loads
+  nothing from the network, so no other setup is needed.
+- Against a real review, keep to snapshots and reading. Submitting, replying, or
+  resolving from a served tour posts to the forge, so it needs the same approval
+  as any provider write.
+
+Agent tours use a fake agent command in `tests/tour.rs` (`agent_tour_repo`), or a
+plan file through `--plan`. A live run with a real agent sends the review to it;
+allow that agent for one run with `GIT_CONFIG_COUNT=1
+GIT_CONFIG_KEY_0=stk.tourAgentAllowed GIT_CONFIG_VALUE_0="<command>"` rather than
+writing the consent into a repository's config.
 
 ## What CI establishes
 

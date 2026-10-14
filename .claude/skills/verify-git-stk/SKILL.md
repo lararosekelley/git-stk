@@ -26,6 +26,8 @@ Report exactly what ran and what remains unverified. Say `stop` to end the pass.
    to narrow scope; ask if the intended behavior cannot be identified.
 3. Select the smallest meaningful checks from the guide. Verify current command
    definitions before executing; the guide is maintained beside the tests and CI.
+   For the tour page or agent tours, follow its "Tour page changes" section: browser
+   checks stay read-only, and a live agent run needs consent for that run only.
 4. Run approved local checks. Do not mutate the working tree to fix failures or
    accept snapshots without a separate request. Fixtures own their temporary state.
 5. Report commands, outcomes, test counts, and limitations. Do not claim live-provider
