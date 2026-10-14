@@ -1091,6 +1091,29 @@ fn tour_posts_a_gitlab_review_before_its_ref_is_published() {
 }
 
 #[test]
+fn tour_will_not_post_to_a_gitlab_review_that_moved_before_its_ref_is_published() {
+    let (repo, _origin) = repo_with_review("refs/heads/contrib");
+    repo.git(["config", "stk.provider", "gitlab"]);
+    let head = repo.git(["ls-remote", "origin", "refs/heads/contrib"]);
+    let moved = FakeProvider::new().on_after(
+        "mr view 34 --output json",
+        "toured",
+        &gitlab_mr_with_head("0123456789abcdef0123456789abcdef01234567"),
+    );
+    let fake = gitlab_review_fake_after(moved, &head[..40], "[]")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    let mut served = Served::start(&repo, &fake, "!34");
+    fs::write(repo.path().join("toured"), "").unwrap();
+
+    let (status, answer) = served.submit(A_REVIEW, "y\n");
+    assert_ne!(status, 200, "{answer}");
+    assert!(answer.to_string().contains("has new commits"), "{answer}");
+    served.close();
+    assert!(!repo.path().join("published").exists());
+}
+
+#[test]
 fn tour_will_not_publish_someone_elses_gitlab_drafts() {
     let (repo, _origin) = repo_with_review("refs/merge-requests/34/head");
     repo.git(["config", "stk.provider", "gitlab"]);
