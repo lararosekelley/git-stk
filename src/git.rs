@@ -148,6 +148,21 @@ pub fn worktree_remove_clean(path: &std::path::Path) -> Result<()> {
         .with_context(|| format!("failed to remove the worktree at {path}"))
 }
 
+/// The ignored files and directories at the top of what `git status` reports
+/// in the worktree at `path`, which `git worktree remove` deletes without
+/// asking. Best effort: an unreadable worktree lists none.
+pub fn worktree_ignored_files(path: &std::path::Path) -> Vec<String> {
+    let dir = path.to_string_lossy().into_owned();
+    output(&["-C", &dir, "status", "--porcelain", "--ignored"])
+        .map(|out| {
+            out.lines()
+                .filter_map(|line| line.strip_prefix("!! "))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Whether the worktree registered at `path` has lost its directory, so the
 /// registration alone holds its branch. A locked worktree never counts: its
 /// directory may just be on a volume that is not mounted. Nor does a directory

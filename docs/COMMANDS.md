@@ -30,7 +30,8 @@ directory beside the repo), with branch names nested as real directories - `feat
 basename still matches the branch. git-stk records the worktrees it creates and **owns removing them**:
 `cleanup` takes an owned worktree away when its branch lands, and keeps any owned worktree that still has
 uncommitted work in it. A worktree you made yourself goes only if you agree: `cleanup` and `sync` offer to
-remove it when it holds a landed branch and has no changes or untracked files. One whose directory you
+remove it when it holds a landed branch and has no changes or untracked files, naming any ignored files
+that would go with it. One whose directory you
 already deleted shows as `(missing)` in `list` and `status`, and its stale entry is pruned with the branch;
 a locked one is left alone. A branch whose ref has to stay - because it
 is checked out, or a worktree holds it - keeps its stack metadata too, so it stays in the stack for a later

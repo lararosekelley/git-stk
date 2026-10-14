@@ -334,11 +334,11 @@ pub(crate) fn retarget_children(
     Ok(())
 }
 
-/// Why `branch`'s ref cannot go yet, or `None` when it can. Asked *before*
-/// anything is written: a branch that has to stay keeps its stack metadata too,
-/// so it stays in the stack for a later cleanup rather than being silently
-/// unstacked. The user's own worktree is let go of here: without asking when
-/// its directory is already gone, and on a yes when it is clean.
+/// Why `branch`'s ref cannot go yet, or `None` when it can. Asked *before* the
+/// stack metadata is touched: a branch that has to stay keeps it, so it stays
+/// in the stack for a later cleanup rather than being silently unstacked. The
+/// one write here is freeing the ref from the user's own worktree, so a refusal
+/// still keeps the branch whole.
 pub(crate) fn deletion_blocker(
     branch: &str,
     current_branch: &str,
@@ -367,11 +367,10 @@ pub(crate) fn deletion_blocker(
         }
         return Ok(None);
     };
-    if git::is_missing_worktree(&path) {
-        return Ok(None);
-    }
+    // A git-stk worktree whose directory is gone no longer counts as owned,
+    // so its stale entry is pruned here like the user's.
     if !stack::owned_worktree(branch).is_some_and(|owned| git::same_path(&owned, &path)) {
-        return user_worktree_blocker(branch, &path, dry_run);
+        return release_user_worktree(branch, &path, dry_run);
     }
     // Ours, but not ours to throw away: uncommitted work in it is not covered
     // by any snapshot.
@@ -381,14 +380,22 @@ pub(crate) fn deletion_blocker(
     Ok(None)
 }
 
-/// Whether the user's own worktree at `path` keeps `branch`. Naming where it
-/// lives keeps the rest of the cleanup running - a landed stack should not stop
-/// halfway because one branch has a worktree parked on it.
-fn user_worktree_blocker(
+/// Free `branch` from the user's own worktree at `path`: without asking when its
+/// directory is already gone, and on a yes when it is clean. Otherwise says why
+/// the branch stays. Naming where it lives keeps the rest of the cleanup
+/// running - a landed stack should not stop halfway because one branch has a
+/// worktree parked on it.
+fn release_user_worktree(
     branch: &str,
     path: &std::path::Path,
     dry_run: bool,
 ) -> Result<Option<String>> {
+    let shown = git::display_path(path);
+    let will = if dry_run { "would" } else { "will" };
+    if git::is_missing_worktree(path) {
+        anstream::println!("{will} prune the missing worktree {shown}");
+        return Ok(remove_user_worktree(path, dry_run));
+    }
     let held = || {
         format!(
             "checked out in the worktree at {}",
@@ -408,13 +415,42 @@ fn user_worktree_blocker(
         return Ok(Some(uncommitted_work(path)));
     }
     if dry_run {
+        anstream::println!("would offer to remove worktree {shown}");
         return Ok(None);
     }
+    // `git worktree remove` takes ignored files with it, and those can be
+    // worth keeping (`.env`) or slow to rebuild (`target/`).
+    let ignored = git::worktree_ignored_files(path);
+    let losing = match ignored.as_slice() {
+        [] => String::new(),
+        [_, _, _, _, ..] => format!(
+            " Its ignored files go too: {}, and {} more.",
+            ignored[..3].join(", "),
+            ignored.len() - 3
+        ),
+        _ => format!(" Its ignored files go too: {}.", ignored.join(", ")),
+    };
     let remove = prompt::confirm(&format!(
-        "{branch} is checked out in the worktree at {}, which is clean. Remove that worktree? [y/N] ",
-        git::display_path(path)
+        "{branch} is checked out in the worktree at {shown}, which is clean.{losing} \
+         Remove that worktree? [y/N] "
     ))?;
-    Ok((!remove).then(held))
+    if !remove {
+        return Ok(Some(held()));
+    }
+    anstream::println!("will remove worktree {shown}");
+    Ok(remove_user_worktree(path, dry_run))
+}
+
+/// Remove the user's worktree with git's own guard against losing work, which
+/// also covers anything changed since it was checked. A refusal keeps the
+/// branch instead of failing the rest of the run.
+fn remove_user_worktree(path: &std::path::Path, dry_run: bool) -> Option<String> {
+    if dry_run {
+        return None;
+    }
+    git::worktree_remove_clean(path)
+        .err()
+        .map(|error| format!("{error:#}"))
 }
 
 fn uncommitted_work(path: &std::path::Path) -> String {
@@ -461,31 +497,7 @@ pub(crate) fn report_kept(branch: &str, reason: &str) {
 /// to delete a branch a worktree still holds. Call [`deletion_blocker`] first -
 /// this assumes the ref is free to go.
 pub(crate) fn cleanup_branch_deletion(branch: &str, landing: Landing, dry_run: bool) -> Result<()> {
-    let owned = removable_owned_worktree(branch)?;
-    let user_worktree = match owned {
-        Some(_) => None,
-        None => git::worktree_holding(branch)?,
-    };
-    if let Some(path) = user_worktree {
-        // Left to git to refuse anything with work in it, should the worktree
-        // have changed since the user agreed.
-        let action = if git::is_missing_worktree(&path) {
-            "prune the missing worktree"
-        } else if dry_run {
-            "offer to remove worktree"
-        } else {
-            "remove worktree"
-        };
-        anstream::println!(
-            "{} {action} {}",
-            if dry_run { "would" } else { "will" },
-            git::display_path(&path)
-        );
-        if !dry_run {
-            git::worktree_remove_clean(&path)?;
-        }
-    }
-    if let Some(path) = owned {
+    if let Some(path) = removable_owned_worktree(branch)? {
         anstream::println!(
             "{} remove worktree {}",
             if dry_run { "would" } else { "will" },

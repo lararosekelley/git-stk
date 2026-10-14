@@ -1885,3 +1885,59 @@ fn sync_prunes_a_landed_branchs_missing_worktree() {
             .contains("wt-a")
     );
 }
+
+#[test]
+fn cleanup_drops_an_owned_worktree_whose_directory_is_gone() {
+    let repo = TestRepo::new();
+    let parent = worktree_dir();
+    repo.git(["config", "stk.worktreeDir", parent.path().to_str().unwrap()]);
+    repo.git(["config", "stk.provider", "github"]);
+
+    repo.stack()
+        .args(["new", "feature/a", "--worktree"])
+        .assert()
+        .success();
+    std::fs::remove_dir_all(parent.path().join("feature").join("a")).unwrap();
+
+    let fake = FakeProvider::new()
+        .on("feature/a --state merged", MERGED_A)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("will prune the missing worktree"))
+        .stdout(predicates::str::contains("will delete branch feature/a"));
+
+    assert!(
+        !repo
+            .git(["worktree", "list", "--porcelain"])
+            .contains("feature/a")
+    );
+    assert!(
+        repo.git_status(["config", "--get", "branch.feature/a.stkWorktree"])
+            .stdout
+            .is_empty(),
+        "the ownership marker goes with the worktree"
+    );
+}
+
+#[test]
+fn the_removal_offer_names_ignored_files_that_would_go() {
+    let repo = TestRepo::new();
+    let (_parent, worktree) = landed_stack_with_worktree_on_a(&repo);
+    // Worktrees share the main repo's info/exclude.
+    std::fs::write(repo.path().join(".git/info/exclude"), ".env\n").unwrap();
+    std::fs::write(worktree.join(".env"), "KEY=1\n").unwrap();
+    let fake = merged_both(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["cleanup", "feature/a"])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Its ignored files go too: .env."));
+    assert!(worktree.join(".env").exists());
+}
