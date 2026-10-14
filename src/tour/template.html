@@ -283,6 +283,8 @@ kbd { font-family: var(--font-code); font-size: 12px; border: 1px solid var(--bo
 .risk-rationale { color: var(--fg-muted); }
 .assessment-question { margin-top: 8px; padding: 6px 12px; border: 1px solid var(--border); border-left: 3px solid var(--hl-keyword); border-radius: 11px; }
 .finding-evidence { margin: 2px 0 6px; font-size: 12px; }
+/* A thread jumped to lands below its file's pinned header, not under it. */
+tr.thread-row { scroll-margin-top: 48px; }
 .finding-raised { font-size: 12px; color: var(--fg-muted); font-style: italic; }
 .finding-dismissed { display: flex; align-items: center; gap: 8px; opacity: .75; border-left-color: var(--border); }
 .thread-index li.dismissed { opacity: .6; text-decoration: line-through; }
@@ -2197,9 +2199,9 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
 
   function jumpToThread(forward) {
     var line = readingLine();
-    // A thread just jumped to sits a little above the line; it is the
-    // current one, not the previous.
-    var margin = 30;
+    // A thread just jumped to sits within this of the line, clear of its
+    // file's pinned header; it is the current one, not the next or previous.
+    var margin = 80;
     var placed = openThreadRows().map(function (entry) {
       // A folded file's rows are hidden; its threads sit at its header.
       var at = entry.view.details.open ? entry.row : entry.view.details;
