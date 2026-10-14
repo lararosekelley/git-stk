@@ -2197,25 +2197,45 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     return main.querySelector('tr[data-thread="' + id + '"]');
   }
 
+  // The thread last jumped to, so the next jump goes on from it however the
+  // page could scroll: near the end of a page, a thread cannot reach the top.
+  var lastThread = null;
+
   function jumpToThread(forward) {
-    // Where a jump lands a thread: below the pinned header and the page's
-    // scroll padding (16px), plus the row's own scroll margin (48px). A thread
-    // within a few pixels of it is the current one.
+    var rows = openThreadRows();
     var header = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--header-height")) || 0;
-    var line = header + 16 + 48;
-    var margin = 12;
-    var placed = openThreadRows().map(function (entry) {
-      // A folded file's rows are hidden; its threads sit at its header.
-      var at = entry.view.details.open ? entry.row : entry.view.details;
-      return { entry: entry, top: at.getBoundingClientRect().top };
-    });
-    var target = forward
-      ? placed.filter(function (spot) { return spot.top > line + margin; })[0]
-      : placed.filter(function (spot) { return spot.top < line - margin; }).pop();
+    var index = -1;
+    var last = lastThread ? threadRow(lastThread) : null;
+    var lastTop = last ? last.getBoundingClientRect().top : -1;
+    if (last && lastTop >= header && lastTop < window.innerHeight) {
+      // Still on screen, so still the current thread.
+      index = rows.map(function (entry) { return entry.row; }).indexOf(last);
+    }
+    var target;
+    if (index >= 0) {
+      target = rows[index + (forward ? 1 : -1)];
+    } else {
+      // Scrolled away since: go by where the threads are. A jump lands a
+      // thread below the pinned header, the page's scroll padding (16px),
+      // and the row's own scroll margin (48px).
+      var line = header + 16 + 48;
+      var margin = 12;
+      var placed = rows.map(function (entry) {
+        // A folded file's rows are hidden; its threads sit at its header.
+        var at = entry.view.details.open ? entry.row : entry.view.details;
+        return { entry: entry, top: at.getBoundingClientRect().top };
+      });
+      var spot = forward
+        ? placed.filter(function (each) { return each.top > line + margin; })[0]
+        : placed.filter(function (each) { return each.top < line - margin; }).pop();
+      target = spot && spot.entry;
+    }
     if (!target) return;
-    target.entry.view.details.open = true;
-    target.entry.row.scrollIntoView({ behavior: scrollBehavior() });
+    target.view.details.open = true;
+    lastThread = target.row.getAttribute("data-thread");
+    target.row.scrollIntoView({ behavior: scrollBehavior() });
   }
+
 
   function currentStep() {
     var section = currentOf("section.step");
