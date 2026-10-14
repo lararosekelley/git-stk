@@ -954,6 +954,41 @@ fn submit_title_rejects_an_empty_string() {
         .stderr(predicates::str::contains("--title cannot be empty"));
 }
 
+/// A review opened without a description carries its title as its body;
+/// setting one later replaces that echo instead of leaving it above.
+#[test]
+fn submit_desc_on_an_existing_review_drops_the_subject_echo() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "A work");
+    let fake = FakeProvider::new()
+        .on(
+            "pr view 12",
+            r##"{"body":"A work\n\n<!-- git-stk:stack -->\nstack list\n<!-- /git-stk:stack -->"}"##,
+        )
+        .record("pr edit 12 --body", "edit-body-12.txt", "")
+        .on(
+            "feature/a",
+            r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##,
+        )
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["submit", "--no-push", "-d", "What and why."])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("set description in #12"));
+
+    let body = fs::read_to_string(repo.path().join("edit-body-12.txt")).expect("edited body");
+    assert!(
+        body.contains("<!-- git-stk:description -->\nWhat and why.\n<!-- /git-stk:description -->"),
+        "{body}"
+    );
+    assert!(!body.contains("A work"), "{body}");
+}
+
 #[test]
 fn submit_desc_file_reads_the_description_from_a_file() {
     let repo = TestRepo::new();
