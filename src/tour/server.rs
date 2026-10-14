@@ -361,15 +361,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_tour_takes_its_preferred_port_when_it_is_free() {
-        let first = Server::bind(0).unwrap();
-        let preferred = first.port;
-        drop(first);
-        let held = Server::bind(preferred).unwrap();
-        assert_eq!(held.port, preferred);
-        // Taken, so the next tour of this repository moves along.
-        let next = Server::bind(preferred).unwrap();
-        assert_ne!(next.port, preferred);
+    fn a_tour_moves_past_its_preferred_port_when_it_is_taken() {
+        // Hold a port rather than free one and hope it stays free: tests
+        // binding in parallel can take a port the moment it is let go.
+        let held = Server::bind(0).unwrap();
+        let next = Server::bind(held.port).unwrap();
+        assert_ne!(next.port, held.port);
     }
 
     fn server() -> Server {
