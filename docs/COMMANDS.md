@@ -262,7 +262,10 @@ Threads can be answered in place: Reply posts to the thread, Resolve and Reopen 
 GitLab (Gitea has no way to resolve one from outside its pages), and the box at the end of the conversation
 comments on the review as a whole. Replies and comments are confirmed in the terminal like reviews; resolving
 posts nothing, so it is not asked about. Gitea places a reply by line, so it can only answer a thread on a
-line of the current diff.
+line of the current diff. A review whose post fails is kept on record until the forge confirms it, and
+submitting the same review again first checks the forge: if all of it arrived after all, as when only the
+answer was lost, it is not posted twice, and if only part of it did, the tour says so instead of posting the
+rest.
 
 An agent tour (`--style agentTour`, or `stk.tourStyle = agentTour`) has an agent plan each review: an
 overview, the files in reading order as titled steps with a short explanation each, and notes on particular
