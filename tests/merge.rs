@@ -1426,6 +1426,41 @@ fn merge_uses_githubs_async_endpoint_for_a_stacked_review() {
     );
 }
 
+/// When the stack listing cannot be read, the review looks unstacked and goes
+/// to `gh pr merge` - which GitHub refuses, naming the endpoint to use. Take it.
+#[test]
+fn merge_takes_the_async_endpoint_when_github_says_the_review_is_stacked() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .fail(
+            "pr merge",
+            "GraphQL: This pull request is part of a stack and must be merged using the \
+             asynchronous merge REST API. (mergePullRequest)",
+        )
+        .record(
+            "api repos/owner/repo/pulls/12/merge-async -X PUT",
+            "async.txt",
+            r##"{"status":"merged","details":{"message":"Pull request was merged.","sha":"abc"}}"##,
+        )
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .fail("repos/owner/repo/stacks", "gh: Bad Gateway (HTTP 502)")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y"])
+        .assert()
+        .success();
+
+    let call = fs::read_to_string(repo.path().join("async.txt")).expect("async merge call");
+    assert!(call.contains("merge_method=squash"), "got: {call}");
+}
+
 /// A merge queue on the base branch decides the merge method itself, and
 /// GitHub rejects `merge_method` outright rather than ignoring it - as a
 /// `failed` status on a 200, so it arrives looking like a failed merge. Ask

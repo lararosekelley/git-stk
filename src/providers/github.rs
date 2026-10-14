@@ -285,7 +285,15 @@ impl ReviewProvider for GitHubProvider {
         if auto {
             args.push("--auto");
         }
-        merge_with_retry(|| command_output("gh", &args))
+        merge_with_retry(|| command_output("gh", &args)).or_else(|error| {
+            // GitHub knows of a stack the listing did not show: take the
+            // endpoint it names.
+            if !auto && needs_async_merge(&error) {
+                forget_stacks_listing();
+                return async_merge(review, strategy);
+            }
+            Err(error)
+        })
     }
 
     fn merge_blocker(&self, review: &ReviewRequest) -> Result<MergeBlocker> {
@@ -1471,20 +1479,34 @@ fn stacks_listing(owner: &str, repo: &str) -> Result<String> {
     }
     // `--paginate`: the listing keeps every dissolved and landed stack, so on
     // a long-lived repo the live one is not necessarily on the first page.
-    let result = command_output(
-        "gh",
-        &["api", "--paginate", &format!("repos/{owner}/{repo}/stacks")],
-    );
-    // Failures are cached too. The common one is the 404 from a repo without
-    // the preview, and not memoising it left a `gh` subprocess per branch on
-    // exactly the repos that gain nothing from asking.
-    STACKS_LISTING.with(|cell| {
-        *cell.borrow_mut() = Some(match &result {
-            Ok(output) => Ok(output.clone()),
-            Err(error) => Err(error.to_string()),
-        });
+    let result = super::retry_server_errors(|| {
+        command_output(
+            "gh",
+            &["api", "--paginate", &format!("repos/{owner}/{repo}/stacks")],
+        )
     });
+    // The 404 from a repo without the preview is cached too: not memoising it
+    // left a `gh` subprocess per branch on exactly the repos that gain nothing
+    // from asking. Any other failure may pass, so the next read asks again.
+    let cached = match &result {
+        Ok(output) => Some(Ok(output.clone())),
+        Err(error) if is_not_found(error) => Some(Err(error.to_string())),
+        Err(_) => None,
+    };
+    STACKS_LISTING.with(|cell| *cell.borrow_mut() = cached);
     result
+}
+
+fn is_not_found(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}").to_lowercase();
+    text.contains("404") || text.contains("not found")
+}
+
+/// GitHub refused a synchronous merge because the pull request is in a stack.
+fn needs_async_merge(error: &anyhow::Error) -> bool {
+    format!("{error:#}")
+        .to_lowercase()
+        .contains("asynchronous merge rest api")
 }
 
 thread_local! {
