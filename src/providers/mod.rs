@@ -698,6 +698,12 @@ pub trait ReviewProvider: Sync {
         Ok(false)
     }
 
+    /// The commit the forge reports as `review`'s head, for a forge that
+    /// publishes the review's own ref some time after the review.
+    fn review_head(&self, _review: &ReviewRequest) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// The login of whoever the forge CLI is signed in as.
     fn viewer(&self) -> Result<String>;
 

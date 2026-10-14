@@ -282,6 +282,15 @@ impl ReviewProvider for GitLabProvider {
         parse_body_field(&output, "description")
     }
 
+    fn review_head(&self, review: &ReviewRequest) -> Result<Option<String>> {
+        let mr = command_output(
+            "glab",
+            &["mr", "view", review.id_value(), "--output", "json"],
+        )?;
+        let head = parse_body_field(&mr, "sha")?;
+        Ok((!head.is_empty()).then_some(head))
+    }
+
     fn conversation(&self, review: &ReviewRequest) -> Result<Conversation> {
         let iid = review.id_value();
         let mr = command_output("glab", &["mr", "view", iid, "--output", "json"])?;
