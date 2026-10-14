@@ -477,6 +477,7 @@ fn review_submit(provider: Provider, slug: &str, work: &Path) -> Result<(), Stri
     });
     tour.post_confirmed("api/submit", &submission)?;
     tour.close();
+    resubmit_is_not_posted_twice(work, &number, &submission)?;
 
     let data = tour_snapshot(work, &number, "e2e-review.html")?;
     let discussion = &data["chapters"][1]["conversation"];
@@ -485,6 +486,9 @@ fn review_submit(provider: Provider, slug: &str, work: &Path) -> Result<(), Stri
         return Err(format!(
             "the submitted review did not come back in the tour: {discussion}"
         ));
+    }
+    if text.matches("e2e line comment").count() > 1 {
+        return Err(format!("the review was posted twice: {discussion}"));
     }
     let thread = discussion["threads"]
         .as_array()
@@ -534,6 +538,90 @@ fn review_submit(provider: Provider, slug: &str, work: &Path) -> Result<(), Stri
     Ok(())
 }
 
+/// A submission whose answer was lost after it landed is recognized on retry
+/// and not posted again. That check reads the conversation and asks the host
+/// who you are, which no fake can vouch for. The record a lost answer leaves
+/// is planted for the review just posted, then the same review is submitted
+/// again; a prompt to post it means the check missed it.
+fn resubmit_is_not_posted_twice(
+    work: &Path,
+    number: &str,
+    submission: &serde_json::Value,
+) -> Result<(), String> {
+    use git_stk::providers::{Anchor, DraftComment, ReviewEvent, Side, Submission};
+    use std::io::Write;
+
+    let sent = Submission {
+        event: ReviewEvent::Comment,
+        body: submission["body"].as_str().unwrap_or_default().to_owned(),
+        comments: vec![DraftComment {
+            path: "b.txt".to_owned(),
+            old_path: "b.txt".to_owned(),
+            anchor: Anchor {
+                side: Side::New,
+                line: 1,
+                start_line: None,
+            },
+            paired_line: None,
+            body: submission["comments"][0]["body"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        }],
+        commit: String::new(),
+    };
+    let common = PathBuf::from(git(work, &["rev-parse", "--git-common-dir"])?);
+    let common = if common.is_absolute() {
+        common
+    } else {
+        work.join(common)
+    };
+    let record = common
+        .join("stk/tours/submissions")
+        .join(format!("{number}.json"));
+    std::fs::create_dir_all(record.parent().expect("a submissions directory"))
+        .map_err(|e| format!("create the submissions directory: {e}"))?;
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64
+        - 60;
+    let fingerprint = git_stk::tour::submitted::fingerprint(&sent);
+    std::fs::write(
+        &record,
+        serde_json::json!({"fingerprint": fingerprint, "at": at}).to_string(),
+    )
+    .map_err(|e| format!("write the submission record: {e}"))?;
+
+    let mut tour = ServedTour::start(work, number)?;
+    let request = {
+        let (url, body) = (tour.url.clone(), submission.to_string());
+        std::thread::spawn(move || tour_request(&url, "POST", "api/submit", &body))
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !request.is_finished() && std::time::Instant::now() < deadline {
+        sleep(Duration::from_millis(250));
+    }
+    if !request.is_finished() {
+        // Waiting on a yes: decline, so nothing is posted twice.
+        let _ = tour.stdin.write_all(b"n\n");
+        let _ = request.join();
+        tour.close();
+        return Err("the retry asked to post the review again".to_owned());
+    }
+    let answer = request
+        .join()
+        .map_err(|_| "the request panicked".to_owned())??;
+    tour.close();
+    if !answer.starts_with("HTTP/1.1 200") {
+        return Err(format!("the retry failed: {answer}"));
+    }
+    if record.exists() {
+        return Err("the retry left its record behind".to_owned());
+    }
+    Ok(())
+}
+
 /// `inbox` runs every list's query against the live host, and finds the
 /// review this run opened among yours. Search indexes trail a new review, so
 /// it is asked a few times.
@@ -551,6 +639,10 @@ fn inbox_lists_your_reviews(provider: Provider, slug: &str, work: &Path) -> Resu
             sleep(Duration::from_secs(3));
         }
         listed = stk(work, &["inbox", "--limit", "50"])?;
+        // A list the host rejects is printed, not raised, so look for it.
+        if listed.contains("could not list these") {
+            return Err(format!("inbox could not list a list:\n{listed}"));
+        }
         let yours = listed.split("Yours").nth(1).unwrap_or_default();
         if yours.contains(&format!("{number} ")) {
             return Ok(());
