@@ -8,7 +8,8 @@ replace CI or introduce another test harness.
 
 - Run commands from the repository root.
 - `just test` enables the required `test-fakes` feature. Do not substitute bare `cargo test`.
-- `just lint` checks Rust and Markdown, including feature-gated development binaries.
+- `just lint` checks Rust, Markdown, and the tour page's inline scripts, including
+  feature-gated development binaries.
 - `just check` runs formatting before lint/tests and can modify files.
 - Reuse `tests/common/mod.rs` for disposable repositories and fake providers.
 - Do not exercise stack mutations, setup, upgrade, or uninstall against the user's
