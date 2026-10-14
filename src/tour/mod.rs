@@ -1051,9 +1051,10 @@ fn review_tips(
     let remote = settings::remote()?;
     let commits = match git::fetch_commits(&remote, &references) {
         Ok(commits) => commits,
-        Err(error) => match with_unpublished_heads(provider, &remote, stack, &references)? {
-            Some(references) => git::fetch_commits(&remote, &references)?,
-            None => return Err(error),
+        // A failed look for stand-ins leaves the fetch's own error to report.
+        Err(error) => match with_unpublished_heads(provider, &remote, stack, &references) {
+            Ok(Some(references)) => git::fetch_commits(&remote, &references)?,
+            _ => return Err(error),
         },
     };
     Ok(commits
