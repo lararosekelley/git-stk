@@ -424,6 +424,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
 .review-status.posted { color: var(--done); }
 .thread-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0 6px; }
 .finding-steps { margin-left: auto; display: inline-flex; gap: 6px; }
+.finding-steps[hidden] { display: none; }
 .action-status { color: var(--fg-muted); font-size: 12px; }
 .action-status.failed { color: var(--removed); }
 .comment-box { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
@@ -1136,7 +1137,16 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       count.hidden = !count.textContent;
     }
     view.render();
+    showFindingSteps();
     if (currentFilter() === "findings") applyFilter();
+  }
+
+  // Next and Previous on each finding, only while there is another to go to.
+  function showFindingSteps() {
+    var several = !!chapter.plan && openFindings(chapter.plan.findings || []).length > 1;
+    Array.prototype.forEach.call(main.querySelectorAll(".finding .finding-steps"), function (steps) {
+      steps.hidden = !several;
+    });
   }
 
   var SEVERITIES = { required: "Required", recommended: "Recommended", optional: "Optional" };
@@ -1225,17 +1235,15 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       setDismissed(finding, true);
       refreshFindings(view);
     });
-    var steps = null;
-    if (openFindings(chapter.plan.findings).length > 1) {
-      steps = el("span", { class: "finding-steps" }, [false, true].map(function (forward) {
-        var button = el("button", { type: "button", text: forward ? "Next finding" : "Previous finding" });
-        button.addEventListener("click", function () {
-          findingJumps.last = findingKey(finding);
-          jumpToFinding(forward, true);
-        });
-        return button;
-      }));
-    }
+    var steps = el("span", { class: "finding-steps" }, [false, true].map(function (forward) {
+      var button = el("button", { type: "button", text: forward ? "Next finding" : "Previous finding" });
+      button.addEventListener("click", function () {
+        findingJumps.last = findingKey(finding);
+        jumpToFinding(forward, true);
+      });
+      return button;
+    }));
+    steps.hidden = openFindings(chapter.plan.findings).length < 2;
     parts.push(el("div", { class: "thread-actions" }, [add, dismiss, steps]));
     return el("div", { class: "finding finding-" + finding.severity, "data-finding": findingKey(finding) }, parts);
   };
