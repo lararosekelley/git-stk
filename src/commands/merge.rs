@@ -28,7 +28,8 @@ pub struct Merge {
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "all")]
     auto: bool,
     /// Repeat merge-and-sync bottom-up until the whole stack has landed, or
-    /// hand the stack to the merge queue in one call when one governs it.
+    /// land a registered GitHub stack in one call: merged directly, or handed
+    /// to the merge queue when one governs its base.
     #[arg(long, action = ArgAction::SetTrue)]
     all: bool,
     /// With --all: wait for each review's checks before merging it - the top
@@ -131,9 +132,9 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
 /// scheduled stops the loop, and with `wait` each review's checks settle
 /// before its merge.
 ///
-/// A merge queue takes the stack whole instead - see [`queued_stack_top`] -
-/// so that path makes one merge, waits on that review only, and reports for
-/// the line rather than looping.
+/// A registered GitHub stack lands whole instead - see [`whole_stack_top`] -
+/// so that path makes one merge of the top and reports for the line rather
+/// than looping.
 fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     let Some(bottom) = bottom_branch()? else {
         bail!(nothing_to_merge_hint()?);
@@ -158,20 +159,37 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
     let pinned_base = stack::unanchored_base(&line)?;
     let base = stack::parent_of(&bottom)?.unwrap_or_else(|| "its base".to_owned());
 
-    // A merge queue takes a stack whole, so the top is one call for the entire
-    // line rather than one landing per layer.
-    let queue_top = queued_stack_top(review_provider.as_ref(), &branches, &base);
+    // A registered stack lands whole from its top, so that is one call for
+    // the entire line rather than one landing per layer.
+    let whole = whole_stack_top(review_provider.as_ref(), &branches, &base);
 
     if dry_run {
-        if let Some(top) = &queue_top {
+        if let Some((top, via)) = &whole {
             let review = open_review_for(review_provider.as_ref(), provider.kind, top)?;
-            if wait {
-                anstream::println!("would wait for checks on {}", review.id);
+            match via {
+                WholeStack::Queue => {
+                    if wait {
+                        anstream::println!("would wait for checks on {}", review.id);
+                    }
+                    anstream::println!(
+                        "would add {count} reviews to {base}'s merge queue by merging {}",
+                        review.label()
+                    );
+                }
+                WholeStack::Direct => {
+                    if wait {
+                        for branch in &branches {
+                            let layer =
+                                open_review_for(review_provider.as_ref(), provider.kind, branch)?;
+                            anstream::println!("would wait for checks on {}", layer.id);
+                        }
+                    }
+                    anstream::println!(
+                        "would merge {count} reviews into {base} in one call by merging {} ({strategy}), then sync",
+                        review.label()
+                    );
+                }
             }
-            anstream::println!(
-                "would add {count} reviews to {base}'s merge queue by merging {}",
-                review.label()
-            );
             return Ok(());
         }
         for branch in &branches {
@@ -189,8 +207,13 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
         return Ok(());
     }
 
-    let prompt = match &queue_top {
-        Some(_) => format!("add {count} reviews to {base}'s merge queue? [y/N] "),
+    let prompt = match &whole {
+        Some((_, WholeStack::Queue)) => {
+            format!("add {count} reviews to {base}'s merge queue? [y/N] ")
+        }
+        Some((_, WholeStack::Direct)) => {
+            format!("merge {count} reviews into {base} in one call ({strategy})? [y/N] ")
+        }
         None => format!(
             "merge {count} review{} into {base}, bottom-up ({strategy})? [y/N] ",
             if count == 1 { "" } else { "s" }
@@ -203,13 +226,14 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
 
     stack::snapshot("merge --all");
 
-    if let Some(top) = queue_top {
-        return enqueue_whole_stack(
+    if let Some((_, via)) = whole {
+        return land_whole_stack(
             review_provider.as_ref(),
             provider.kind,
-            &top,
+            &branches,
+            via,
             &strategy,
-            count,
+            &base,
             wait,
         );
     }
@@ -517,23 +541,32 @@ fn merge_and_check(
     }
 }
 
-/// The top branch to merge when a merge queue will take the whole stack, or
-/// `None` when `merge --all` should walk it bottom-up.
+/// How one merge of a registered stack's top lands the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WholeStack {
+    /// Into the base's merge queue, every layer at once.
+    Queue,
+    /// Straight into the base: GitHub merges every open layer below the top.
+    Direct,
+}
+
+/// The top branch to merge when one call lands the whole stack, and how it
+/// lands, or `None` when `merge --all` should walk it bottom-up.
 ///
 /// Three things have to hold, and a failure of any reads as `None`:
 ///
-/// - a platform stack, since merging a layer only cascades down one - without
+/// - a platform stack, since only its merge takes the layers below - without
 ///   it the call merges that review into the layer below rather than landing
 ///   the line;
-/// - that stack landing where the local line says it does, since the queue is
-///   a property of the branch it lands in;
+/// - that stack landing where the local line says it does, since that is the
+///   branch the prompt names and whose queue, if any, takes it;
 /// - its open layers being exactly the line, since the cascade takes every
 ///   open layer below the top.
-fn queued_stack_top(
+fn whole_stack_top(
     review_provider: &dyn ReviewProvider,
     branches: &[String],
     base: &str,
-) -> Option<String> {
+) -> Option<(String, WholeStack)> {
     // One layer is the same call either way, so leave it on the path whose
     // reporting and sync behaviour is already settled.
     if branches.len() < 2 {
@@ -551,9 +584,6 @@ fn queued_stack_top(
     if stack.base != base {
         return None;
     }
-    if !review_provider.base_has_merge_queue(base).unwrap_or(false) {
-        return None;
-    }
     // The cascade takes the top and *everything open below it* in the platform
     // stack, so the two sets have to match exactly. Containment one way is not
     // enough: an open layer below the line's bottom - an off-trunk base, a
@@ -566,53 +596,84 @@ fn queued_stack_top(
         .filter(|layer| layer.open)
         .map(|layer| &layer.branch)
         .collect();
-    (cascade.len() == branches.len() && branches.iter().all(|branch| cascade.contains(&branch)))
-        .then(|| top.clone())
+    if cascade.len() != branches.len() || !branches.iter().all(|branch| cascade.contains(&branch)) {
+        return None;
+    }
+    let via = if review_provider.base_has_merge_queue(base).unwrap_or(false) {
+        WholeStack::Queue
+    } else {
+        WholeStack::Direct
+    };
+    Some((top.clone(), via))
 }
 
-/// Hand the whole stack to the merge queue with one merge of its top.
-fn enqueue_whole_stack(
+/// Land the whole stack with one merge of its top: into the base's merge
+/// queue, or straight into the base. With `wait`, the checks that gate it come
+/// first: the top's alone for a queue, which runs its own, and every layer's
+/// for a direct merge, since GitHub requires them on each review it lands.
+fn land_whole_stack(
     review_provider: &dyn ReviewProvider,
     kind: ProviderKind,
-    top: &str,
+    branches: &[String],
+    via: WholeStack,
     strategy: &str,
-    count: usize,
+    base: &str,
     wait: bool,
 ) -> Result<()> {
+    let count = branches.len();
+    let Some(top) = branches.last() else {
+        bail!("no reviews to merge");
+    };
     let review = open_review_for(review_provider, kind, top)?;
     if wait {
-        anstream::println!(
-            "waiting for checks on {} {}",
-            review.id,
-            style::dim("(ctrl-c is safe; rerun `git stk merge --all` to resume)")
-        );
-        match review_provider.wait_for_checks(&review)? {
-            WaitOutcome::Passed => {}
-            // Merged out-of-band while we waited. Merging it now would ask the
-            // async endpoint to land a closed review and surface a raw `gh`
-            // error; the bottom-up walk syncs instead, and so does this.
-            WaitOutcome::Landed => {
-                anstream::println!(
-                    "{}",
-                    style::warn(&format!(
-                        "{} was merged outside git-stk; syncing instead",
-                        review.id
-                    ))
-                );
-                return sync(false, PushMode::Config);
+        let layers: Vec<ReviewRequest> = match via {
+            WholeStack::Queue => Vec::new(),
+            WholeStack::Direct => branches
+                .iter()
+                .map(|branch| open_review_for(review_provider, kind, branch))
+                .collect::<Result<_>>()?,
+        };
+        let gated: Vec<&ReviewRequest> = match via {
+            WholeStack::Queue => vec![&review],
+            WholeStack::Direct => layers.iter().collect(),
+        };
+        for layer in gated {
+            anstream::println!(
+                "waiting for checks on {} {}",
+                layer.id,
+                style::dim("(ctrl-c is safe; rerun `git stk merge --all` to resume)")
+            );
+            match review_provider.wait_for_checks(layer)? {
+                WaitOutcome::Passed => {}
+                // Merged out-of-band while we waited. Merging it now would ask
+                // the async endpoint to land a closed review and surface a raw
+                // `gh` error; the bottom-up walk syncs instead, and so does
+                // this.
+                WaitOutcome::Landed => {
+                    anstream::println!(
+                        "{}",
+                        style::warn(&format!(
+                            "{} was merged outside git-stk; syncing instead",
+                            layer.id
+                        ))
+                    );
+                    return sync(false, PushMode::Config);
+                }
+                WaitOutcome::Failed => bail!(
+                    "checks failed for {}; fix them and rerun `git stk merge --all`",
+                    layer.id
+                ),
+                WaitOutcome::Inconclusive => bail!(
+                    "checks for {} stopped without a verdict - a cancelled run, or one \
+                     waiting on a person; resolve it and rerun `git stk merge --all`",
+                    layer.id
+                ),
             }
-            WaitOutcome::Failed => bail!(
-                "checks failed for {}; fix them and rerun `git stk merge --all`",
-                review.id
-            ),
-            WaitOutcome::Inconclusive => bail!(
-                "checks for {} stopped without a verdict - a cancelled run, or one \
-                 waiting on a person; resolve it and rerun `git stk merge --all`",
-                review.id
-            ),
         }
     }
 
+    // A failure is reported and nothing more: part of the stack may already
+    // have landed, so walking it bottom-up now could merge a layer twice.
     match merge_and_check(
         review_provider,
         &review,
@@ -629,6 +690,15 @@ fn enqueue_whole_stack(
                 ))
             );
             Ok(())
+        }
+        MergeOutcome::Merged if via == WholeStack::Direct => {
+            anstream::println!(
+                "{}",
+                style::success(&format!(
+                    "merge complete: {count} reviews merged into {base} in one call"
+                ))
+            );
+            sync(false, PushMode::Config)
         }
         // The queue answered for the base a moment ago, so reaching either of
         // these means it stopped applying mid-run. Reported rather than
