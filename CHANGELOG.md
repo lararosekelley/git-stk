@@ -12,6 +12,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   open findings or to the files not yet marked viewed. Steps with no file left
   fold to their heading, the sidebar follows, and the choice is kept between
   tours. In Vi mode, the leader then `f` cycles it.
+- **tour:** step through an agent review's findings: Next finding and
+  Previous finding on each finding, Go to the findings under their list, and
+  `f` and `F` in Vi mode. Dismissed findings and files the filter hides are
+  skipped.
 
 ## 0.15.5
 
