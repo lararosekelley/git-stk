@@ -308,6 +308,28 @@ impl Tour {
         )
     }
 
+    /// The asked-for review's agent review as plain data, for an agent to work
+    /// from: the review, the agent's judgment, and its findings. None when the
+    /// review has no plan from the agent.
+    pub fn findings(&self) -> Option<Value> {
+        let chapter = self.current();
+        let plan = chapter.plan.as_ref()?;
+        Some(json!({
+            "review": {
+                "id": chapter.review.id,
+                "title": chapter.review.title,
+                "url": chapter.review.url,
+                "branch": chapter.review.branch,
+                "base": chapter.review.base,
+                "head": chapter.head_sha,
+            },
+            "model": plan.reported.model,
+            "cached": plan.cached,
+            "assessment": plan.assessment.as_ref().map(assessment_data),
+            "findings": plan.findings.iter().map(finding_data).collect::<Vec<_>>(),
+        }))
+    }
+
     /// A chapter's review and the head the tour shows of it.
     pub fn chapter_review(&self, chapter: usize) -> Option<(&ReviewRequest, &str)> {
         self.chapters
@@ -405,23 +427,14 @@ impl Chapter {
                     "line": note.line,
                     "bodyHtml": markdown::to_html(&note.body),
                 })).collect::<Vec<_>>(),
-                "findings": plan.findings.iter().map(|finding| json!({
-                    "path": finding.path,
-                    "side": finding.side.as_str(),
-                    "line": finding.line,
-                    "startLine": finding.start_line,
-                    "severity": finding.severity.as_str(),
-                    "category": finding.category.map(plan::Category::as_str),
-                    "title": finding.title,
+                "findings": plan.findings.iter().map(|finding| {
                     // The Markdown too, for turning a finding into a comment
                     // or copying it for an agent.
-                    "body": finding.body,
-                    "bodyHtml": markdown::to_html(&finding.body),
-                    "suggestion": finding.suggestion,
-                    "evidence": finding.evidence,
-                    "evidenceHtml": markdown::to_html(&finding.evidence),
-                    "preExisting": finding.pre_existing,
-                })).collect::<Vec<_>>(),
+                    let mut data = finding_data(finding);
+                    data["bodyHtml"] = markdown::to_html(&finding.body).into();
+                    data["evidenceHtml"] = markdown::to_html(&finding.evidence).into();
+                    data
+                }).collect::<Vec<_>>(),
                 "followUp": plan.follow_up.as_ref().map(|follow_up| json!({
                     "head": follow_up.head,
                     "confidence": follow_up.confidence,
@@ -434,13 +447,11 @@ impl Chapter {
                         "note": note,
                     })).collect::<Vec<_>>(),
                 })),
-                "assessment": plan.assessment.as_ref().map(|assessment| json!({
-                    "confidence": assessment.confidence,
-                    "risk": assessment.risk.map(plan::Risk::as_str),
-                    "rationale": assessment.rationale,
-                    "questionHtml": assessment.question.as_deref().map(markdown::to_html),
-                    "question": assessment.question,
-                })),
+                "assessment": plan.assessment.as_ref().map(|assessment| {
+                    let mut data = assessment_data(assessment);
+                    data["questionHtml"] = assessment.question.as_deref().map(markdown::to_html).into();
+                    data
+                }),
             })),
             "baseSha": self.base_sha,
             "headSha": self.head_sha,
@@ -456,6 +467,31 @@ impl Chapter {
             })).collect::<Vec<_>>(),
         })
     }
+}
+
+fn finding_data(finding: &plan::Finding) -> Value {
+    json!({
+        "path": finding.path,
+        "side": finding.side.as_str(),
+        "line": finding.line,
+        "startLine": finding.start_line,
+        "severity": finding.severity.as_str(),
+        "category": finding.category.map(plan::Category::as_str),
+        "title": finding.title,
+        "body": finding.body,
+        "evidence": finding.evidence,
+        "suggestion": finding.suggestion,
+        "preExisting": finding.pre_existing,
+    })
+}
+
+fn assessment_data(assessment: &plan::Assessment) -> Value {
+    json!({
+        "confidence": assessment.confidence,
+        "risk": assessment.risk.map(plan::Risk::as_str),
+        "rationale": assessment.rationale,
+        "question": assessment.question,
+    })
 }
 
 /// Plan each chapter: the asked-for one from a plan file when there is one,

@@ -25,6 +25,11 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   open ones as Markdown for your own agent to work from: where each is, its
   severity, the explanation, the evidence, and any replacement code.
   Dismiss what you disagree with first, and it is left out.
+- **tour:** `--findings` prints the agent review of the review asked for as
+  JSON, to pipe into your own agent:
+  `git stk tour 12 --findings | claude -p "fix these findings"`. It reuses
+  the review saved for the same commits, so it costs no agent call when one
+  is there.
 
 ## 0.15.5
 

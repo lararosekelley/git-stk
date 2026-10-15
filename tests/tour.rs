@@ -1631,6 +1631,69 @@ const AGENT_REVIEW: &str = r#"{"version":1,
     "evidence":"E"}]}"#;
 
 #[test]
+fn findings_prints_the_agent_review_as_json_and_reuses_it() {
+    let (repo, _origin, fake) =
+        agent_tour_repo(|fake| fake.record_append("--print", "asked", AGENT_REVIEW));
+    // A standard tour by default: --findings asks for the review regardless.
+    repo.git(["config", "stk.tourStyle", "standard"]);
+
+    let output = repo
+        .stack_faked(&fake)
+        .args(["tour", "12", "--findings"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let printed: Value = serde_json::from_slice(&output.stdout).expect("JSON on stdout");
+    assert_eq!(printed["review"]["id"], "#12");
+    assert_eq!(printed["cached"], false);
+    assert_eq!(printed["assessment"]["confidence"], 71);
+    let findings = printed["findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 2, "the finding off the diff is dropped");
+    assert_eq!(findings[0]["path"], "src/lib.rs");
+    assert_eq!(findings[0]["evidence"], "Nothing calls `two`.");
+    assert!(findings[0].get("bodyHtml").is_none(), "plain data only");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("which the diff does not show"),
+        "warnings go to stderr"
+    );
+
+    // The same commits again: the saved review, with no agent call.
+    let again: Value = serde_json::from_slice(
+        &repo
+            .stack_faked(&fake)
+            .args(["tour", "12", "--findings"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(again["cached"], true);
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(asked.lines().count(), 1, "{asked}");
+
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--findings", "--style", "agentTour"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("drop --style"));
+}
+
+#[test]
+fn findings_does_not_ask_for_consent_on_its_output() {
+    let (repo, _origin, fake) =
+        agent_tour_repo(|fake| fake.record_append("--print", "asked", AGENT_REVIEW));
+    repo.git(["config", "--unset", "stk.tourAgentAllowed"]);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--findings"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicates::str::contains("stk.tourAgentAllowed"));
+    assert!(!repo.path().join("asked").exists());
+}
+
+#[test]
 fn an_agent_review_shows_its_findings_most_severe_first() {
     let (repo, _origin, fake) =
         agent_tour_repo(|fake| fake.record_append("--print", "asked", AGENT_REVIEW));

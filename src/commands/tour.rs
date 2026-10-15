@@ -58,18 +58,36 @@ pub struct Tour {
     no_open: bool,
     /// Write a read-only snapshot of the tour to this file instead of
     /// serving it.
-    #[arg(long, short = 'o', value_name = "PATH")]
+    #[arg(long, short = 'o', value_name = "PATH", conflicts_with = "findings")]
     output: Option<PathBuf>,
+    /// Print the agent review's findings for the review asked for as JSON,
+    /// for your own agent to work from, instead of opening a tour. Uses the
+    /// review saved from an earlier tour of the same commits when there is
+    /// one.
+    #[arg(long, action = ArgAction::SetTrue)]
+    findings: bool,
 }
 
 impl Run for Tour {
     fn run(self) -> Result<()> {
+        let style = if self.findings {
+            match self.style {
+                None | Some(TourStyle::AgentReview) => Some(TourStyle::AgentReview),
+                Some(_) => bail!("--findings prints an agent review's findings; drop --style"),
+            }
+        } else {
+            self.style
+        };
         let planner = planner(
-            self.style,
+            style,
             self.agent.as_deref(),
             self.plan.as_deref(),
             self.refresh_plan,
+            !self.findings,
         )?;
+        if self.findings {
+            return print_findings(self.target.as_deref(), planner.as_ref());
+        }
         write_tour(
             self.target.as_deref(),
             self.output,
@@ -78,6 +96,43 @@ impl Run for Tour {
             planner.as_ref(),
         )
     }
+}
+
+/// Print the review asked for's agent review as JSON. Only that review is
+/// planned: findings are per review, and the rest of its stack would cost an
+/// agent call each for nothing printed.
+fn print_findings(target: Option<&str>, planner: Option<&Planner>) -> Result<()> {
+    let (provider, review_provider) = detect_review_provider()?;
+    let target = ReviewRef::parse(target, provider.kind)?;
+    let progress = Progress::start("looking up the review");
+    let review_provider = review_provider.as_ref();
+    let review = match target {
+        ReviewRef::Number(number) => review_provider.review_by_number(number)?,
+        ReviewRef::Branch(branch) => review_provider
+            .review_for_branch_including_closed(&branch)?
+            .with_context(|| {
+                format!(
+                    "no {} review found for {branch}; submit it first with `git stk submit`",
+                    provider.kind
+                )
+            })?,
+    };
+    let tour = ReviewTour::load(
+        provider.kind,
+        review_provider,
+        tour::stack::Stack::single(review),
+        planner,
+        &progress,
+    )?;
+    drop(progress);
+    for warning in tour.warnings() {
+        anstream::eprintln!("{}", style::warn(&format!("warning: {warning}")));
+    }
+    let findings = tour
+        .findings()
+        .context("the agent's review could not be used, so there are no findings to print")?;
+    println!("{}", serde_json::to_string_pretty(&findings)?);
+    Ok(())
 }
 
 fn write_tour(
@@ -612,6 +667,7 @@ fn planner(
     agent: Option<&str>,
     plan: Option<&Path>,
     refresh: bool,
+    ask: bool,
 ) -> Result<Option<Planner>> {
     let style = match (style, plan) {
         (Some(style), _) => style,
@@ -637,7 +693,7 @@ fn planner(
     .filter(|command| !command.trim().is_empty());
     let agent = command.as_deref().map(Agent::parse).transpose()?;
     match &agent {
-        Some(agent) => allow_agent(agent)?,
+        Some(agent) => allow_agent(agent, ask)?,
         None if plan_file.is_none() => bail!(
             "an agent tour needs an agent to plan it: set {} (for example to `claude -p`) or pass --agent",
             settings::TOUR_AGENT_KEY
@@ -654,8 +710,9 @@ fn planner(
 
 /// Make sure the user has agreed to send this repository's reviews to
 /// `agent`, asking the first time and remembering the command agreed to: a
-/// different command, which may send them somewhere else, asks again.
-fn allow_agent(agent: &Agent) -> Result<()> {
+/// different command, which may send them somewhere else, asks again. Without
+/// `ask`, as when stdout is data for another program, it only says how.
+fn allow_agent(agent: &Agent, ask: bool) -> Result<()> {
     let command = agent.display();
     let allowed = git::config_get(settings::TOUR_AGENT_ALLOWED_KEY)?;
     if allowed.as_deref().map(str::trim) == Some(command.as_str()) {
@@ -665,7 +722,7 @@ fn allow_agent(agent: &Agent) -> Result<()> {
         .filter(|before| !before.trim().is_empty())
         .map(|before| format!(" Agent tours here were allowed with `{}`.", before.trim()))
         .unwrap_or_default();
-    if !std::io::stdin().is_terminal() {
+    if !ask || !std::io::stdin().is_terminal() {
         bail!(
             "an agent tour sends each review's description, commits, and diff to `{command}`.{before} To allow that in this repository, run the tour once in a terminal or set `git config {} \"{command}\"`",
             settings::TOUR_AGENT_ALLOWED_KEY
