@@ -206,7 +206,7 @@ git stk status [branch]
 git stk review [branch | number | url]
 git stk view [branch | number | url]
 git stk tour [branch | number | url] [--style standard|agentTour|agentReview] [--agent <command>] [--plan <file>]
-             [--refresh-plan] [--no-stack] [--no-open] [-o <path> | --findings]
+             [--refresh-plan] [--no-stack] [--local] [--no-open] [-o <path> | --findings]
 git stk inbox [--filter incoming,returned,team,mine] [--limit <n>] [--sort updated|created|size]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
@@ -239,6 +239,14 @@ opening a tour loads nothing from the network. Tick a file as viewed, or a whole
 progress: a file stays viewed while its change does, so a push only clears the files it touched, and a step is
 reviewed once its files are. A repository's tours reuse one local address where they can, so what the page
 keeps (viewed files, drafted comments, the theme) carries from one tour to the next.
+
+A branch with no review yet is toured from local branches instead, so you can review your own work before
+anyone else sees it; `--local` does the same for a branch that has a review, to look at unpushed commits.
+A local tour covers the branch's stack line from git-stk's metadata (the trunk up to the branch and what is
+stacked above it, or the branch alone with `--no-stack`), each branch against its stack parent, with its
+commit messages standing in for a description. It needs no forge, has no discussion and nothing to post,
+and an agent review of it is saved under the branch, so touring again after a fix follows up on the
+findings as for a review. Copy for an agent and `--findings` are the way to act on them.
 
 When the review is part of a stack, the tour covers the whole stack, one review at a time: the sidebar lists it
 top review first, as `git stk list` does, with each review's progress, and each review shows only its own

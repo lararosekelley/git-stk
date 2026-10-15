@@ -6,13 +6,16 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ## 0.16.0
 
-### Changed
-
-- **tour:** Vi mode is on by default. Turning it off in its popup (the
-  keyboard button) is remembered, as before.
-
 ### Added
 
+- **tour:** a branch with no review yet is toured from local branches, so you
+  can review your own work, with an agent review too, before you push it.
+  `--local` does the same for a branch that has a review. A local tour covers
+  the branch's stack line from git-stk's metadata, each branch against its
+  stack parent, with its commit messages as the description, and needs no
+  forge. Its agent review is saved under the branch, so touring again after a
+  fix shows the earlier findings as fixed or still open; Copy for an agent and
+  `--findings` hand them to your own agent.
 - **tour:** Show, beside the view toggle, narrows the page to the files with
   open findings or to the files not yet marked viewed. Steps with no file left
   fold to their heading, the sidebar follows, and the choice is kept between
@@ -30,6 +33,11 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   `git stk tour 12 --findings | claude -p "fix these findings"`. It reuses
   the review saved for the same commits, so it costs no agent call when one
   is there.
+
+### Changed
+
+- **tour:** Vi mode is on by default. Turning it off in its popup (the
+  keyboard button) is remembered, as before.
 
 ## 0.15.5
 

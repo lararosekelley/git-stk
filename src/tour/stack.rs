@@ -6,7 +6,10 @@
 
 use std::collections::HashSet;
 
-use crate::providers::ReviewRequest;
+use anyhow::{Context, Result, bail};
+
+use crate::git;
+use crate::providers::{ReviewRequest, ReviewState};
 
 /// A review and the reviews stacked with it, as a tree in depth-first order:
 /// each review comes after its parent, and siblings in review-number order.
@@ -26,6 +29,56 @@ impl Stack {
             current: 0,
         }
     }
+}
+
+/// `branch`, with no review, as a stack of branches from git-stk's own
+/// metadata: from the trunk up to it and the branches stacked above it, or
+/// `branch` alone without `whole`. Each stands in for a review of itself
+/// against its stack parent, or the trunk.
+pub fn local(branch: &str, whole: bool) -> Result<Stack> {
+    let trunk = crate::stack::trunk_branch(&git::local_branches()?);
+    if Some(branch) == trunk.as_deref() {
+        bail!("{branch} is the trunk; tour a branch stacked on it");
+    }
+    let mut line = if whole {
+        crate::stack::stack_line(branch)?
+    } else {
+        Vec::new()
+    };
+    if !line.iter().any(|candidate| candidate == branch) {
+        line = vec![branch.to_owned()];
+    }
+    let mut reviews = Vec::with_capacity(line.len());
+    let mut parents = Vec::with_capacity(line.len());
+    for name in &line {
+        let base = match crate::stack::stacked_parent_of(name)? {
+            Some(parent) => parent,
+            None => trunk.clone().with_context(|| {
+                format!(
+                    "{name} has no stack parent and there is no trunk to tour it against; give it one with `git stk adopt`"
+                )
+            })?,
+        };
+        parents.push(line.iter().position(|candidate| *candidate == base));
+        reviews.push(ReviewRequest {
+            id: name.clone(),
+            branch: name.clone(),
+            base,
+            state: ReviewState::Open,
+            url: String::new(),
+            title: git::commit_subject(name).unwrap_or_default(),
+            draft: false,
+        });
+    }
+    let current = line
+        .iter()
+        .position(|candidate| candidate == branch)
+        .unwrap_or_default();
+    Ok(Stack {
+        reviews,
+        parents,
+        current,
+    })
 }
 
 /// The stack `target` belongs to: the reviews below it down to the trunk,
