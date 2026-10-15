@@ -423,6 +423,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
 .review-status.failed { color: var(--removed); }
 .review-status.posted { color: var(--done); }
 .thread-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0 6px; }
+.finding-steps { margin-left: auto; display: inline-flex; gap: 6px; }
 .action-status { color: var(--fg-muted); font-size: 12px; }
 .action-status.failed { color: var(--removed); }
 .comment-box { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
@@ -1224,8 +1225,19 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       setDismissed(finding, true);
       refreshFindings(view);
     });
-    parts.push(el("div", { class: "thread-actions" }, [add, dismiss]));
-    return el("div", { class: "finding finding-" + finding.severity }, parts);
+    var steps = null;
+    if (openFindings(chapter.plan.findings).length > 1) {
+      steps = el("span", { class: "finding-steps" }, [false, true].map(function (forward) {
+        var button = el("button", { type: "button", text: forward ? "Next finding" : "Previous finding" });
+        button.addEventListener("click", function () {
+          findingJumps.last = findingKey(finding);
+          jumpToFinding(forward, true);
+        });
+        return button;
+      }));
+    }
+    parts.push(el("div", { class: "thread-actions" }, [add, dismiss, steps]));
+    return el("div", { class: "finding finding-" + finding.severity, "data-finding": findingKey(finding) }, parts);
   };
 
   // The agent's notes on a file's lines, for an agent tour.
@@ -1354,6 +1366,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     return el("div", { class: "finding-index" }, [
       el("div", { class: "finding-counts" }, [el("span", { class: "agent-mark", text: "\u2728" }), el("strong", { text: plural(open.length, "finding", "findings") })].concat(counts, [
         dismissed ? el("span", { class: "thread-excerpt", text: dismissed + " dismissed" }) : null,
+        open.length ? findingIndexJump() : null,
       ])),
       el("ul", { class: "thread-index" }, findings.map(function (finding) {
         return el("li", { class: isDismissed(finding) ? "dismissed" : null }, [
@@ -1363,6 +1376,15 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
         ]);
       })),
     ]);
+  }
+
+  function findingIndexJump() {
+    var button = el("button", { type: "button", class: "finding-steps", text: "Go to the findings" });
+    button.addEventListener("click", function () {
+      findingJumps.last = null;
+      jumpToFinding(true);
+    });
+    return button;
   }
 
   function renderPlan(plan) {
@@ -2126,6 +2148,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     ["] / [", "next / previous file"],
     ["} / {", "next / previous step"],
     ["n / p", "next / previous open thread"],
+    ["f / F", "next / previous finding"],
     ["?", "this popup"],
     ["Esc", "cancel"],
   ];
@@ -2279,31 +2302,60 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     return main.querySelector('tr[data-thread="' + id + '"]');
   }
 
-  // The thread last jumped to, so the next jump goes on from it however the
-  // page could scroll: near the end of a page, a thread cannot reach the top.
-  var lastThread = null;
+  // The open findings on the current diff that have a row, in page order,
+  // drawing any file that holds one first.
+  function openFindingRows() {
+    var rows = [];
+    views.forEach(function (view) {
+      if (view.details.hidden || !openFindings(findingsOnFile(view.file)).length) return;
+      if (!view.rendered) view.render();
+      Array.prototype.forEach.call(view.body.querySelectorAll(".finding[data-finding]"), function (card) {
+        rows.push({ view: view, row: card.closest("tr") || card, key: card.getAttribute("data-finding") });
+      });
+    });
+    return rows.sort(function (a, b) {
+      return a.row.compareDocumentPosition(b.row) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+  }
+
+  // The row last jumped to, per kind, so the next jump goes on from it however
+  // the page could scroll: near the end of a page, a row cannot reach the top.
+  var threadJumps = { last: null };
+  var findingJumps = { last: null };
 
   function jumpToThread(forward) {
-    var rows = openThreadRows();
+    var rows = openThreadRows().map(function (entry) {
+      return { view: entry.view, row: entry.row, key: entry.row.getAttribute("data-thread") };
+    });
+    jumpAmong(rows, threadJumps, forward, false);
+  }
+
+  // `fromLast` goes on from the last row even when it has scrolled away, for
+  // a button on that row.
+  function jumpToFinding(forward, fromLast) {
+    jumpAmong(openFindingRows(), findingJumps, forward, !!fromLast);
+  }
+
+  function jumpAmong(rows, jumps, forward, fromLast) {
     var header = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--header-height")) || 0;
-    var index = -1;
-    var last = lastThread ? threadRow(lastThread) : null;
-    var lastTop = last ? last.getBoundingClientRect().top : -1;
-    if (last && lastTop >= header && lastTop < window.innerHeight) {
-      // Still on screen, so still the current thread.
-      index = rows.map(function (entry) { return entry.row; }).indexOf(last);
+    var keys = rows.map(function (entry) { return entry.key; });
+    var index = jumps.last === null ? -1 : keys.indexOf(jumps.last);
+    if (index >= 0 && !fromLast) {
+      // Only still the current row while it is on screen.
+      var lastTop = rows[index].row.getBoundingClientRect().top;
+      if (!(lastTop >= header && lastTop < window.innerHeight)) index = -1;
     }
     var target;
     if (index >= 0) {
       target = rows[index + (forward ? 1 : -1)];
     } else {
-      // Scrolled away since: go by where the threads are. A jump lands a
-      // thread below the pinned header, the page's scroll padding (16px),
-      // and the row's own scroll margin (48px).
+      // Scrolled away since: go by where the rows are. A jump lands a row
+      // below the pinned header, the page's scroll padding (16px), and the
+      // row's own scroll margin (48px).
       var line = header + 16 + 48;
       var margin = 12;
       var placed = rows.map(function (entry) {
-        // A folded file's rows are hidden; its threads sit at its header.
+        // A folded file's rows are hidden; its rows sit at its header.
         var at = entry.view.details.open ? entry.row : entry.view.details;
         return { entry: entry, top: at.getBoundingClientRect().top };
       });
@@ -2314,7 +2366,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     }
     if (!target) return;
     target.view.details.open = true;
-    lastThread = target.row.getAttribute("data-thread");
+    jumps.last = target.key;
     target.row.scrollIntoView({ behavior: scrollBehavior() });
   }
 
@@ -2451,6 +2503,8 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       jump("section.step", key === "}");
     } else if (key === "n" || key === "p") {
       jumpToThread(key === "n");
+    } else if (key === "f" || key === "F") {
+      jumpToFinding(key === "f");
     } else if (key === "?") {
       toggleViSettings();
     } else {
