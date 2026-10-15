@@ -1281,14 +1281,15 @@ fn merge_all_walks_bottom_up_when_the_platform_stack_reaches_below_the_line() {
     );
 }
 
-/// Without a queue there is nothing to cascade into, so the top must not be
-/// merged however complete the platform stack is: that call would land the top
-/// review into the layer below it rather than hand over the line.
+/// Without a queue, merging a registered stack's top merges every open layer
+/// below it too (measured live: "Rebase and merge stack"), so `merge --all`
+/// lands the line in one call and one sync, not one landing per layer.
 #[test]
-fn merge_all_walks_bottom_up_when_no_queue_governs_the_base() {
+fn merge_all_merges_a_registered_stack_from_its_top_in_one_call() {
     let repo = TestRepo::new();
     repo.git(["config", "stk.provider", "github"]);
     repo.git(["config", "stk.githubStacks", "true"]);
+    repo.git(["config", "stk.mergeStrategy", "rebase"]);
     repo.stack().args(["new", "ma/a"]).assert().success();
     repo.commit_file("a.txt", "a\n", "a work");
     repo.stack().args(["new", "ma/b"]).assert().success();
@@ -1304,27 +1305,94 @@ fn merge_all_walks_bottom_up_when_no_queue_governs_the_base() {
             "mergeQueue(branch",
             r##"{"data":{"repository":{"mergeQueue":null}}}"##,
         )
-        .record("pulls/12/merge-async -X PUT", "async-12.txt", merged)
         .record("pulls/13/merge-async -X PUT", "async-13.txt", merged)
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", merged)
         .record("pr merge", "sync-merge.txt", "")
         .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
         .on("repos/owner/repo/stacks", stacks)
-        .on_after("ma/a", "async-12.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on_after("ma/b", "async-13.txt", r##"[{"number":13,"state":"MERGED","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on_after("ma/a", "async-13.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
         .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
         .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
         .fallback("[]")
         .install(&repo);
 
     repo.stack_faked(&fake)
+        .args(["merge", "--all", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would merge 2 reviews into main in one call by merging B work (#13) (rebase), then sync",
+        ));
+
+    repo.stack_faked(&fake)
         .args(["merge", "--all", "-y"])
         .assert()
         .success()
+        .stdout(predicates::str::contains(
+            "merge complete: 2 reviews merged into main in one call",
+        ))
         .stdout(predicates::str::contains("merge queue").not());
 
+    let call = fs::read_to_string(repo.path().join("async-13.txt")).expect("the top is merged");
+    assert!(call.contains("merge_method=rebase"), "{call}");
     assert!(
-        repo.path().join("async-12.txt").exists(),
-        "the bottom is what a queueless stack merges first"
+        !repo.path().join("async-12.txt").exists(),
+        "the bottom lands with the top, not on its own"
     );
+    assert!(!repo.path().join("sync-merge.txt").exists());
+}
+
+#[test]
+fn merge_all_wait_checks_every_layer_before_merging_a_registered_stack() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.git(["config", "stk.mergeStrategy", "rebase"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let merged = r##"{"status":"merged","details":{"message":"Pull request was merged."}}"##;
+    let fake = FakeProvider::new()
+        .record_append("pr checks", "checks.txt", "")
+        // The whole difference from the enqueue case: no queue on the base.
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":null}}}"##,
+        )
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", merged)
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", merged)
+        .record("pr merge", "sync-merge.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on_after("ma/b", "async-13.txt", r##"[{"number":13,"state":"MERGED","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on_after("ma/a", "async-13.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "--wait", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("waiting for checks on #12"))
+        .stdout(predicates::str::contains("waiting for checks on #13"))
+        .stdout(predicates::str::contains(
+            "merge complete: 2 reviews merged into main in one call",
+        ));
+    // GitHub requires each layer's checks, so every one is waited on first.
+    let checks = fs::read_to_string(repo.path().join("checks.txt")).unwrap();
+    assert!(
+        checks.contains("pr checks 12") && checks.contains("pr checks 13"),
+        "{checks}"
+    );
+    assert!(!repo.path().join("async-12.txt").exists());
 }
 
 /// The cascade only follows a *platform* stack, so a line the platform does

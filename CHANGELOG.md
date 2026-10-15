@@ -36,6 +36,13 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ### Changed
 
+- **merge:** `merge --all` lands a registered GitHub stack in one call when
+  no merge queue governs its base: merging the top merges every open layer
+  below it, so the stack lands with one request and one sync instead of a
+  merge, sync, push, and CI run per layer. With `--wait`, every layer's checks
+  are waited on first. Stacks under a merge queue are handed to the queue in
+  one call as before, and a line GitHub does not hold as a stack is still
+  merged bottom-up.
 - **tour:** Vi mode is on by default. Turning it off in its popup (the
   keyboard button) is remembered, as before.
 

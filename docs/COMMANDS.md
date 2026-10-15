@@ -383,7 +383,7 @@ dropped by the next restack (a merged parent's are dropped, because the trunk al
 `merge` merges the review at the bottom of the stack via the provider CLI (strategy from
 `stk.mergeStrategy`; squash by default), confirming first unless `-y` is passed, then runs the full `sync`
 flow. `merge --all` repeats that bottom-up until the stack is complete, with one confirmation up front -
-except under a merge queue, where the whole stack is handed over in one call (see below).
+except for a registered GitHub stack, which lands in one call (see below).
 
 - `--auto` schedules the merge when required checks are still running (GitHub `--auto`, GitLab
   auto-merge). A merge that only got scheduled - the default on GitLab - skips the sync and stops `--all`,
@@ -492,17 +492,20 @@ A **merge queue** on the base branch adds one more owner. The queue decides the 
 rejects `stk.mergeStrategy` alongside it rather than ignoring it, so `merge` drops the strategy and says
 the queue decided the method.
 
-A queue also takes a **stack whole**. Merging a layer enqueues that layer and every one below it, so
-`merge --all` hands the queue the stack's _top_ in a single call rather than landing one layer per run -
-and the queue merges them in order on its own schedule, retargeting each as the one below lands. `git stk
-sync` reconciles the local stack as they land. Three things have to hold: a queue on the branch the stack
-lands in, a platform stack that lands in the branch the local line targets, and open layers that are
-_exactly_ that line - the cascade takes every open layer below the top, so a stack that also holds a
-review beneath the line would land that too. Fail any of them and `merge --all` walks bottom-up as usual,
-because merging the top of a line the platform does not hold would land it into the layer below rather
-than hand over the stack.
+A registered GitHub stack lands **whole**. Merging a layer of it merges, or enqueues, that layer and every
+open one below it, so `merge --all` merges the stack's _top_ in a single call rather than landing one layer
+per run. Without a merge queue on the base, that call merges the whole line straight into it (the web
+page's "merge stack" button) and `merge --all` syncs once. Under a queue it hands the queue the stack, which
+merges the layers in order on its own schedule, retargeting each as the one below lands, and `git stk sync`
+reconciles the local stack as they land. Two things have to hold: a platform stack that lands in the branch
+the local line targets, and open layers that are _exactly_ that line - the cascade takes every open layer
+below the top, so a stack that also holds a review beneath the line would land that too. Fail either and
+`merge --all` walks bottom-up as usual, because merging the top of a line the platform does not hold would
+land it into the layer below rather than the whole stack. A merge that fails is reported and nothing more:
+part of the stack may already have landed, so it does not fall back to the walk.
 
-Plain `--wait` on the handover polls the top alone, since that is the one merge it makes.
+With `--wait`, a direct merge first waits on every layer's checks, since GitHub requires them on each review
+it lands; a queue handover polls the top alone, since the queue runs its own.
 
 Plain `git stk merge` still merges the bottom - it means "land the next one" - and a queue takes that one
 layer only. So does `merge --all` when it walks bottom-up. The entry then lands on the queue's schedule,
