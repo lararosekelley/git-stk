@@ -241,6 +241,10 @@ kbd { font-family: var(--font-code); font-size: 12px; border: 1px solid var(--bo
 .discussion-title { font-weight: 600; }
 .discussion-counts { color: var(--fg-muted); }
 .toolbar-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+.toolbar-gap { margin-left: 10px; }
+.filter-count { font-size: 13px; }
+section.step.step-filtered { margin-bottom: 16px; opacity: .6; }
+section.step.step-filtered > :not(.step-head) { display: none; }
 #refresh-discussion { font-size: 13px; padding: 5px 12px; }
 .discussion > :not(summary) { max-width: 88ch; }
 .discussion > :last-child { margin-bottom: 16px; }
@@ -470,6 +474,10 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   };
   var layout = readStorage(layoutKey, "unified") === "split" ? "split" : "unified";
+  // Which files show: all, those with open findings, or those not viewed yet.
+  var filterKey = "git-stk-tour:filter";
+  var FILTERS = { all: "All", findings: "With findings", unviewed: "Unviewed" };
+  var fileFilter = Object.prototype.hasOwnProperty.call(FILTERS, readStorage(filterKey, "all")) ? readStorage(filterKey, "all") : "all";
   // One review of the stack is shown at a time.
   var chapterIndex = 0;
   var chapter = null;
@@ -1126,6 +1134,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       count.hidden = !count.textContent;
     }
     view.render();
+    if (currentFilter() === "findings") applyFilter();
   }
 
   var SEVERITIES = { required: "Required", recommended: "Recommended", optional: "Optional" };
@@ -1694,6 +1703,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       });
     });
     showProgress();
+    if (currentFilter() === "unviewed") applyFilter();
   }
 
   function renderHeader() {
@@ -1726,11 +1736,20 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       ]),
     ]);
     var buttons = ["unified", "split"].map(function (name) {
-      var button = el("button", { type: "button", "aria-pressed": String(layout === name), text: name === "split" ? "Split" : "Unified" });
+      var button = el("button", { type: "button", "data-layout": name, "aria-pressed": String(layout === name), text: name === "split" ? "Split" : "Unified" });
       button.addEventListener("click", function () { setLayout(name); });
       return button;
     });
-    var toolbar = el("div", { class: "toolbar", id: "toolbar" }, ["View:"].concat(buttons));
+    var filters = Object.keys(FILTERS).filter(function (name) {
+      return name !== "findings" || chapterHasFindings();
+    }).map(function (name) {
+      var button = el("button", { type: "button", "data-filter": name, "aria-pressed": String(currentFilter() === name), text: FILTERS[name] });
+      button.addEventListener("click", function () { setFilter(name); });
+      return button;
+    });
+    var toolbar = el("div", { class: "toolbar", id: "toolbar" }, ["View:"].concat(buttons, [
+      el("span", { class: "toolbar-gap", text: "Show:" }),
+    ], filters, [el("span", { class: "filter-count", id: "filter-count" })]));
     if (data.served) {
       var refresh = el("button", { type: "button", id: "refresh-discussion", title: "Load new comments and reviews", text: "Refresh" });
       refresh.addEventListener("click", function () { refreshConversation(refresh); });
@@ -1803,12 +1822,58 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   function setLayout(name) {
     layout = name;
     writeStorage(layoutKey, name);
-    Array.prototype.forEach.call(document.querySelectorAll("#toolbar button"), function (button) {
-      button.setAttribute("aria-pressed", String(button.textContent.toLowerCase() === name));
+    Array.prototype.forEach.call(document.querySelectorAll("#toolbar button[data-layout]"), function (button) {
+      button.setAttribute("aria-pressed", String(button.getAttribute("data-layout") === name));
     });
     views.forEach(function (view) {
       if (view.rendered) view.render();
     });
+  }
+
+  function chapterHasFindings() {
+    return !!(chapter.plan && chapter.plan.findings && chapter.plan.findings.length);
+  }
+
+  // The filter in effect: "With findings" reads as all on a review without any.
+  function currentFilter() {
+    return fileFilter === "findings" && !chapterHasFindings() ? "all" : fileFilter;
+  }
+
+  function fileShown(file) {
+    var filter = currentFilter();
+    if (filter === "findings") return openFindings(findingsOnFile(file)).length > 0;
+    if (filter === "unviewed") return !viewed[file.patchId];
+    return true;
+  }
+
+  function setFilter(name) {
+    fileFilter = name;
+    writeStorage(filterKey, name);
+    Array.prototype.forEach.call(document.querySelectorAll("#toolbar button[data-filter]"), function (button) {
+      button.setAttribute("aria-pressed", String(button.getAttribute("data-filter") === currentFilter()));
+    });
+    applyFilter();
+  }
+
+  // Hide the files the filter leaves out, here and in the sidebar; a step with
+  // none left folds to its heading.
+  function applyFilter() {
+    var shown = 0;
+    var total = 0;
+    views.forEach(function (view) {
+      var on = fileShown(view.file);
+      view.details.hidden = !on;
+      var link = document.querySelector('nav a[href="#' + view.anchor + '"]');
+      if (link) link.hidden = !on;
+      total++;
+      if (on) shown++;
+    });
+    chapter.steps.forEach(function (step, stepIndex) {
+      var section = document.getElementById(stepAnchor(stepIndex));
+      if (section) section.classList.toggle("step-filtered", !step.files.some(fileShown));
+    });
+    var count = document.getElementById("filter-count");
+    if (count) count.textContent = currentFilter() === "all" ? "" : shown + " of " + total + " files";
   }
 
   function renderIntro() {
@@ -1979,6 +2044,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     if (chapterNav) main.appendChild(chapterNav);
     renderNav();
     renderLazily();
+    applyFilter();
     showDraftCount();
     var stale = document.getElementById("review-panel");
     if (stale) stale.remove();
@@ -2034,6 +2100,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     ["r", "mark this step reviewed"],
     ["v", "mark this file viewed"],
     ["o", "open or fold this file"],
+    ["f", "which files show: all, with findings, unviewed"],
     ["s", "split or unified view"],
     ["t", "light or dark theme"],
     ["b", "show or hide the sidebar"],
@@ -2178,6 +2245,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   function openThreadRows() {
     var rows = [];
     views.forEach(function (view) {
+      if (view.details.hidden) return;
       var open = view.threads.filter(function (thread) {
         return !thread.outdated && !thread.resolved && thread.line !== null;
       });
@@ -2244,7 +2312,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   }
 
   function currentFileView() {
-    var details = currentOf("details.file");
+    var details = currentOf("details.file:not([hidden])");
     return views.filter(function (view) { return view.details === details; })[0] || null;
   }
 
@@ -2263,6 +2331,9 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       setViewed([view.file], !viewed[view.file.patchId]);
     } else if (key === "o" && (view = currentFileView())) {
       view.details.open = !view.details.open;
+    } else if (key === "f") {
+      var names = Object.keys(FILTERS).filter(function (name) { return name !== "findings" || chapterHasFindings(); });
+      setFilter(names[(names.indexOf(currentFilter()) + 1) % names.length]);
     } else if (key === "s") {
       setLayout(layout === "split" ? "unified" : "split");
     } else if (key === "t") {
@@ -2361,7 +2432,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
         gTimer = setTimeout(function () { gPending = false; }, 500);
       }
     } else if (key === "]" || key === "[") {
-      jump("details.file", key === "]");
+      jump("details.file:not([hidden])", key === "]");
     } else if (key === "}" || key === "{") {
       jump("section.step", key === "}");
     } else if (key === "n" || key === "p") {

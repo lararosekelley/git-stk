@@ -4,6 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.0
+
+### Added
+
+- **tour:** Show, beside the view toggle, narrows the page to the files with
+  open findings or to the files not yet marked viewed. Steps with no file left
+  fold to their heading, the sidebar follows, and the choice is kept between
+  tours. In Vi mode, the leader then `f` cycles it.
+
 ## 0.15.5
 
 ### Fixed
