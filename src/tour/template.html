@@ -2125,7 +2125,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   }
 
   // Vi mode: j/k to scroll, gg/G for the ends, ]/[ between files, }/{ between
-  // steps, and a leader key, then a letter, for the rest. Off until turned on
+  // steps, and a leader key, then a letter, for the rest. On until turned off
   // in its popup, where the leader and how long it waits are chosen too.
   var viKey = "git-stk-tour:vi";
   var LEADERS = { ",": "Comma", " ": "Space", "\\": "Backslash", ";": "Semicolon" };
@@ -2155,7 +2155,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   var vi = (function () {
     var stored = readStorage(viKey, {});
     return {
-      enabled: stored.enabled === true,
+      enabled: stored.enabled !== false,
       leader: Object.prototype.hasOwnProperty.call(LEADERS, stored.leader) ? stored.leader : ",",
       timeout: typeof stored.timeout === "number" && stored.timeout >= 0 ? stored.timeout : 2000,
     };
