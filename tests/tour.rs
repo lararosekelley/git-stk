@@ -1667,6 +1667,7 @@ fn an_agent_review_shows_its_findings_most_severe_first() {
         findings[0]["evidenceHtml"],
         "<p>Nothing calls <code>two</code>.</p>\n"
     );
+    assert_eq!(findings[0]["evidence"], "Nothing calls `two`.");
     let assessment = &data["chapters"][0]["plan"]["assessment"];
     assert_eq!(
         (

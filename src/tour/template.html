@@ -425,6 +425,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
 .thread-actions { display: flex; align-items: center; gap: 6px; padding: 4px 0 6px; }
 .finding-steps { margin-left: auto; display: inline-flex; gap: 6px; }
 .finding-steps[hidden] { display: none; }
+.copy-buffer { position: fixed; top: -1000px; opacity: 0; }
 .action-status { color: var(--fg-muted); font-size: 12px; }
 .action-status.failed { color: var(--removed); }
 .comment-box { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
@@ -1375,6 +1376,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       el("div", { class: "finding-counts" }, [el("span", { class: "agent-mark", text: "\u2728" }), el("strong", { text: plural(open.length, "finding", "findings") })].concat(counts, [
         dismissed ? el("span", { class: "thread-excerpt", text: dismissed + " dismissed" }) : null,
         open.length ? findingIndexJump() : null,
+        open.length ? copyFindingsButton() : null,
       ])),
       el("ul", { class: "thread-index" }, findings.map(function (finding) {
         return el("li", { class: isDismissed(finding) ? "dismissed" : null }, [
@@ -1384,6 +1386,64 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
         ]);
       })),
     ]);
+  }
+
+  // The open findings as Markdown for the reader's own agent to work from:
+  // where each is, what it is, why it was flagged, and any replacement code.
+  function findingsForAgent() {
+    var review = chapter.review;
+    var open = openFindings(chapter.plan.findings || []);
+    var lines = [
+      "Findings from an agent review of " + review.id + (review.title ? " (" + review.title + ")" : "")
+        + ", branch `" + review.branch + "` into `" + review.base + "` at " + chapter.headSha.slice(0, 12) + ".",
+      "Each is something the reviewer would ask to change. Check it against the code before changing anything.",
+    ];
+    open.forEach(function (finding, index) {
+      var where = finding.path + ":" + (finding.startLine ? finding.startLine + "-" : "") + finding.line
+        + (finding.side === "old" ? " (old side)" : "");
+      var kind = [SEVERITIES[finding.severity] || finding.severity, finding.category ? finding.category.replace("-", " ") : null]
+        .filter(Boolean).join(", ");
+      lines.push("", "## " + (index + 1) + ". " + (finding.title || "Finding"), "", "`" + where + "` - " + kind
+        + (finding.preExisting ? ", pre-existing (not introduced by this change)" : ""));
+      if (finding.body) lines.push("", finding.body.trim());
+      if (finding.evidence) lines.push("", "Why: " + finding.evidence.trim());
+      if (finding.suggestion) {
+        var runs = finding.suggestion.match(/`+/g) || [];
+        var fence = "```";
+        runs.forEach(function (run) { if (run.length >= fence.length) fence = new Array(run.length + 2).join("`"); });
+        lines.push("", "Suggested replacement:", "", fence, finding.suggestion.replace(/\n$/, ""), fence);
+      }
+    });
+    return lines.join("\n") + "\n";
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    // A snapshot opened from a file has no clipboard API.
+    return new Promise(function (resolve, reject) {
+      var area = el("textarea", { class: "copy-buffer", "aria-hidden": "true" });
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      var copied = document.execCommand("copy");
+      area.remove();
+      if (copied) resolve();
+      else reject(new Error("copy refused"));
+    });
+  }
+
+  function copyFindingsButton() {
+    var button = el("button", { type: "button", title: "Copy the open findings as Markdown, to hand to your own agent", text: "Copy for an agent" });
+    button.addEventListener("click", function () {
+      var count = openFindings(chapter.plan.findings || []).length;
+      copyText(findingsForAgent()).then(function () {
+        button.textContent = "Copied " + plural(count, "finding", "findings");
+      }, function () {
+        button.textContent = "Could not copy";
+      });
+      setTimeout(function () { button.textContent = "Copy for an agent"; }, 2500);
+    });
+    return button;
   }
 
   function findingIndexJump() {

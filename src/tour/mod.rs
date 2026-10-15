@@ -413,10 +413,12 @@ impl Chapter {
                     "severity": finding.severity.as_str(),
                     "category": finding.category.map(plan::Category::as_str),
                     "title": finding.title,
-                    // The Markdown too, for turning a finding into a comment.
+                    // The Markdown too, for turning a finding into a comment
+                    // or copying it for an agent.
                     "body": finding.body,
                     "bodyHtml": markdown::to_html(&finding.body),
                     "suggestion": finding.suggestion,
+                    "evidence": finding.evidence,
                     "evidenceHtml": markdown::to_html(&finding.evidence),
                     "preExisting": finding.pre_existing,
                 })).collect::<Vec<_>>(),

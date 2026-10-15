@@ -21,6 +21,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   Previous finding on each finding, Go to the findings under their list, and
   `f` and `F` in Vi mode. Dismissed findings and files the filter hides are
   skipped.
+- **tour:** Copy for an agent, under an agent review's findings, copies the
+  open ones as Markdown for your own agent to work from: where each is, its
+  severity, the explanation, the evidence, and any replacement code.
+  Dismiss what you disagree with first, and it is left out.
 
 ## 0.15.5
 
