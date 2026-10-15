@@ -1343,6 +1343,47 @@ fn merge_all_merges_a_registered_stack_from_its_top_in_one_call() {
     assert!(!repo.path().join("sync-merge.txt").exists());
 }
 
+/// A one-call merge GitHub has not finished when the polls run out is still a
+/// direct merge, not a merge queue entry, and is reported as one.
+#[test]
+fn merge_all_reports_a_registered_stack_still_merging_without_a_queue() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let pending = r##"{"status":"pending","details":{"uuid":"u-1"}}"##;
+    let fake = FakeProvider::new()
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":null}}}"##,
+        )
+        .on("pulls/13/merge-async/u-1", pending)
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", pending)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "2 reviews are merging into main with #13",
+        ))
+        .stdout(predicates::str::contains("merge queue").not());
+    assert!(repo.path().join("async-13.txt").exists());
+}
+
 #[test]
 fn merge_all_wait_checks_every_layer_before_merging_a_registered_stack() {
     let repo = TestRepo::new();

@@ -714,6 +714,19 @@ fn land_whole_stack(
             );
             sync(false, PushMode::Config)
         }
+        // GitHub took the merge but the top did not read merged before the
+        // polls ran out. Nothing to walk: the layers are landing with it.
+        MergeOutcome::Scheduled if via == WholeStack::Direct => {
+            anstream::println!(
+                "{}",
+                style::warn(&format!(
+                    "{count} reviews are merging into {base} with {}, which has not read \
+                     merged yet; `git stk sync` reconciles the stack once it lands",
+                    review.id
+                ))
+            );
+            Ok(())
+        }
         // Enqueued but unconfirmed: the merge went through and `queued` could
         // not read the entry back. `merge_and_check` has already printed the
         // scheduled wording, whose condition is wrong for a queue, so say what
