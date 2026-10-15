@@ -317,16 +317,16 @@ files not yet marked viewed, folding steps with none left; it is kept between to
 hides shows every file again. The step sidebar can be hidden, and the sun/moon button switches between light
 and dark themes (the page follows the system theme until one is chosen). Esc closes the review panel, keeping
 its summary and drafts, or a comment editor with nothing typed in it. The keyboard button beside it opens Vi
-mode, off until turned on there: `j` and `k` scroll, `gg` and `G` go to the top and bottom, `]` and `[` move
-between files, `}` and `{` between steps, `n` and `p` between open threads, and `f` and `F` between findings,
-and `?` shows the keys. After the leader key (comma unless changed to space, backslash, or semicolon in the
-same popup, which also sets how long it waits; 0 waits for the next key), `n` and `p` move along the stack, a
-digit jumps to that step, `r` marks the step reviewed and `v` the file viewed, `o` opens or folds the file,
-`f` cycles which files show, `s` switches split and unified views, `t` the theme, `b` the sidebar, and `c`
-opens the review panel. The tour is served from a local address only this machine can reach, behind a token
-generated for each run, and opened in your browser (`--no-open` just prints the address). It refreshes the
-discussion on request, and stops when the last tab showing it closes, or on Ctrl-C. `--output` instead writes
-a read-only snapshot of the page to a file and exits.
+mode's settings; it is on unless turned off there: `j` and `k` scroll, `gg` and `G` go to the top and bottom,
+`]` and `[` move between files, `}` and `{` between steps, `n` and `p` between open threads, and `f` and `F`
+between findings, and `?` shows the keys. After the leader key (comma unless changed to space, backslash, or
+semicolon in the same popup, which also sets how long it waits; 0 waits for the next key), `n` and `p` move
+along the stack, a digit jumps to that step, `r` marks the step reviewed and `v` the file viewed, `o` opens or
+folds the file, `f` cycles which files show, `s` switches split and unified views, `t` the theme, `b` the
+sidebar, and `c` opens the review panel. The tour is served from a local address only this machine can reach,
+behind a token generated for each run, and opened in your browser (`--no-open` just prints the address). It
+refreshes the discussion on request, and stops when the last tab showing it closes, or on Ctrl-C. `--output`
+instead writes a read-only snapshot of the page to a file and exits.
 
 `inbox` lists the reviews in this repository that wait on you, in four lists: requested of you by name
 (`incoming`), yours with changes requested (`returned`), requested of a team you are on and not of you by name

@@ -6,6 +6,11 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ## 0.16.0
 
+### Changed
+
+- **tour:** Vi mode is on by default. Turning it off in its popup (the
+  keyboard button) is remembered, as before.
+
 ### Added
 
 - **tour:** Show, beside the view toggle, narrows the page to the files with
