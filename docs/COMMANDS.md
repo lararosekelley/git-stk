@@ -206,7 +206,7 @@ git stk status [branch]
 git stk review [branch | number | url]
 git stk view [branch | number | url]
 git stk tour [branch | number | url] [--style standard|agentTour|agentReview] [--agent <command>] [--plan <file>]
-             [--refresh-plan] [--no-stack] [--no-open] [-o <path>]
+             [--refresh-plan] [--no-stack] [--no-open] [-o <path> | --findings]
 git stk inbox [--filter incoming,returned,team,mine] [--limit <n>] [--sort updated|created|size]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
@@ -290,6 +290,14 @@ different command asks again, and without a terminal to ask at, the tour stops i
 nothing new, even after new discussion, and an interrupted one keeps what it finished; `--refresh-plan` asks
 again. `--plan <file>` follows a plan written ahead of time, by a harness for example, for the review asked
 for.
+
+`--findings` prints the agent review of the review asked for as JSON instead of opening a tour: the review
+(id, title, URL, branch, base, and the head reviewed), the model, whether it was saved from an earlier tour,
+the agent's confidence, risk, and question, and each finding's path, side, line, severity, category, title,
+explanation, evidence, and replacement code. Pipe it to your own agent, for example
+`git stk tour 12 --findings | claude -p "fix these findings"`. It plans only that review, reuses a review
+saved for the same commits, and prints warnings to stderr; it never asks for consent on its output, so allow
+the agent once in a terminal first. Findings dismissed on the page are not known to it.
 
 An agent review (`--style agentReview`) is an agent tour whose agent also reviews the changes, held to what a
 careful maintainer would ask to change: bugs and unhandled failures, safety and security regressions, broken
