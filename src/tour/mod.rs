@@ -49,6 +49,25 @@ const MAX_EMBEDDED_BYTES: u64 = 1024 * 1024;
 /// the page quick to open on a large review or stack.
 const MAX_TOTAL_EMBEDDED_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Where a tour's reviews come from.
+#[derive(Clone, Copy)]
+pub enum Source<'a> {
+    /// Reviews on a forge.
+    Forge(ProviderKind, &'a dyn ReviewProvider),
+    /// Branches with no review yet, read from local refs: no description but
+    /// their commit messages, no discussion, and nothing to submit.
+    Local,
+}
+
+impl<'a> Source<'a> {
+    fn provider(self) -> Option<&'a dyn ReviewProvider> {
+        match self {
+            Self::Forge(_, provider) => Some(provider),
+            Self::Local => None,
+        }
+    }
+}
+
 /// A review, or the stack of reviews it belongs to, read from git; each
 /// review is a chapter of the tour.
 pub struct Tour {
@@ -59,13 +78,16 @@ pub struct Tour {
     events: Vec<&'static str>,
     /// Whether this forge resolves threads.
     resolves: bool,
-    /// The forge, for writing a comment in its own Markdown.
-    forge: ProviderKind,
+    /// The forge, for writing a comment in its own Markdown; None for a
+    /// local tour.
+    forge: Option<ProviderKind>,
 }
 
 /// One review's commits and changes.
 struct Chapter {
     review: ReviewRequest,
+    /// A branch with no review, toured from local refs.
+    local: bool,
     /// The chapter this review is stacked on, if it is in the tour.
     parent: Option<usize>,
     body: String,
@@ -120,8 +142,7 @@ impl Tour {
     /// matched its parent only by branch name, is left out with the reviews
     /// stacked on it; one with no changes of its own is not shown.
     pub fn load(
-        kind: ProviderKind,
-        provider: &dyn ReviewProvider,
+        source: Source<'_>,
         stack: Stack,
         planner: Option<&Planner>,
         progress: &Progress,
@@ -138,18 +159,28 @@ impl Tour {
         let mut warnings = Vec::new();
         // The descriptions and discussions come from the provider while git
         // fetches.
-        let (tips, bodies, conversations) = thread::scope(|scope| {
-            let bodies: Vec<_> = reviews
-                .iter()
-                .map(|review| scope.spawn(move || provider.review_body(review)))
-                .collect();
-            let conversations: Vec<_> = reviews
-                .iter()
-                .map(|review| scope.spawn(move || provider.conversation(review)))
-                .collect();
-            let tips = stack_tips(kind, provider, &reviews, current, &mut warnings);
-            (tips, joined(bodies), joined(conversations))
-        });
+        let (tips, bodies, conversations) = match source {
+            Source::Forge(kind, provider) => thread::scope(|scope| {
+                let bodies: Vec<_> = reviews
+                    .iter()
+                    .map(|review| scope.spawn(move || provider.review_body(review)))
+                    .collect();
+                let conversations: Vec<_> = reviews
+                    .iter()
+                    .map(|review| scope.spawn(move || provider.conversation(review)))
+                    .collect();
+                let tips = stack_tips(kind, provider, &reviews, current, &mut warnings);
+                (tips, joined(bodies), joined(conversations))
+            }),
+            Source::Local => (
+                local_tips(&reviews),
+                reviews.iter().map(local_body).collect(),
+                reviews
+                    .iter()
+                    .map(|_| Ok(Conversation::default()))
+                    .collect(),
+            ),
+        };
         let tips = tips?;
         let linked: Vec<bool> = parents
             .iter()
@@ -188,9 +219,16 @@ impl Tour {
             };
             let id = review.id.clone();
             let base = review.base.clone();
+            let local = matches!(source, Source::Local);
             let chapter = body
                 .with_context(|| format!("failed to read the description of {id}"))
-                .and_then(|body| Chapter::read(review, &body, &base_tip, head_sha, &mut budget));
+                .and_then(|body| Chapter::read(review, &body, &base_tip, head_sha, &mut budget))
+                .map(|chapter| {
+                    chapter.map(|mut chapter| {
+                        chapter.local = local;
+                        chapter
+                    })
+                });
             let chapter = chapter.map(|chapter| {
                 chapter.map(|mut chapter| {
                     chapter.conversation = match conversations[index].take() {
@@ -209,6 +247,9 @@ impl Tour {
                 })
             });
             match chapter {
+                Ok(None) if index == current && matches!(source, Source::Local) => {
+                    bail!("{id} has no changes against {base}")
+                }
                 Ok(None) if index == current => bail!(
                     "{id} has no changes against {base}; a merged review's changes are already in its base"
                 ),
@@ -251,22 +292,30 @@ impl Tour {
                 &mut chapters,
                 current_chapter,
                 planner,
-                provider,
+                source.provider(),
                 progress,
                 &mut warnings,
             );
         }
+        let provider = source.provider();
         Ok(Self {
             chapters,
             current: current_chapter,
             warnings,
             events: provider
-                .review_events()
-                .iter()
-                .map(|event| event.as_str())
-                .collect(),
-            resolves: provider.resolves_threads(),
-            forge: kind,
+                .map(|provider| {
+                    provider
+                        .review_events()
+                        .iter()
+                        .map(|event| event.as_str())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            resolves: provider.is_some_and(|provider| provider.resolves_threads()),
+            forge: match source {
+                Source::Forge(kind, _) => Some(kind),
+                Source::Local => None,
+            },
         })
     }
 
@@ -326,6 +375,7 @@ impl Tour {
             "model": plan.reported.model,
             "cached": plan.cached,
             "assessment": plan.assessment.as_ref().map(assessment_data),
+            "followUp": plan.follow_up.as_ref().map(follow_up_data),
             "findings": plan.findings.iter().map(finding_data).collect::<Vec<_>>(),
         }))
     }
@@ -351,7 +401,8 @@ impl Tour {
             "served": served,
             "reviewEvents": self.events,
             "resolvesThreads": self.resolves,
-            "forge": self.forge.to_string(),
+            "forge": self.forge.map(|forge| forge.to_string()),
+            "local": self.forge.is_none(),
             "current": self.current,
             "chapters": self.chapters.iter().map(Chapter::data).collect::<Vec<_>>(),
         })
@@ -359,6 +410,17 @@ impl Tour {
 }
 
 impl Chapter {
+    /// What the chapter's saved plans are named by: the review's number, or
+    /// for a local branch a hash of its name, since the name of an earlier
+    /// head is read from after the first `-`.
+    fn cache_id(&self) -> String {
+        if self.local {
+            format!("local_{:016x}", fnv1a(self.review.branch.as_bytes()))
+        } else {
+            self.review.id_value().to_owned()
+        }
+    }
+
     /// Read the change from the merge base of `base_tip` and `head_sha` to
     /// `head_sha`, embedding file texts from what is left of `budget`. None
     /// when the review has no changes.
@@ -386,6 +448,7 @@ impl Chapter {
 
         Ok(Some(Self {
             review,
+            local: false,
             parent: None,
             body: notes::readable_body(body),
             base_sha,
@@ -408,7 +471,7 @@ impl Chapter {
                 "id": self.review.id,
                 "title": self.review.title,
                 "url": self.review.url,
-                "state": self.review.state.to_string(),
+                "state": if self.local { "local".to_owned() } else { self.review.state.to_string() },
                 "branch": self.review.branch,
                 "base": self.review.base,
                 "bodyHtml": markdown::to_html(&self.body),
@@ -435,18 +498,7 @@ impl Chapter {
                     data["evidenceHtml"] = markdown::to_html(&finding.evidence).into();
                     data
                 }).collect::<Vec<_>>(),
-                "followUp": plan.follow_up.as_ref().map(|follow_up| json!({
-                    "head": follow_up.head,
-                    "confidence": follow_up.confidence,
-                    "findings": follow_up.findings.iter().map(|(finding, status, note)| json!({
-                        "path": finding.path,
-                        "line": finding.line,
-                        "severity": finding.severity,
-                        "title": finding.title,
-                        "status": status.as_str(),
-                        "note": note,
-                    })).collect::<Vec<_>>(),
-                })),
+                "followUp": plan.follow_up.as_ref().map(follow_up_data),
                 "assessment": plan.assessment.as_ref().map(|assessment| {
                     let mut data = assessment_data(assessment);
                     data["questionHtml"] = assessment.question.as_deref().map(markdown::to_html).into();
@@ -469,6 +521,37 @@ impl Chapter {
     }
 }
 
+/// Each local branch's base tip and head, from local refs.
+fn local_tips(stack: &[ReviewRequest]) -> Result<Vec<Option<(String, String)>>> {
+    stack
+        .iter()
+        .map(|review| {
+            Ok(Some((
+                git::rev_parse(&review.base)?,
+                git::rev_parse(&review.branch)?,
+            )))
+        })
+        .collect()
+}
+
+/// A local branch's description: the messages of its own commits that say
+/// more than their subject, which the commit list already shows.
+fn local_body(review: &ReviewRequest) -> Result<String> {
+    let range = format!("{}..{}", review.base, review.branch);
+    let mut parts = Vec::new();
+    for sha in git::rev_list(&range)?.iter().rev() {
+        let body = git::commit_body(sha)?;
+        if !body.trim().is_empty() {
+            parts.push(format!(
+                "**{}**\n\n{}",
+                git::commit_subject(sha)?,
+                body.trim()
+            ));
+        }
+    }
+    Ok(parts.join("\n\n"))
+}
+
 fn finding_data(finding: &plan::Finding) -> Value {
     json!({
         "path": finding.path,
@@ -482,6 +565,21 @@ fn finding_data(finding: &plan::Finding) -> Value {
         "evidence": finding.evidence,
         "suggestion": finding.suggestion,
         "preExisting": finding.pre_existing,
+    })
+}
+
+fn follow_up_data(follow_up: &plan::FollowUp) -> Value {
+    json!({
+        "head": follow_up.head,
+        "confidence": follow_up.confidence,
+        "findings": follow_up.findings.iter().map(|(finding, status, note)| json!({
+            "path": finding.path,
+            "line": finding.line,
+            "severity": finding.severity,
+            "title": finding.title,
+            "status": status.as_str(),
+            "note": note,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -501,7 +599,7 @@ fn plan_chapters(
     chapters: &mut [Chapter],
     current: usize,
     planner: &Planner,
-    provider: &dyn ReviewProvider,
+    provider: Option<&dyn ReviewProvider>,
     progress: &Progress,
     warnings: &mut Vec<String>,
 ) {
@@ -560,7 +658,9 @@ fn plan_chapters(
                     .map(|&index| {
                         let review = &chapters[index].review;
                         scope.spawn(move || {
-                            provider.check_status(review).map_or("unknown", ci_state)
+                            provider.map_or("unknown", |provider| {
+                                provider.check_status(review).map_or("unknown", ci_state)
+                            })
                         })
                     })
                     .collect();
@@ -774,7 +874,7 @@ const SHOWN_EXTENSION: &str = "shown.json";
 /// any agent, first reviewed before `before` when given, for a follow-up.
 fn previous_review(chapter: &Chapter, before: Option<u64>) -> Option<plan::Previous> {
     let dir = git::git_common_path_absolute("stk/tours/plans").ok()?;
-    let prefix = format!("{}-", chapter.review.id_value());
+    let prefix = format!("{}-", chapter.cache_id());
     let head = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
     let mut saved: Vec<(u64, String, Value)> = std::fs::read_dir(dir)
         .ok()?
@@ -925,7 +1025,7 @@ fn plan_cache(chapter: &Chapter, agent: &Agent, review: bool) -> Result<std::pat
     Ok(
         git::git_common_path_absolute("stk/tours/plans")?.join(format!(
             "{}-{short}-{:016x}.json",
-            chapter.review.id_value(),
+            chapter.cache_id(),
             hasher.finish()
         )),
     )

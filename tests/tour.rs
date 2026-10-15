@@ -4,7 +4,7 @@ mod common;
 
 use common::{FakeProvider, TestRepo};
 use predicates::prelude::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// The tour data embedded in a written tour page.
 fn tour_data(html: &str) -> Value {
@@ -2338,5 +2338,151 @@ fn an_agent_tour_plans_every_changeset_in_a_stack() {
         asked.lines().count(),
         3,
         "one request per changeset: {asked}"
+    );
+}
+
+/// A local stack of two branches on the trunk, with no reviews.
+fn local_stack() -> TestRepo {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.tourStyle", "standard"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "add a");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "add b\n\nWhy b matters.");
+    repo
+}
+
+#[test]
+fn a_branch_with_no_review_is_toured_from_local_branches() {
+    let repo = local_stack();
+    let fake = FakeProvider::new()
+        .on("pr list", "[]")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["tour", "--no-open", "--output", "tour.html"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "feature/b has no github review yet, so it is toured from local branches",
+        ))
+        .stdout(predicates::str::contains("in a stack of 2 branches"));
+
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    assert_eq!(data["local"], true);
+    assert_eq!(data["reviewEvents"], json!([]));
+    let chapters = data["chapters"].as_array().unwrap();
+    let shape: Vec<_> = chapters
+        .iter()
+        .map(|chapter| {
+            (
+                chapter["review"]["id"].as_str().unwrap(),
+                chapter["review"]["base"].as_str().unwrap(),
+                chapter["review"]["state"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("feature/a", "main", "local"),
+            ("feature/b", "feature/a", "local")
+        ]
+    );
+    assert_eq!(data["current"], 1);
+    let b = &chapters[1];
+    assert_eq!(b["steps"][0]["files"][0]["path"], "b.txt");
+    assert!(
+        b["review"]["bodyHtml"]
+            .as_str()
+            .unwrap()
+            .contains("Why b matters."),
+        "the commit message stands in for a description"
+    );
+    // Nothing from the forge, so no lookups and no "seen" mark for the inbox.
+    assert!(!repo.path().join(".git/stk/tours/seen.json").exists());
+}
+
+#[test]
+fn local_tours_a_reviewed_branch_from_local_branches_without_the_forge() {
+    let repo = local_stack();
+    // No provider rules: --local must not ask the forge anything.
+    let fake = FakeProvider::new()
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args([
+            "tour",
+            "feature/a",
+            "--local",
+            "--no-stack",
+            "--no-open",
+            "--output",
+            "tour.html",
+        ])
+        .assert()
+        .success();
+    let data = tour_data(&fs::read_to_string(repo.path().join("tour.html")).unwrap());
+    assert_eq!(data["chapters"].as_array().unwrap().len(), 1);
+    assert_eq!(data["chapters"][0]["review"]["id"], "feature/a");
+
+    repo.stack_faked(&fake)
+        .args(["tour", "12", "--local", "--no-open", "--output", "x.html"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("12 is not a local branch"));
+    repo.git(["switch", "main"]);
+    repo.stack_faked(&fake)
+        .args(["tour", "--local", "--no-open", "--output", "x.html"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("main is the trunk"));
+}
+
+#[test]
+fn a_local_agent_review_is_saved_under_the_branch() {
+    let repo = local_stack();
+    repo.git(["config", "stk.tourAgent", "tour-agent --print"]);
+    repo.git(["config", "stk.tourAgentAllowed", "tour-agent --print"]);
+    let review = r#"{"version":1,"agent":{"provider":"Fake Labs","model":"fake-1"},
+ "overview":"Adds b.","steps":[{"title":"B","summary":"S","files":["b.txt"]}],
+ "confidence":90,"risk":{"level":"low","rationale":"Small."},
+ "findings":[{"path":"b.txt","side":"new","line":1,"severity":"optional","category":"coverage",
+   "title":"Test b","body":"Add a test.","evidence":"Nothing reads b.txt."}]}"#;
+    let fake = FakeProvider::new()
+        .commands(&["gh", "tour-agent"])
+        .record_append("--print", "asked", review)
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    for _ in 0..2 {
+        let output = repo
+            .stack_faked(&fake)
+            .args(["tour", "--local", "--findings"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(printed["review"]["branch"], "feature/b");
+        assert_eq!(printed["findings"][0]["title"], "Test b");
+    }
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(
+        asked.lines().count(),
+        1,
+        "the second run reuses the first: {asked}"
+    );
+    let saved: Vec<String> = fs::read_dir(repo.path().join(".git/stk/tours/plans"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(
+        saved
+            .iter()
+            .any(|name| name.starts_with("local_") && name.ends_with(".json")),
+        "{saved:?}"
     );
 }

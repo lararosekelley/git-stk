@@ -227,6 +227,7 @@ kbd { font-family: var(--font-code); font-size: 12px; border: 1px solid var(--bo
 .meta { color: var(--fg-muted); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
 .state { border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; font-size: 12px; }
 .state-open { color: var(--done); border-color: var(--done); }
+.state-local { color: var(--fg-muted); }
 .state-merged { color: var(--hl-keyword); border-color: var(--hl-keyword); }
 .state-closed { color: var(--removed); border-color: var(--removed); }
 .toolbar { display: flex; gap: 6px; align-items: center; margin-top: 12px; color: var(--fg-muted); }
@@ -466,6 +467,9 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
 (function () {
   "use strict";
   var data = JSON.parse(document.getElementById("tour-data").textContent);
+  // Whether the page can post to the review: served, and of a review rather
+  // than a local branch.
+  var postable = data.served && !data.local;
   var EXPAND_STEP = 20;
   var layoutKey = "git-stk-tour:layout";
   var themeKey = "git-stk-tour:theme";
@@ -867,7 +871,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   // lines inside the diff can carry one: forges refuse the rest.
   FileView.prototype.commentCell = function (cell, row, side, tr) {
     var line = side === "old" ? row.oldNum : row.newNum;
-    if (!data.served || !row.inDiff || line === null || line === undefined) return cell;
+    if (!postable || !row.inDiff || line === null || line === undefined) return cell;
     var view = this;
     cell.classList.add("commentable");
     cell.title = "Comment on this line";
@@ -1213,7 +1217,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       parts.push(el("pre", { class: "finding-suggestion", text: finding.suggestion }));
     }
     var add = null;
-    if (data.served) {
+    if (postable) {
       var added = drafts().some(function (draft) { return draft.finding === findingKey(finding); });
       add = el("button", { type: "button", text: added ? "Added to the review" : "Add to review" });
       add.disabled = added;
@@ -1314,7 +1318,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       var question = el("div", { class: "markdown" });
       setMarkdown(question, assessment.questionHtml);
       var box = [el("div", { class: "note-label", text: "Question for the author" }), question];
-      if (data.served) {
+      if (postable) {
         var ask = el("button", { type: "button", text: "Ask in your review" });
         ask.addEventListener("click", function () {
           var key = draftsKey() + ":summary";
@@ -1533,7 +1537,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
 
   // Reply and resolve controls for a thread on a served page.
   function threadActions(thread) {
-    if (!data.served) return null;
+    if (!postable) return null;
     var status = el("span", { class: "action-status" });
     var actions = el("div", { class: "thread-actions", "data-thread-id": thread.id });
     var reply = el("button", { type: "button", text: "Reply" });
@@ -1686,7 +1690,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     if (conversation.incomplete) {
       panel.appendChild(el("div", { class: "note" }, ["Some of the discussion was left out; ", el("a", { href: chapter.review.url, target: "_blank", rel: "noopener", text: "open the review" }), " to see all of it."]));
     }
-    if (data.served) {
+    if (postable) {
       var text = el("textarea", { rows: "3", placeholder: "Comment on this review" });
       var send = el("button", { type: "button", class: "primary", text: "Comment" });
       var status = el("span", { class: "action-status" });
@@ -1813,7 +1817,8 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       ? el("span", { text: "review " + (chapterIndex + 1) + " of " + data.chapters.length + " in the stack" })
       : null;
     var meta = el("div", { class: "meta" }, [
-      el("a", { href: review.url, target: "_blank", rel: "noopener noreferrer", text: review.id }),
+      // A local branch's id is its name, shown just after.
+      review.url ? el("a", { href: review.url, target: "_blank", rel: "noopener noreferrer", text: review.id }) : null,
       el("span", { class: "state state-" + review.state, text: review.state }),
       el("span", { class: "state state-reviewed", id: "reviewed-badge", text: "reviewed", hidden: "" }),
       el("span", {}, [el("code", { text: review.branch }), " into ", el("code", { text: review.base })]),
@@ -1841,7 +1846,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     var toolbar = el("div", { class: "toolbar", id: "toolbar" }, ["View:"].concat(buttons, [
       el("span", { class: "toolbar-gap", text: "Show:" }),
     ], filters, [el("span", { class: "filter-count", id: "filter-count" })]));
-    if (data.served) {
+    if (postable) {
       var refresh = el("button", { type: "button", id: "refresh-discussion", title: "Load new comments and reviews", text: "Refresh" });
       refresh.addEventListener("click", function () { refreshConversation(refresh); });
       var reviewButton = el("button", { type: "button", class: "review-button" }, ["Review ", el("span", { id: "draft-count", class: "draft-count" })]);
@@ -1985,14 +1990,16 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
       setMarkdown(body, chapter.review.bodyHtml);
       parts.push(body);
     } else {
-      parts.push(el("p", { class: "description empty", text: "This review has no description." }));
+      parts.push(el("p", { class: "description empty", text: data.local
+        ? "A local branch with no review yet. Its commits:"
+        : "This review has no description." }));
     }
     if (chapter.commits.length) {
       parts.push(el("ol", { class: "commits", "aria-label": "Commits" }, chapter.commits.map(function (commit) {
         return el("li", {}, [el("code", { text: commit.sha }), el("span", { text: commit.subject })]);
       })));
     }
-    parts.push(renderConversation());
+    if (!data.local) parts.push(renderConversation());
     return el("div", { class: "intro" }, parts);
   }
 
@@ -2476,7 +2483,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     } else if (key === "b") {
       var sidebar = document.querySelector(".nav-toggle");
       if (sidebar) sidebar.click();
-    } else if (key === "c" && data.served) {
+    } else if (key === "c" && postable) {
       if (!document.getElementById("review-panel")) openReview();
     }
   }

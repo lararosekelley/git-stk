@@ -24,7 +24,7 @@ use crate::providers::{
 use crate::settings::{self, TourStyle};
 use crate::style;
 use crate::tour::server::{Request, Response, Server};
-use crate::tour::{self, Planner, Tour as ReviewTour};
+use crate::tour::{self, Planner, Source, Tour as ReviewTour};
 
 /// Open a step-by-step tour of a review's changes in the browser
 /// (experimental).
@@ -66,6 +66,11 @@ pub struct Tour {
     /// one.
     #[arg(long, action = ArgAction::SetTrue)]
     findings: bool,
+    /// Tour a branch from local refs, as when it has no review yet, even
+    /// when it has one: its own commits against its stack parent, with
+    /// nothing to post.
+    #[arg(long, action = ArgAction::SetTrue)]
+    local: bool,
 }
 
 impl Run for Tour {
@@ -85,150 +90,122 @@ impl Run for Tour {
             self.refresh_plan,
             !self.findings,
         )?;
-        if self.findings {
-            return print_findings(self.target.as_deref(), planner.as_ref());
-        }
-        write_tour(
+        let mode = match (self.findings, self.output) {
+            (true, _) => Mode::Findings,
+            (false, Some(path)) => Mode::Snapshot {
+                path,
+                open: !self.no_open,
+            },
+            (false, None) => Mode::Serve {
+                open: !self.no_open,
+            },
+        };
+        tour_command(
             self.target.as_deref(),
-            self.output,
-            !self.no_open,
+            mode,
             !self.no_stack,
+            self.local,
             planner.as_ref(),
         )
     }
 }
 
-/// Print the review asked for's agent review as JSON. Only that review is
-/// planned: findings are per review, and the rest of its stack would cost an
-/// agent call each for nothing printed.
-fn print_findings(target: Option<&str>, planner: Option<&Planner>) -> Result<()> {
-    let (provider, review_provider) = detect_review_provider()?;
-    let target = ReviewRef::parse(target, provider.kind)?;
-    let progress = Progress::start("looking up the review");
-    let review_provider = review_provider.as_ref();
-    let review = match target {
-        ReviewRef::Number(number) => review_provider.review_by_number(number)?,
-        ReviewRef::Branch(branch) => review_provider
-            .review_for_branch_including_closed(&branch)?
-            .with_context(|| {
-                format!(
-                    "no {} review found for {branch}; submit it first with `git stk submit`",
-                    provider.kind
-                )
-            })?,
-    };
-    let tour = ReviewTour::load(
-        provider.kind,
-        review_provider,
-        tour::stack::Stack::single(review),
-        planner,
-        &progress,
-    )?;
-    drop(progress);
-    for warning in tour.warnings() {
-        anstream::eprintln!("{}", style::warn(&format!("warning: {warning}")));
-    }
-    let findings = tour
-        .findings()
-        .context("the agent's review could not be used, so there are no findings to print")?;
-    println!("{}", serde_json::to_string_pretty(&findings)?);
-    Ok(())
+/// What the tour command produces.
+enum Mode {
+    /// Serve the page, opening a browser when `open`.
+    Serve { open: bool },
+    /// Write a read-only snapshot to `path`.
+    Snapshot { path: PathBuf, open: bool },
+    /// Print the agent review of the review asked for as JSON.
+    Findings,
 }
 
-fn write_tour(
+fn tour_command(
     target: Option<&str>,
-    output: Option<PathBuf>,
-    open: bool,
+    mode: Mode,
     stack: bool,
+    local: bool,
     planner: Option<&Planner>,
 ) -> Result<()> {
-    let (provider, review_provider) = detect_review_provider()?;
-    let target = ReviewRef::parse(target, provider.kind)?;
-    let progress = Progress::start(match &target {
-        ReviewRef::Number(number) => format!("looking up review {number}"),
-        ReviewRef::Branch(branch) => format!("looking up the review for {branch}"),
-    });
-    let review_provider = review_provider.as_ref();
-    // The open reviews, to find the stack in, come back while the target is
-    // looked up.
-    let (review, open_reviews) = thread::scope(|scope| {
-        let open_reviews = stack.then(|| scope.spawn(|| review_provider.all_open_reviews()));
-        let review = match target {
-            ReviewRef::Number(number) => review_provider.review_by_number(number),
-            ReviewRef::Branch(branch) => review_provider
-                .review_for_branch_including_closed(&branch)
-                .and_then(|review| {
-                    review.with_context(|| {
-                        format!(
-                            "no {} review found for {branch}; submit it first with `git stk submit`",
-                            provider.kind
-                        )
-                    })
-                }),
-        };
-        let open_reviews = open_reviews.map(|handle| {
-            handle
-                .join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-        });
-        (review, open_reviews)
-    });
-    let review = review?;
-
-    let label = review.label();
+    // Findings are per review, and planning the rest of its stack would cost
+    // an agent call each for nothing printed.
+    let stack = stack && !matches!(mode, Mode::Findings);
+    // A local tour needs no forge.
+    let detected = if local {
+        None
+    } else {
+        Some(detect_review_provider()?)
+    };
+    let forge = detected
+        .as_ref()
+        .map(|(provider, review_provider)| (review_provider.as_ref(), provider.kind));
+    let progress = Progress::start("looking up the review");
     let warnings = RefCell::new(Vec::new());
-    let stack = match open_reviews {
-        Some(Ok((open, complete))) => {
-            if !complete {
-                warnings.borrow_mut().push(format!(
-                    "the repository has more open reviews than could be listed ({}), so the stack may be missing some",
-                    open.len()
+    let found = match forge {
+        Some((review_provider, kind)) => {
+            forge_stack(target, kind, review_provider, stack, &warnings)?
+        }
+        None => None,
+    };
+    let mut note = None;
+    let (source, tour_stack) = match (found, forge) {
+        (Some(found), Some((review_provider, kind))) => {
+            (Source::Forge(kind, review_provider), found)
+        }
+        (_, forge) => {
+            let branch = local_branch(target)?;
+            if let Some((_, kind)) = forge {
+                note = Some(format!(
+                    "{branch} has no {kind} review yet, so it is toured from local branches"
                 ));
             }
-            let default_branch = settings::remote()
-                .ok()
-                .and_then(|remote| git::remote_default_branch(&remote));
-            tour::stack::around(
-                review,
-                open,
-                &|branch, candidates| {
-                    tour::same_named_parent(provider.kind, branch, candidates, &warnings)
-                },
-                &|branch| tour::stack::long_lived(branch, default_branch.as_deref()),
-            )
+            (Source::Local, tour::stack::local(&branch, stack)?)
         }
-        Some(Err(error)) => {
-            warnings.borrow_mut().push(format!(
-                "could not list open reviews to find the stack, so {} is toured alone: {error:#}",
-                review.id
-            ));
-            tour::stack::Stack::single(review)
-        }
-        None => tour::stack::Stack::single(review),
     };
-    let tour = ReviewTour::load(provider.kind, review_provider, stack, planner, &progress)?;
+    let label = tour_stack.reviews[tour_stack.current].label();
+    let tour = ReviewTour::load(source, tour_stack, planner, &progress)?;
     drop(progress);
-    tour::seen::record(
-        (0..tour.review_count())
-            .filter_map(|chapter| Some(tour.chapter_review(chapter)?.0.id.as_str())),
-    );
+    if let Some(note) = note {
+        anstream::eprintln!("{}", style::dim(&note));
+    }
     for warning in warnings.borrow().iter().chain(tour.warnings()) {
         anstream::eprintln!("{}", style::warn(&format!("warning: {warning}")));
+    }
+    let forge = match source {
+        Source::Forge(kind, review_provider) => Some((review_provider, kind)),
+        Source::Local => None,
+    };
+
+    if matches!(mode, Mode::Findings) {
+        let findings = tour
+            .findings()
+            .context("the agent's review could not be used, so there are no findings to print")?;
+        println!("{}", serde_json::to_string_pretty(&findings)?);
+        return Ok(());
+    }
+    // A local branch has no review to mark seen.
+    if forge.is_some() {
+        tour::seen::record(
+            (0..tour.review_count())
+                .filter_map(|chapter| Some(tour.chapter_review(chapter)?.0.id.as_str())),
+        );
     }
     let files = tour.file_count();
     let reviews = tour.review_count();
     let summary = format!(
         "{label} ({files} {}{})",
         if files == 1 { "file" } else { "files" },
-        if reviews > 1 {
-            format!(", in a stack of {reviews} reviews")
-        } else {
-            String::new()
+        match (reviews, forge.is_some()) {
+            (1, _) => String::new(),
+            (_, true) => format!(", in a stack of {reviews} reviews"),
+            (_, false) => format!(", in a stack of {reviews} branches"),
         }
     );
 
-    let Some(path) = output else {
-        return serve(&tour, review_provider, provider.kind, &summary, open);
+    let (path, open) = match mode {
+        Mode::Serve { open } => return serve(&tour, forge, &summary, open),
+        Mode::Snapshot { path, open } => (path, open),
+        Mode::Findings => unreachable!("printed above"),
     };
     if let Some(parent) = path
         .parent()
@@ -249,6 +226,76 @@ fn write_tour(
     Ok(())
 }
 
+/// The review asked for and, with `stack`, the stack of reviews around it.
+/// None for a branch with no review, which is toured locally instead.
+fn forge_stack(
+    target: Option<&str>,
+    kind: ProviderKind,
+    review_provider: &dyn ReviewProvider,
+    stack: bool,
+    warnings: &RefCell<Vec<String>>,
+) -> Result<Option<tour::stack::Stack>> {
+    let target = ReviewRef::parse(target, kind)?;
+    // The open reviews, to find the stack in, come back while the target is
+    // looked up.
+    let (review, open_reviews) = thread::scope(|scope| {
+        let open_reviews = stack.then(|| scope.spawn(|| review_provider.all_open_reviews()));
+        let review = match target {
+            ReviewRef::Number(number) => review_provider.review_by_number(number).map(Some),
+            ReviewRef::Branch(branch) => {
+                review_provider.review_for_branch_including_closed(&branch)
+            }
+        };
+        let open_reviews = open_reviews.map(|handle| {
+            handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+        (review, open_reviews)
+    });
+    let Some(review) = review? else {
+        return Ok(None);
+    };
+    Ok(Some(match open_reviews {
+        Some(Ok((open, complete))) => {
+            if !complete {
+                warnings.borrow_mut().push(format!(
+                    "the repository has more open reviews than could be listed ({}), so the stack may be missing some",
+                    open.len()
+                ));
+            }
+            let default_branch = settings::remote()
+                .ok()
+                .and_then(|remote| git::remote_default_branch(&remote));
+            tour::stack::around(
+                review,
+                open,
+                &|branch, candidates| tour::same_named_parent(kind, branch, candidates, warnings),
+                &|branch| tour::stack::long_lived(branch, default_branch.as_deref()),
+            )
+        }
+        Some(Err(error)) => {
+            warnings.borrow_mut().push(format!(
+                "could not list open reviews to find the stack, so {} is toured alone: {error:#}",
+                review.id
+            ));
+            tour::stack::Stack::single(review)
+        }
+        None => tour::stack::Stack::single(review),
+    }))
+}
+
+/// The local branch a local tour is of: the one named, or the current one.
+fn local_branch(target: Option<&str>) -> Result<String> {
+    let Some(target) = target else {
+        return git::current_branch();
+    };
+    if git::local_branches()?.iter().any(|branch| branch == target) {
+        return Ok(target.to_owned());
+    }
+    bail!("{target} is not a local branch; a local tour is of a branch, not a review number or URL")
+}
+
 /// The port this repository's tours prefer, the same from one tour to the
 /// next and unlikely to be another repository's.
 fn preferred_port() -> u16 {
@@ -258,11 +305,11 @@ fn preferred_port() -> u16 {
     41_000 + (crate::tour::fnv1a(repository.as_bytes()) % 1_000) as u16
 }
 
-/// Serve the tour until the last tab showing it closes.
+/// Serve the tour until the last tab showing it closes. A local tour, with no
+/// `forge`, has nothing to post or refresh.
 fn serve(
     tour: &ReviewTour,
-    provider: &dyn ReviewProvider,
-    kind: ProviderKind,
+    forge: Option<(&dyn ReviewProvider, ProviderKind)>,
     summary: &str,
     open: bool,
 ) -> Result<()> {
@@ -278,9 +325,15 @@ fn serve(
     let page = tour.render(true);
     // One terminal prompt at a time, however many tabs submit at once.
     let prompting = Mutex::new(());
-    server.run(
-        &|request: Request| match (request.method.as_str(), request.path.as_str()) {
-            ("GET", "") => Response::html(page.clone()),
+    server.run(&|request: Request| {
+        let route = (request.method.as_str(), request.path.as_str());
+        if route == ("GET", "") {
+            return Response::html(page.clone());
+        }
+        let Some((provider, kind)) = forge else {
+            return Response::error(404, "a local tour has no review to post to or refresh");
+        };
+        match route {
             ("POST", "api/submit") => match submit(tour, provider, kind, &request.body, &prompting)
             {
                 Ok(Posted::Done(link)) => Response::json(&serde_json::json!({ "url": link })),
@@ -320,8 +373,8 @@ fn serve(
                 }
             }
             _ => Response::error(404, "not found"),
-        },
-    )
+        }
+    })
 }
 
 enum Posted {
