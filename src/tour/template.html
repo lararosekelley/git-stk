@@ -190,6 +190,7 @@ nav .step-link.done { color: var(--done); }
 nav .step-files { margin-top: 2px; }
 nav .step-files a { display: block; color: var(--fg-muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/1.8 var(--font-code); }
 nav .step-files a:hover, nav .step-link:hover { text-decoration: underline; color: var(--fg); }
+nav .step-files a[hidden] { display: none; }
 /* A step's reviewed box is its marker: a ring that fills when reviewed. */
 input[type="checkbox"][data-step] {
   appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; cursor: pointer;
