@@ -1847,6 +1847,15 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     return true;
   }
 
+  // Show all files again when a link leads into one the filter hides, as
+  // from the findings or thread list. Whether it had to.
+  function reveal(target) {
+    var file = target && target.closest ? target.closest("details.file") : null;
+    if (!file || !file.hidden) return false;
+    setFilter("all");
+    return true;
+  }
+
   function setFilter(name) {
     fileFilter = name;
     writeStorage(filterKey, name);
@@ -2083,6 +2092,10 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     if (switched) renderChapter(index);
     var target = location.hash ? document.getElementById(location.hash.slice(1)) : null;
     if (target && target.tagName === "DETAILS") target.open = true;
+    if (reveal(target)) {
+      target.scrollIntoView();
+      return;
+    }
     if (switched) {
       if (target) target.scrollIntoView();
       else window.scrollTo(0, 0);
@@ -2474,6 +2487,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     var initial = document.getElementById(location.hash.slice(1));
     if (initial) {
       if (initial.tagName === "DETAILS") initial.open = true;
+      reveal(initial);
       initial.scrollIntoView();
     }
   }
