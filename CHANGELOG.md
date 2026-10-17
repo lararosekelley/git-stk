@@ -4,6 +4,16 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.2
+
+### Changed
+
+- **tour:** the page takes its colors from Callie's palette in
+  [greylocklabs/themes](https://github.com/greylocklabs/themes), bundled as
+  `src/tour/vendor/callie.css`, instead of its own copy. Diffs and syntax
+  highlighting now use the same colors as the Callie terminal and Neovim
+  themes. `just update-theme` refreshes the bundled copy.
+
 ## 0.16.1
 
 ### Added

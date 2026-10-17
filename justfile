@@ -25,6 +25,10 @@ package:
 publish-dry-run:
     cargo publish --dry-run
 
+# Refresh the tour's copy of Callie's palette from greylocklabs/themes, at a branch, tag or commit
+update-theme ref="main":
+    curl -fsSL "https://raw.githubusercontent.com/greylocklabs/themes/{{ref}}/ports/css/callie.css" -o src/tour/vendor/callie.css
+
 # Plan release artifacts
 dist-plan:
     dist plan
