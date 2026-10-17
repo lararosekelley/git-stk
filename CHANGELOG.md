@@ -4,6 +4,19 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.1
+
+### Added
+
+- **merge:** `--admin` merges past the branch rules your account may bypass,
+  such as required checks or reviews, on GitHub and Gitea/Forgejo. A review
+  in a GitHub stack merges through the asynchronous endpoint with
+  `bypass_rules`, which GitHub allows only for the bottom-most unmerged review,
+  so `merge --all --admin` lands a stack bottom-up, one review at a time. It
+  never waits for checks and cannot be combined with `--auto` or `--wait`.
+  GitLab has no way past its merge checks, so there it is refused. There is no
+  setting for it: it has to be passed every time.
+
 ## 0.16.0
 
 ### Added

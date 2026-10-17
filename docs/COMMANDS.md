@@ -210,7 +210,7 @@ git stk tour [branch | number | url] [--style standard|agentTour|agentReview] [-
 git stk inbox [--filter incoming,returned,team,mine] [--limit <n>] [--sort updated|created|size]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
-git stk merge [-y] [--auto | --all [--wait | --no-wait]] [--dry-run]
+git stk merge [-y] [--auto | --admin | --all [--wait | --no-wait | --admin]] [--dry-run]
 git stk repair [--dry-run | --from-remote]
 git stk submit [branch] [--no-stack] [-t <title>] [-d <desc> | --desc-file <path>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--dry-run] [--push | --no-push]
 git stk submit [--stack | --no-stack | --downstack] [-t <title>] [-d <desc> | --desc-file <path>] [--reviewers <csv>] [--draft | --no-draft] [--ready] [--rebuild-overview] [--dry-run] [--push | --no-push]
@@ -391,6 +391,14 @@ except for a registered GitHub stack, which lands in one call (see below).
   attempts an immediate merge and a failing check surfaces as a merge error. A review in a GitHub stack
   refuses `--auto` outright: the asynchronous endpoint it must use has no scheduled mode, and merging now
   would be the opposite of what was asked. Rerun without it once checks are green.
+- `--admin` merges past the branch rules your account may bypass, such as required checks or reviews, as
+  `gh pr merge --admin` does. It works on GitHub (`gh pr merge --admin`, or the asynchronous endpoint's
+  `bypass_rules` for a review in a stack, which also skips a merge queue) and Gitea/Forgejo (the merge API's
+  `force_merge`). GitLab's merge API has no way past its merge checks, so there it is refused before
+  anything is asked. It never waits for checks, overriding `stk.mergeWait`, and cannot be combined with
+  `--auto` or `--wait`. GitHub bypasses rules only for the bottom-most unmerged review of a stack, so
+  `merge --all --admin` walks the stack bottom-up, one merge per layer, rather than landing a registered
+  stack in one call. There is deliberately no setting for it: every admin merge is asked for by name.
 - `--wait` (or `stk.mergeWait`) polls each review's checks until they settle before merging it, making the
   landing genuinely one command. A failing check stops the loop; `--no-wait` overrides the config. Checks
   that are queued but not yet registered are waited out, not read as "no checks." On the merge-queue

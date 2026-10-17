@@ -498,7 +498,22 @@ impl ReviewProvider for GitLabProvider {
         )
     }
 
-    fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {
+    fn merge_review(
+        &self,
+        review: &ReviewRequest,
+        strategy: &str,
+        mode: super::MergeMode,
+    ) -> Result<String> {
+        // GitLab's merge API has no way past its merge checks; `merge`
+        // refuses --admin before asking.
+        if mode == super::MergeMode::Admin {
+            return Err(super::MergeRefused(format!(
+                "GitLab cannot merge {} past its merge checks from git-stk",
+                review.id
+            ))
+            .into());
+        }
+        let auto = mode == super::MergeMode::Auto;
         // --yes: glab confirms a merge interactively, but git-stk captures its
         // output, so the prompt would error instead of showing.
         let mut args = vec!["mr", "merge", review.id_value(), "--yes"];

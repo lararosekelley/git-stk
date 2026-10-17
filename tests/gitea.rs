@@ -149,3 +149,34 @@ fn gitea_status_shows_the_tea_review() {
             "review: #7 open feature/a -> main",
         ));
 }
+
+/// tea cannot force a merge, so `--admin` asks the API with `force_merge`.
+#[test]
+fn gitea_merge_admin_forces_the_merge_through_the_api() {
+    let repo = gitea_repo();
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .commands(&["tea"])
+        .record(
+            "--method POST repos/owner/repo/pulls/7/merge",
+            "merge-args.txt",
+            "",
+        )
+        .fail("pr merge", "tea cannot force a merge")
+        .on_after("repos/owner/repo/pulls", "merge-args.txt", "[]")
+        .on("repos/owner/repo/pulls", OPEN_PR)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--admin", "-y"])
+        .assert()
+        .success();
+    let recorded = std::fs::read_to_string(repo.path().join("merge-args.txt")).unwrap();
+    assert!(
+        recorded.contains(r#""force_merge":true"#) && recorded.contains(r#""Do":"squash""#),
+        "{recorded}"
+    );
+}

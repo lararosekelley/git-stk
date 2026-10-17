@@ -203,12 +203,31 @@ impl ReviewProvider for GiteaProvider {
         )
     }
 
-    fn merge_review(&self, review: &ReviewRequest, strategy: &str, _auto: bool) -> Result<String> {
+    fn admin_merge(&self) -> bool {
+        true
+    }
+
+    fn merge_review(
+        &self,
+        review: &ReviewRequest,
+        strategy: &str,
+        mode: super::MergeMode,
+    ) -> Result<String> {
         let style = match strategy {
             "rebase" => "rebase",
             "merge" => "merge",
             _ => "squash",
         };
+        // tea has no way to force a merge, so ask the API, which does it for
+        // an account allowed to merge past the branch's protection.
+        if mode == super::MergeMode::Admin {
+            let endpoint = format!("repos/{}/pulls/{}/merge", repo_slug()?, review.id_value());
+            let data = serde_json::json!({ "Do": style, "force_merge": true }).to_string();
+            return command_output(
+                "tea",
+                &["api", "--method", "POST", &endpoint, "--data", &data],
+            );
+        }
         // Gitea/tea has no scheduled ("merge when checks pass") merge, so `auto`
         // falls back to an immediate merge; a real block surfaces as an error.
         let args = vec!["pr", "merge", review.id_value(), "--style", style];

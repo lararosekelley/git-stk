@@ -2741,3 +2741,134 @@ fn merge_does_not_recommend_auto_for_a_stacked_review() {
         // Never the flag this command would refuse.
         .stderr(predicates::str::contains("schedule with").not());
 }
+
+/// `--admin` asks gh to merge past the branch rules.
+#[test]
+fn merge_admin_merges_past_the_rules_with_gh() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .record("pr merge 12", "merge-args.txt", "")
+        .on_after("feature/a", "merge-args.txt", "[]")
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://github.com/owner/repo/pull/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--admin", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would merge A work (#12) into main (squash, admin: past the branch rules)",
+        ));
+    repo.stack_faked(&fake)
+        .args(["merge", "--admin", "-y"])
+        .assert()
+        .success();
+    let recorded = fs::read_to_string(repo.path().join("merge-args.txt")).expect("merge args");
+    assert_eq!(recorded.trim(), "pr merge 12 --squash --admin");
+}
+
+/// GitHub bypasses rules only for a stack's bottom-most unmerged review
+/// (measured live), so `merge --all --admin` walks the stack - each layer
+/// straight into the base past the rules - and never waits on checks, whatever
+/// stk.mergeWait says.
+#[test]
+fn merge_all_admin_walks_a_registered_stack_bottom_up_past_the_rules() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.git(["config", "stk.mergeWait", "true"]);
+    repo.stack().args(["new", "ma/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "ma/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+
+    let stacks = r##"[{"number":5,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"state":"open","head":{"ref":"ma/a"}},
+        {"number":13,"state":"open","head":{"ref":"ma/b"}}]}]"##;
+    let merged = r##"{"status":"merged","details":{"message":"Pull request was merged."}}"##;
+    let fake = FakeProvider::new()
+        .on(
+            "mergeQueue(branch",
+            r##"{"data":{"repository":{"mergeQueue":null}}}"##,
+        )
+        .record("pulls/12/merge-async -X PUT", "async-12.txt", merged)
+        .record("pulls/13/merge-async -X PUT", "async-13.txt", merged)
+        .record("pr checks", "checks.txt", "")
+        .record("pr merge", "sync-merge.txt", "")
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on_after("ma/b", "async-13.txt", r##"[{"number":13,"state":"MERGED","baseRefName":"main","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on_after("ma/b", "async-12.txt", r##"[{"number":13,"state":"OPEN","baseRefName":"main","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on_after("ma/a", "async-12.txt", r##"[{"number":12,"state":"MERGED","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .on("ma/b", r##"[{"number":13,"state":"OPEN","baseRefName":"ma/a","headRefName":"ma/b","url":"https://example.com/13","title":"B work"}]"##)
+        .on("ma/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"ma/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "--admin", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "would merge A work (#12) into main (squash, admin: past the branch rules)",
+        ))
+        .stdout(predicates::str::contains("in one call").not())
+        .stdout(predicates::str::contains("would wait").not());
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "--admin", "-y"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("waiting for checks").not());
+
+    for number in ["12", "13"] {
+        let call = fs::read_to_string(repo.path().join(format!("async-{number}.txt")))
+            .unwrap_or_else(|_| panic!("#{number} was merged"));
+        assert!(
+            call.contains("bypass_rules=true") && call.contains("merge_action=direct_merge"),
+            "{call}"
+        );
+    }
+    assert!(!repo.path().join("checks.txt").exists());
+    assert!(!repo.path().join("sync-merge.txt").exists());
+}
+
+#[test]
+fn merge_admin_refuses_to_wait_or_schedule() {
+    let repo = TestRepo::new();
+    repo.stack()
+        .args(["merge", "--admin", "--auto"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cannot be used with"));
+    repo.stack()
+        .args(["merge", "--all", "--admin", "--wait"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cannot be used with"));
+}
+
+#[test]
+fn merge_admin_is_refused_on_gitlab_before_anything_is_asked() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "gitlab"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    let fake = FakeProvider::new()
+        .fail("mr merge", "must not merge")
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--admin", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "--admin works on GitHub and Gitea/Forgejo",
+        ));
+}
