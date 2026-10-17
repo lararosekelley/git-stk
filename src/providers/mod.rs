@@ -585,10 +585,20 @@ pub trait ReviewProvider: Sync {
         Ok(None)
     }
 
-    /// Merge the review with the given strategy: squash, rebase, or merge.
-    /// With `auto`, schedule the merge for when required checks pass
-    /// instead of merging now.
-    fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String>;
+    /// Merge the review with the given strategy: squash, rebase, or merge,
+    /// now, scheduled, or past the rules the account may bypass (`mode`).
+    fn merge_review(
+        &self,
+        review: &ReviewRequest,
+        strategy: &str,
+        mode: MergeMode,
+    ) -> Result<String>;
+
+    /// Whether [`MergeMode::Admin`] is available: a merge past the branch
+    /// rules the account is allowed to bypass.
+    fn admin_merge(&self) -> bool {
+        false
+    }
 
     /// Why the platform won't merge the review right now, read from its
     /// structured status. Consulted after a merge is rejected to explain it
@@ -1244,6 +1254,17 @@ pub enum BaseGap {
 /// advice that contradicts it.
 #[derive(Debug)]
 pub struct MergeRefused(pub String);
+
+/// How a merge is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeMode {
+    /// Merge now, if the platform's rules allow it.
+    Now,
+    /// Schedule the merge for when required checks pass.
+    Auto,
+    /// Merge now, past the rules the account may bypass (`--admin`).
+    Admin,
+}
 
 impl fmt::Display for MergeRefused {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

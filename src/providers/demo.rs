@@ -123,7 +123,17 @@ impl ReviewProvider for DemoProvider {
         Ok(String::new())
     }
 
-    fn merge_review(&self, review: &ReviewRequest, _strategy: &str, _auto: bool) -> Result<String> {
+    // Nothing guards a demo review's base, so an admin merge is any merge.
+    fn admin_merge(&self) -> bool {
+        true
+    }
+
+    fn merge_review(
+        &self,
+        review: &ReviewRequest,
+        _strategy: &str,
+        _mode: super::MergeMode,
+    ) -> Result<String> {
         let mut state = load()?;
         let (branch, base, title) = {
             let entry = by_id(&state, review)?;

@@ -7,8 +7,8 @@ use crate::commands::sync::sync;
 use crate::git;
 use crate::prompt::confirm;
 use crate::providers::{
-    BaseGap, MergeBlocker, ProviderKind, ReviewProvider, ReviewRequest, ReviewState, WaitOutcome,
-    detect_review_provider,
+    BaseGap, MergeBlocker, MergeMode, ProviderKind, ReviewProvider, ReviewRequest, ReviewState,
+    WaitOutcome, detect_review_provider,
 };
 use crate::settings;
 use crate::stack;
@@ -39,40 +39,68 @@ pub struct Merge {
     /// With --all: do not wait for checks, overriding stk.mergeWait.
     #[arg(long, action = ArgAction::SetTrue, requires = "all")]
     no_wait: bool,
+    /// Merge past the branch rules your account may bypass, such as required
+    /// checks or reviews (GitHub and Gitea/Forgejo). Never waits for checks;
+    /// a stack is merged bottom-up, one review at a time.
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with_all = ["auto", "wait"])]
+    admin: bool,
 }
 
 impl Run for Merge {
     fn run(self) -> Result<()> {
+        let mode = match (self.auto, self.admin) {
+            (true, _) => MergeMode::Auto,
+            (_, true) => MergeMode::Admin,
+            _ => MergeMode::Now,
+        };
         if self.all {
             // Waiting: --wait forces it on, --no-wait off; otherwise
-            // stk.mergeWait decides.
+            // stk.mergeWait decides. An admin merge never waits: getting past
+            // the checks is what it is for.
             let wait = if self.wait {
                 true
-            } else if self.no_wait {
+            } else if self.no_wait || self.admin {
                 false
             } else {
                 settings::bool_setting(settings::MERGE_WAIT_KEY)?
             };
-            merge_all(self.dry_run, self.yes, wait)
+            merge_all(self.dry_run, self.yes, wait, mode)
         } else {
-            merge(self.dry_run, self.yes, self.auto)
+            merge(self.dry_run, self.yes, mode)
         }
     }
 }
 
-fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
+/// Refuse an admin merge a platform has no way to make, before anything is
+/// asked or merged.
+fn check_admin(
+    review_provider: &dyn ReviewProvider,
+    kind: ProviderKind,
+    mode: MergeMode,
+) -> Result<()> {
+    if mode == MergeMode::Admin && !review_provider.admin_merge() {
+        bail!(
+            "{kind} has no merge past its rules that git-stk can ask for; --admin works on GitHub and Gitea/Forgejo"
+        );
+    }
+    Ok(())
+}
+
+fn merge(dry_run: bool, yes: bool, merge_mode: MergeMode) -> Result<()> {
+    let auto = merge_mode == MergeMode::Auto;
     let Some(bottom) = bottom_branch()? else {
         bail!(nothing_to_merge_hint()?);
     };
 
     let (provider, review_provider) = detect_review_provider()?;
+    check_admin(review_provider.as_ref(), provider.kind, merge_mode)?;
     let review = open_review_for(review_provider.as_ref(), provider.kind, &bottom)?;
 
     let strategy = settings::merge_strategy()?;
-    let mode = if auto {
-        format!("{strategy}, auto")
-    } else {
-        strategy.clone()
+    let mode = match merge_mode {
+        MergeMode::Auto => format!("{strategy}, auto"),
+        MergeMode::Admin => format!("{strategy}, admin: past the branch rules"),
+        MergeMode::Now => strategy.clone(),
     };
     let label = review.label();
 
@@ -117,7 +145,7 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
         review_provider.as_ref(),
         &review,
         &strategy,
-        auto,
+        merge_mode,
         QueuedNext::Sync,
     )? {
         // Reconcile everything the merge changed: fetch, clean up, restack,
@@ -135,12 +163,14 @@ fn merge(dry_run: bool, yes: bool, auto: bool) -> Result<()> {
 /// A registered GitHub stack lands whole instead - see [`whole_stack_top`] -
 /// so that path makes one merge of the top and reports for the line rather
 /// than looping.
-fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
+fn merge_all(dry_run: bool, yes: bool, wait: bool, merge_mode: MergeMode) -> Result<()> {
     let Some(bottom) = bottom_branch()? else {
         bail!(nothing_to_merge_hint()?);
     };
 
     let (provider, review_provider) = detect_review_provider()?;
+    check_admin(review_provider.as_ref(), provider.kind, merge_mode)?;
+    let admin = merge_mode == MergeMode::Admin;
     let strategy = settings::merge_strategy()?;
 
     // What is about to land, bottom-up, for the dry run and the prompt: the
@@ -161,7 +191,18 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
 
     // A registered stack lands whole from its top, so that is one call for
     // the entire line rather than one landing per layer.
-    let whole = whole_stack_top(review_provider.as_ref(), &branches, &base);
+    // GitHub bypasses rules only for a stack's bottom-most unmerged review,
+    // so an admin merge walks the stack.
+    let whole = if admin {
+        None
+    } else {
+        whole_stack_top(review_provider.as_ref(), &branches, &base)
+    };
+    let how = if admin {
+        format!("{strategy}, admin: past the branch rules")
+    } else {
+        strategy.clone()
+    };
 
     if dry_run {
         if let Some((top, via)) = &whole {
@@ -198,7 +239,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
                 anstream::println!("would wait for checks on {}", review.id);
             }
             anstream::println!(
-                "would merge {} into {} ({strategy})",
+                "would merge {} into {} ({how})",
                 review.label(),
                 review.base
             );
@@ -215,7 +256,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
             format!("merge {count} reviews into {base} in one call ({strategy})? [y/N] ")
         }
         None => format!(
-            "merge {count} review{} into {base}, bottom-up ({strategy})? [y/N] ",
+            "merge {count} review{} into {base}, bottom-up ({how})? [y/N] ",
             if count == 1 { "" } else { "s" }
         ),
     };
@@ -291,7 +332,7 @@ fn merge_all(dry_run: bool, yes: bool, wait: bool) -> Result<()> {
             review_provider.as_ref(),
             &review,
             &strategy,
-            false,
+            merge_mode,
             if above {
                 QueuedNext::SyncThen("git stk merge --all")
             } else {
@@ -479,12 +520,12 @@ fn merge_and_check(
     review_provider: &dyn ReviewProvider,
     review: &ReviewRequest,
     strategy: &str,
-    auto: bool,
+    mode: MergeMode,
     next: QueuedNext<'_>,
 ) -> Result<MergeOutcome> {
     let label = review.label();
 
-    let output = match review_provider.merge_review(review, strategy, auto) {
+    let output = match review_provider.merge_review(review, strategy, mode) {
         Ok(output) => output,
         Err(error) => return Err(explain_merge_failure(review_provider, review, error)),
     };
@@ -678,7 +719,7 @@ fn land_whole_stack(
         review_provider,
         &review,
         strategy,
-        false,
+        MergeMode::Now,
         QueuedNext::Deferred,
     )? {
         MergeOutcome::Enqueued => {

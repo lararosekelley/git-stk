@@ -256,7 +256,18 @@ impl ReviewProvider for GitHubProvider {
         )))
     }
 
-    fn merge_review(&self, review: &ReviewRequest, strategy: &str, auto: bool) -> Result<String> {
+    fn admin_merge(&self) -> bool {
+        true
+    }
+
+    fn merge_review(
+        &self,
+        review: &ReviewRequest,
+        strategy: &str,
+        mode: super::MergeMode,
+    ) -> Result<String> {
+        let auto = mode == super::MergeMode::Auto;
+        let admin = mode == super::MergeMode::Admin;
         let flag = match strategy {
             "rebase" => "--rebase",
             "merge" => "--merge",
@@ -278,19 +289,22 @@ impl ReviewProvider for GitHubProvider {
                 ))
                 .into());
             }
-            return async_merge(review, strategy);
+            return async_merge(review, strategy, admin);
         }
 
         let mut args = vec!["pr", "merge", review.id_value(), flag];
         if auto {
             args.push("--auto");
         }
+        if admin {
+            args.push("--admin");
+        }
         merge_with_retry(|| command_output("gh", &args)).or_else(|error| {
             // GitHub knows of a stack the listing did not show: take the
             // endpoint it names.
             if !auto && needs_async_merge(&error) {
                 forget_stacks_listing();
-                return async_merge(review, strategy);
+                return async_merge(review, strategy, admin);
             }
             Err(error)
         })
@@ -1271,15 +1285,19 @@ impl std::error::Error for MergeMethodRefused {}
 /// have been obeyed anyway. The match stays broad while the note names the
 /// queue: every refusal seen has been one, and the sentence is the clearer for
 /// saying so.
-fn async_merge(review: &ReviewRequest, strategy: &str) -> Result<String> {
-    let first = attempt_async_merge(review, Some(strategy));
+///
+/// With `bypass`, the merge goes straight into the base past the rules the
+/// account may bypass, as `gh pr merge --admin` does. GitHub allows that only
+/// for the bottom-most unmerged review of a stack.
+fn async_merge(review: &ReviewRequest, strategy: &str, bypass: bool) -> Result<String> {
+    let first = attempt_async_merge(review, Some(strategy), bypass);
     match &first {
         Err(error) if error.is::<MergeMethodRefused>() => {}
         _ => return first,
     }
     // `?`: a re-send that never lands leaves nothing to say about which method
     // decided the merge, and a second refusal reports itself in full.
-    let outcome = attempt_async_merge(review, None)?;
+    let outcome = attempt_async_merge(review, None, bypass)?;
     anstream::eprintln!(
         "{}",
         crate::style::warn(&format!(
@@ -1291,18 +1309,26 @@ fn async_merge(review: &ReviewRequest, strategy: &str) -> Result<String> {
 }
 
 /// One enqueue-and-wait, with or without a merge method.
-fn attempt_async_merge(review: &ReviewRequest, strategy: Option<&str>) -> Result<String> {
+fn attempt_async_merge(
+    review: &ReviewRequest,
+    strategy: Option<&str>,
+    bypass: bool,
+) -> Result<String> {
     // Only the enqueue is retried: the `PUT` is not idempotent, so wrapping
     // the wait in the retry too would re-ask GitHub to merge a review that is
     // already merging whenever a poll blipped.
-    let (path, output) = merge_with_retry(|| enqueue_async_merge(review, strategy))?;
+    let (path, output) = merge_with_retry(|| enqueue_async_merge(review, strategy, bypass))?;
     await_async_merge(review, &path, &output)
 }
 
 /// Ask GitHub to start the merge. Split from the wait because the `PUT` is not
 /// idempotent: retrying it after a transient failure *later* in the sequence
 /// would ask for a second merge of a review already merging.
-fn enqueue_async_merge(review: &ReviewRequest, strategy: Option<&str>) -> Result<(String, String)> {
+fn enqueue_async_merge(
+    review: &ReviewRequest,
+    strategy: Option<&str>,
+    bypass: bool,
+) -> Result<(String, String)> {
     let (owner, repo) = repo_owner_name().context("could not resolve the GitHub repository")?;
     let number = review_number(&review.id)
         .with_context(|| format!("could not read a pull request number from {}", review.id))?;
@@ -1311,6 +1337,10 @@ fn enqueue_async_merge(review: &ReviewRequest, strategy: Option<&str>) -> Result
     let method = strategy.map(|strategy| format!("merge_method={strategy}"));
     if let Some(method) = &method {
         args.extend_from_slice(&["-f", method]);
+    }
+    if bypass {
+        // Straight in, past the queue too, as `gh pr merge --admin` does.
+        args.extend_from_slice(&["-F", "bypass_rules=true", "-f", "merge_action=direct_merge"]);
     }
     let output = command_output("gh", &args)?;
     // The PUT is the write: from here GitHub is landing the layer, so a cached
