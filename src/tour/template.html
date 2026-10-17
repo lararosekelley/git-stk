@@ -13,92 +13,93 @@ try {
 } catch (error) {}
 </script>
 <style>
+/*CALLIE_CSS*/
+/* The tour's colors, from Callie's palette in greylocklabs/themes, which sets
+   the --callie-* variables above for light, dark and data-theme alike. */
 :root {
-  /* Callie Light, from the Callie calendar */
   --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%23fbf5f8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  --bg: #fbf5f8;
-  --bg-soft: #f3e7ee;
-  --fg: #2b1a26;
-  --fg-muted: #6b5562;
-  --border: #e0ccd7;
-  --accent: #e45f97;
-  --accent-fg: #2e0f20;
-  --accent-ink: #a83a6d;
-  --accent-edge: #a83a6d;
-  --add-bg: #e2f1e5;
-  --add-num: #cbe6d1;
-  --del-bg: #fadbe3;
-  --del-num: #f3c2cf;
-  --hunk-bg: #f1e3ef;
-  --empty-bg: #f3e7ee;
-  --done: #2f8a50;
-  --removed: #c93c45;
-  --hl-keyword: #7d4cc0;
-  --hl-string: #2f7d4a;
-  --hl-comment: #8f7a87;
-  --hl-title: #3a62b5;
-  --hl-constant: #b5571c;
-  --hl-type: #86650c;
-  --hl-tag: #a83a6d;
+  --bg: var(--callie-bg);
+  --bg-soft: var(--callie-surface-alt);
+  --fg: var(--callie-fg);
+  --fg-muted: var(--callie-muted);
+  --border: var(--callie-border);
+  --accent: var(--callie-accent);
+  --accent-fg: var(--callie-accent-text);
+  --accent-ink: var(--callie-accent-edge);
+  --accent-edge: var(--callie-accent-edge);
+  --add-bg: var(--callie-added-bg);
+  --add-num: var(--callie-added-hl);
+  --del-bg: var(--callie-removed-bg);
+  --del-num: var(--callie-removed-hl);
+  --hunk-bg: var(--callie-surface-alt);
+  --empty-bg: var(--callie-surface-alt);
+  --done: var(--callie-green);
+  --removed: var(--callie-red);
+  --hl-keyword: var(--callie-magenta);
+  --hl-string: var(--callie-green);
+  --hl-comment: var(--callie-comment);
+  --hl-title: var(--callie-blue);
+  --hl-constant: var(--callie-yellow);
+  --hl-type: var(--callie-cyan);
+  --hl-tag: var(--callie-accent-edge);
   --shadow: rgba(92, 42, 71, .18);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    /* Callie */
     --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%231c1220' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    --bg: #1c1220;
-    --bg-soft: #261a2a;
-    --fg: #f6eef5;
-    --fg-muted: #c9b7c6;
-    --border: #3d2c42;
-    --accent: #f08fb8;
-    --accent-fg: #2e0f20;
-    --accent-ink: #f08fb8;
-    --accent-edge: #a64b7a;
-    --add-bg: #1f2f28;
-    --add-num: #2b4537;
-    --del-bg: #3a1b28;
-    --del-num: #57283c;
-    --hunk-bg: #33243a;
-    --empty-bg: #170f1a;
-    --done: #9cd8ab;
-    --removed: #e66e6d;
-    --hl-keyword: #c9a7f5;
-    --hl-string: #a8dcb0;
-    --hl-comment: #9a8797;
-    --hl-title: #a9c4f5;
-    --hl-constant: #f5b38a;
-    --hl-type: #f0d58c;
-    --hl-tag: #f08fb8;
+    --bg: var(--callie-bg);
+    --bg-soft: var(--callie-surface);
+    --fg: var(--callie-fg);
+    --fg-muted: var(--callie-muted);
+    --border: var(--callie-border);
+    --accent: var(--callie-accent);
+    --accent-fg: var(--callie-accent-text);
+    --accent-ink: var(--callie-accent);
+    --accent-edge: var(--callie-accent-edge);
+    --add-bg: var(--callie-added-bg);
+    --add-num: var(--callie-added-hl);
+    --del-bg: var(--callie-removed-bg);
+    --del-num: var(--callie-removed-hl);
+    --hunk-bg: var(--callie-surface-alt);
+    --empty-bg: var(--callie-edge);
+    --done: var(--callie-green);
+    --removed: var(--callie-red);
+    --hl-keyword: var(--callie-magenta);
+    --hl-string: var(--callie-green);
+    --hl-comment: var(--callie-comment);
+    --hl-title: var(--callie-blue);
+    --hl-constant: var(--callie-yellow);
+    --hl-type: var(--callie-cyan);
+    --hl-tag: var(--callie-accent);
     --shadow: rgba(0, 0, 0, .5);
   }
 }
 :root[data-theme="dark"] {
   --check-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5 6.8 11 12 5.5' fill='none' stroke='%231c1220' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  --bg: #1c1220;
-  --bg-soft: #261a2a;
-  --fg: #f6eef5;
-  --fg-muted: #c9b7c6;
-  --border: #3d2c42;
-  --accent: #f08fb8;
-  --accent-fg: #2e0f20;
-  --accent-ink: #f08fb8;
-  --accent-edge: #a64b7a;
-  --add-bg: #1f2f28;
-  --add-num: #2b4537;
-  --del-bg: #3a1b28;
-  --del-num: #57283c;
-  --hunk-bg: #33243a;
-  --empty-bg: #170f1a;
-  --done: #9cd8ab;
-  --removed: #e66e6d;
-  --hl-keyword: #c9a7f5;
-  --hl-string: #a8dcb0;
-  --hl-comment: #9a8797;
-  --hl-title: #a9c4f5;
-  --hl-constant: #f5b38a;
-  --hl-type: #f0d58c;
-  --hl-tag: #f08fb8;
+  --bg: var(--callie-bg);
+  --bg-soft: var(--callie-surface);
+  --fg: var(--callie-fg);
+  --fg-muted: var(--callie-muted);
+  --border: var(--callie-border);
+  --accent: var(--callie-accent);
+  --accent-fg: var(--callie-accent-text);
+  --accent-ink: var(--callie-accent);
+  --accent-edge: var(--callie-accent-edge);
+  --add-bg: var(--callie-added-bg);
+  --add-num: var(--callie-added-hl);
+  --del-bg: var(--callie-removed-bg);
+  --del-num: var(--callie-removed-hl);
+  --hunk-bg: var(--callie-surface-alt);
+  --empty-bg: var(--callie-edge);
+  --done: var(--callie-green);
+  --removed: var(--callie-red);
+  --hl-keyword: var(--callie-magenta);
+  --hl-string: var(--callie-green);
+  --hl-comment: var(--callie-comment);
+  --hl-title: var(--callie-blue);
+  --hl-constant: var(--callie-yellow);
+  --hl-type: var(--callie-cyan);
+  --hl-tag: var(--callie-accent);
   --shadow: rgba(0, 0, 0, .5);
 }
 :root[data-theme="light"] { color-scheme: light; }

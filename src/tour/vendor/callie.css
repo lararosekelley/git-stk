@@ -1,0 +1,84 @@
+/* Generated from palettes/callie.toml and callie-light.toml by scripts/generate.py; edit the palette, not this file. */
+:root {
+  --callie-fg: #2b1a26;
+  --callie-bg: #fbf5f8;
+  --callie-muted: #6b5562;
+  --callie-faint: #8f7a87;
+  --callie-surface: #fffafc;
+  --callie-surface-alt: #f3e7ee;
+  --callie-border: #e0ccd7;
+  --callie-hairline: #efe2e9;
+  --callie-edge: #dcc8d3;
+  --callie-accent: #e45f97;
+  --callie-accent-text: #2e0f20;
+  --callie-accent-edge: #a83a6d;
+  --callie-selection: #e0ccd7;
+  --callie-red: #963638;
+  --callie-green: #046e30;
+  --callie-yellow: #715700;
+  --callie-blue: #1e5ba1;
+  --callie-magenta: #8f3560;
+  --callie-cyan: #08686c;
+  --callie-comment: #6b5562;
+  --callie-added-bg: #d3dfd8;
+  --callie-removed-bg: #ebd6d9;
+  --callie-changed-bg: #dcdfec;
+  --callie-added-hl: #accab8;
+  --callie-removed-hl: #dbb8bb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --callie-fg: #f6eef5;
+    --callie-bg: #1c1220;
+    --callie-muted: #c9b7c6;
+    --callie-faint: #9a8797;
+    --callie-surface: #261a2a;
+    --callie-surface-alt: #33243a;
+    --callie-border: #3d2c42;
+    --callie-hairline: #2c2031;
+    --callie-edge: #140c17;
+    --callie-accent: #f08fb8;
+    --callie-accent-text: #2e0f20;
+    --callie-accent-edge: #a64b7a;
+    --callie-selection: #3d2c42;
+    --callie-red: #f4918e;
+    --callie-green: #76c788;
+    --callie-yellow: #d1ac4e;
+    --callie-blue: #7cb4fc;
+    --callie-magenta: #ec90b7;
+    --callie-cyan: #30c8cf;
+    --callie-comment: #9a8797;
+    --callie-added-bg: #2a2f31;
+    --callie-removed-bg: #3f2632;
+    --callie-changed-bg: #29293f;
+    --callie-added-hl: #394c41;
+    --callie-removed-hl: #613b43;
+  }
+}
+:root[data-theme="dark"] {
+  --callie-fg: #f6eef5;
+  --callie-bg: #1c1220;
+  --callie-muted: #c9b7c6;
+  --callie-faint: #9a8797;
+  --callie-surface: #261a2a;
+  --callie-surface-alt: #33243a;
+  --callie-border: #3d2c42;
+  --callie-hairline: #2c2031;
+  --callie-edge: #140c17;
+  --callie-accent: #f08fb8;
+  --callie-accent-text: #2e0f20;
+  --callie-accent-edge: #a64b7a;
+  --callie-selection: #3d2c42;
+  --callie-red: #f4918e;
+  --callie-green: #76c788;
+  --callie-yellow: #d1ac4e;
+  --callie-blue: #7cb4fc;
+  --callie-magenta: #ec90b7;
+  --callie-cyan: #30c8cf;
+  --callie-comment: #9a8797;
+  --callie-added-bg: #2a2f31;
+  --callie-removed-bg: #3f2632;
+  --callie-changed-bg: #29293f;
+  --callie-added-hl: #394c41;
+  --callie-removed-hl: #613b43;
+}

@@ -32,11 +32,15 @@ use diff::{FileDiff, FileStatus, LineKind};
 use steps::Step;
 
 const TEMPLATE: &str = include_str!("template.html");
+/// Callie's palette as CSS variables, from greylocklabs/themes' ports/css/callie.css;
+/// `just update-theme` refreshes it.
+const CALLIE_CSS: &str = include_str!("vendor/callie.css");
 const HIGHLIGHT_JS: &str = include_str!("vendor/highlight.min.js");
 const HIGHLIGHT_LICENSE: &str = include_str!("vendor/highlight.js-LICENSE");
 
 /// The template's placeholders, in the order they appear in it.
 const TITLE_PLACEHOLDER: &str = "<!--TOUR_TITLE-->";
+const THEME_PLACEHOLDER: &str = "/*CALLIE_CSS*/";
 const LICENSE_PLACEHOLDER: &str = "@@HIGHLIGHT_LICENSE@@";
 const HIGHLIGHT_PLACEHOLDER: &str = "/*HIGHLIGHT_JS*/";
 const DATA_PLACEHOLDER: &str = "/*TOUR_DATA*/null";
@@ -350,6 +354,7 @@ impl Tour {
             TEMPLATE,
             &[
                 (TITLE_PLACEHOLDER, &escape_html(&title)),
+                (THEME_PLACEHOLDER, CALLIE_CSS),
                 (LICENSE_PLACEHOLDER, HIGHLIGHT_LICENSE),
                 (HIGHLIGHT_PLACEHOLDER, HIGHLIGHT_JS),
                 (DATA_PLACEHOLDER, &script_json(&self.data(served))),
