@@ -1610,6 +1610,7 @@ mod tests {
     fn template_carries_the_placeholders_in_fill_order() {
         let positions: Vec<usize> = [
             TITLE_PLACEHOLDER,
+            THEME_PLACEHOLDER,
             LICENSE_PLACEHOLDER,
             HIGHLIGHT_PLACEHOLDER,
             DATA_PLACEHOLDER,
@@ -1634,6 +1635,12 @@ mod tests {
         // Either sequence would end the surrounding element early.
         assert!(!HIGHLIGHT_JS.to_ascii_lowercase().contains("</script"));
         assert!(!HIGHLIGHT_LICENSE.contains("--"));
+    }
+
+    #[test]
+    fn vendored_theme_is_safe_to_inline() {
+        // It would end the surrounding <style> element early.
+        assert!(!CALLIE_CSS.to_ascii_lowercase().contains("</style"));
     }
 
     #[test]
