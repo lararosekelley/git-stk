@@ -355,7 +355,7 @@ impl ReviewProvider for GiteaProvider {
                 .filter(|(_, reviews)| match list {
                     InboxList::Returned => latest_decision(reviews) == Decision::ChangesRequested,
                     InboxList::Mine => latest_decision(reviews) != Decision::ChangesRequested,
-                    InboxList::Incoming | InboxList::Team => true,
+                    InboxList::Incoming | InboxList::Team | InboxList::Outside => true,
                 })
                 .collect();
             let statuses = gitea_statuses(&slug, kept.iter().map(|(pull, _)| *pull))?;
@@ -380,6 +380,14 @@ impl ReviewProvider for GiteaProvider {
         Ok(lists
             .iter()
             .map(|&list| {
+                if list == InboxList::Outside {
+                    return (
+                        list,
+                        Listing::Unsupported(
+                            "only GitHub lists reviews outside your organizations".to_owned(),
+                        ),
+                    );
+                }
                 let found =
                     listing(list).unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
                 (list, found)
@@ -715,6 +723,7 @@ fn in_gitea_list(pull: &Value, list: InboxList, me: &str, teams: &[u64]) -> bool
         InboxList::Incoming => named && !author,
         InboxList::Team => teamed && !named && !author,
         InboxList::Mine | InboxList::Returned => author,
+        InboxList::Outside => false,
     }
 }
 

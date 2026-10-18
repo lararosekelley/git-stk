@@ -6,6 +6,14 @@ published into that release's GitHub notes by `dist`, so the headings must stay
 
 ## 0.16.2
 
+### Added
+
+- **inbox:** `--filter outside` lists your open pull requests anywhere on
+  GitHub in repositories owned by neither you nor an organization you belong
+  to, each named with its repository, such as `owner/repo#12`. It reaches
+  beyond the current repository, so it is shown only when asked for. GitLab
+  and Gitea/Forgejo say they have no such list.
+
 ### Changed
 
 - **tour:** the page takes its colors from Callie's palette in

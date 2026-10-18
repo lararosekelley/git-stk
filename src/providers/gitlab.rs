@@ -842,6 +842,9 @@ fn parse_gitlab_inbox(
                 InboxList::Team => {
                     Listing::Unsupported("GitLab has no team review requests".to_owned())
                 }
+                InboxList::Outside => Listing::Unsupported(
+                    "only GitHub lists reviews outside your organizations".to_owned(),
+                ),
                 InboxList::Incoming => {
                     let entries = requested
                         .iter()

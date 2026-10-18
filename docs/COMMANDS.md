@@ -207,7 +207,7 @@ git stk review [branch | number | url]
 git stk view [branch | number | url]
 git stk tour [branch | number | url] [--style standard|agentTour|agentReview] [--agent <command>] [--plan <file>]
              [--refresh-plan] [--no-stack] [--local] [--no-open] [-o <path> | --findings]
-git stk inbox [--filter incoming,returned,team,mine] [--limit <n>] [--sort updated|created|size]
+git stk inbox [--filter incoming,returned,team,mine,outside] [--limit <n>] [--sort updated|created|size]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --admin | --all [--wait | --no-wait | --admin]] [--dry-run]
@@ -348,17 +348,19 @@ instead writes a read-only snapshot of the page to a file and exits.
 
 `inbox` lists the reviews in this repository that wait on you, in four lists: requested of you by name
 (`incoming`), yours with changes requested (`returned`), requested of a team you are on and not of you by name
-(`team`), and the rest of yours (`mine`). Each review shows its CI status, number, title, size, author, last
-update, approval or requested changes, open threads, and whether it is a draft. A review is marked `new` when
-someone else has commented, reviewed, or pushed since you last looked, on the forge or with `git stk tour`,
-which notes when you toured each review; one you have never looked at is not marked, and bots do not count:
-GitHub apps, accounts named like `gitlab-bot` or `ci_bot`, and machine users you list in `stk.inboxBots`.
-Gitea and Forgejo count comments and reviews but not pushes. `--filter` takes a comma-separated subset of the
-lists, `--limit` how many reviews each shows (default 10), and `--sort` their order: most recently `updated`
-(the default), most recently `created`, or largest `size` first. Up to 50 reviews are fetched per list. GitLab
-has no team review requests, so `team` says so there, and a merge request you have reviewed leaves `incoming`
-until it is requested of you again. Gitea and Forgejo are asked per pull for reviews and CI, and have no count
-of open threads to show.
+(`team`), and the rest of yours (`mine`). On GitHub, `--filter outside` adds a fifth list, shown only when
+asked for: your open pull requests anywhere on GitHub in repositories owned by neither you nor an organization
+you belong to, each named with its repository, such as `owner/repo#12`. Each review shows its CI status,
+number, title, size, author, last update, approval or requested changes, open threads, and whether it is a
+draft. A review is marked `new` when someone else has commented, reviewed, or pushed since you last looked, on
+the forge or with `git stk tour`, which notes when you toured each review; one you have never looked at is not
+marked, and bots do not count: GitHub apps, accounts named like `gitlab-bot` or `ci_bot`, and machine users
+you list in `stk.inboxBots`. Gitea and Forgejo count comments and reviews but not pushes. `--filter` takes a
+comma-separated subset of the lists, `--limit` how many reviews each shows (default 10), and `--sort` their
+order: most recently `updated` (the default), most recently `created`, or largest `size` first. Up to 50
+reviews are fetched per list. GitLab has no team review requests, so `team` says so there, and a merge request
+you have reviewed leaves `incoming` until it is requested of you again. Gitea and Forgejo are asked per pull
+for reviews and CI, and have no count of open threads to show.
 
 `comment` posts a comment on the current branch's review (`--branch` picks another), through the provider
 CLI - handy for a review bot that answers a mention: `git stk comment "@claude review"`.
