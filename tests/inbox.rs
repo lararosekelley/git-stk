@@ -398,13 +398,21 @@ fn outside_lists_yours_beyond_you_and_your_organizations() {
         r#""isDraft""#,
         r#""repository":{"nameWithOwner":"stranger/lib"},"isDraft""#,
     );
+    // This repository, when owned by a stranger, is named like any other.
+    let here = pull(8, "Fork work", "me", "SUCCESS", "REVIEW_REQUIRED", 0).replace(
+        r#""isDraft""#,
+        r#""repository":{"nameWithOwner":"owner/repo"},"isDraft""#,
+    );
     let fake = FakeProvider::new()
         .on("repo view", r#"{"nameWithOwner":"owner/repo"}"#)
         .on(
             "organizations",
             r#"{"data":{"viewer":{"login":"me","organizations":{"nodes":[{"login":"acme"},{"login":"widgets"}]}}}}"#,
         )
-        .on("-user:me -org:acme -org:widgets", &search(1, &[&elsewhere]))
+        .on(
+            "-user:me -org:acme -org:widgets",
+            &search(2, &[&elsewhere, &here]),
+        )
         .fallback_fail("unexpected provider call")
         .install(&repo);
 
@@ -412,8 +420,9 @@ fn outside_lists_yours_beyond_you_and_your_organizations() {
         .args(["inbox", "--filter", "outside"])
         .assert()
         .success()
-        .stdout(contains("Yours outside your organizations (1)"))
+        .stdout(contains("Yours outside your organizations (2)"))
         .stdout(contains("stranger/lib#4 Fix a typo"))
+        .stdout(contains("owner/repo#8   Fork work"))
         .stdout(contains("me,").not())
         .stdout(contains("hint:").not());
 }

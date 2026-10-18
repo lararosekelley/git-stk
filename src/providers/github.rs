@@ -457,15 +457,21 @@ impl ReviewProvider for GitHubProvider {
                                 command_output("gh", &["api", "graphql", "-f", &query_arg])
                             })
                         };
-                        let search = match list {
-                            InboxList::Outside => graphql(OUTSIDE_OWNERS_QUERY)
-                                .and_then(|output| parse_github_owners(&output))
-                                .map(|owners| outside_search(&owners)),
-                            _ => Ok(format!("repo:{slug} {}", inbox_search(list))),
+                        let (search, here) = match list {
+                            InboxList::Outside => (
+                                graphql(OUTSIDE_OWNERS_QUERY)
+                                    .and_then(|output| parse_github_owners(&output))
+                                    .map(|owners| outside_search(&owners)),
+                                None,
+                            ),
+                            _ => (
+                                Ok(format!("repo:{slug} {}", inbox_search(list))),
+                                Some(slug.as_str()),
+                            ),
                         };
                         let listing = search
                             .and_then(|search| graphql(&inbox_query(&search)))
-                            .and_then(|output| parse_github_inbox(&output, slug))
+                            .and_then(|output| parse_github_inbox(&output, here))
                             .unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
                         (list, listing)
                     })
@@ -1028,9 +1034,9 @@ fn inbox_query(search: &str) -> String {
     )
 }
 
-/// The reviews an inbox search found. One outside `slug`, this repository,
-/// is named with its repository: `owner/repo#12`.
-fn parse_github_inbox(json: &str, slug: &str) -> Result<Listing> {
+/// The reviews an inbox search found, each named with its repository, such
+/// as `owner/repo#12`, unless it is in `here`, the repository searched.
+fn parse_github_inbox(json: &str, here: Option<&str>) -> Result<Listing> {
     let value: serde_json::Value =
         serde_json::from_str(json).context("failed to parse gh inbox JSON")?;
     let search = &value["data"]["search"];
@@ -1041,21 +1047,24 @@ fn parse_github_inbox(json: &str, slug: &str) -> Result<Listing> {
         .as_array()
         .context("gh answered the inbox search without results")?
         .iter()
-        .map(|node| github_inbox_entry(node, me, slug))
+        .map(|node| github_inbox_entry(node, me, here))
         .collect::<Result<Vec<_>>>()?;
     let more = search["issueCount"].as_u64().unwrap_or(0) > entries.len() as u64;
     Ok(Listing::Found { entries, more })
 }
 
-fn github_inbox_entry(node: &serde_json::Value, me: &str, slug: &str) -> Result<InboxEntry> {
+fn github_inbox_entry(
+    node: &serde_json::Value,
+    me: &str,
+    here: Option<&str>,
+) -> Result<InboxEntry> {
     let number = node["number"]
         .as_u64()
         .context("an inbox review has no number")?;
-    let repository = node["repository"]["nameWithOwner"].as_str().unwrap_or(slug);
-    let repository = if repository.eq_ignore_ascii_case(slug) {
-        ""
-    } else {
-        repository
+    let repository = match (node["repository"]["nameWithOwner"].as_str(), here) {
+        (Some(repository), Some(here)) if !repository.eq_ignore_ascii_case(here) => repository,
+        (Some(repository), None) => repository,
+        _ => "",
     };
     let text = |key: &str| node[key].as_str().unwrap_or_default().to_owned();
     let rollup = node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"].as_str();
