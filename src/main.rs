@@ -98,6 +98,7 @@ fn main() -> ExitCode {
         Command::Downgrade(command) => command.run(),
         Command::Cleanup(command) => command.run(),
         Command::Credits(command) => command.run(),
+        Command::Donate(command) => command.run(),
     };
 
     match result {
@@ -129,6 +130,7 @@ fn needs_repo(command: &Command) -> bool {
             | Command::Completions(_)
             | Command::Guide(_)
             | Command::Credits(_)
+            | Command::Donate(_)
     )
 }
 
@@ -189,6 +191,7 @@ fn lock_name(command: &Command) -> Option<&'static str> {
         | Command::Uninstall(_)
         | Command::Upgrade(_)
         | Command::Downgrade(_)
-        | Command::Credits(_) => None,
+        | Command::Credits(_)
+        | Command::Donate(_) => None,
     }
 }

@@ -13,6 +13,7 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   to, each named with its repository, such as `owner/repo#12`. It reaches
   beyond the current repository, so it is shown only when asked for. GitLab
   and Gitea/Forgejo say they have no such list.
+- **cli:** `git stk donate` opens git-stk's Ko-fi page in your browser.
 
 ### Changed
 
