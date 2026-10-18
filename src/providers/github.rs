@@ -2929,4 +2929,35 @@ mod tests {
         assert!(full.contains("stack{number size}"));
         assert!(full.contains("stackEntry{position}"));
     }
+
+    #[test]
+    fn outside_leaves_out_you_then_each_organization() {
+        let owners = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(outside_search(&owners(&["me"])), "author:@me -user:me");
+        assert_eq!(
+            outside_search(&owners(&["me", "acme"])),
+            "author:@me -user:me -org:acme"
+        );
+        assert_eq!(
+            outside_search(&owners(&["me", "acme", "widgets"])),
+            "author:@me -user:me -org:acme -org:widgets"
+        );
+    }
+
+    #[test]
+    fn the_owners_put_your_login_first() {
+        let owners = parse_github_owners(
+            r#"{"data":{"viewer":{"login":"me","organizations":{"nodes":[{"login":"acme"},{"login":"widgets"}]}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(owners, ["me", "acme", "widgets"]);
+        let alone = parse_github_owners(r#"{"data":{"viewer":{"login":"me"}}}"#).unwrap();
+        assert_eq!(alone, ["me"]);
+        assert!(parse_github_owners(r#"{"data":{"viewer":{}}}"#).is_err());
+    }
 }
