@@ -17,11 +17,31 @@ pub enum InboxList {
     Mine,
     /// Your open reviews with changes requested.
     Returned,
+    /// Your open reviews in repositories owned by neither you nor an
+    /// organization you belong to, wherever they are on the forge.
+    Outside,
 }
 
 impl InboxList {
     /// Every list, in the order shown: what waits on you first.
-    pub const ALL: [Self; 4] = [Self::Incoming, Self::Returned, Self::Team, Self::Mine];
+    pub const ALL: [Self; 5] = [
+        Self::Incoming,
+        Self::Returned,
+        Self::Team,
+        Self::Mine,
+        Self::Outside,
+    ];
+
+    /// Whether the list is shown without `--filter`. Outside reaches beyond
+    /// this repository, so it is only shown when asked for.
+    pub fn shown_by_default(self) -> bool {
+        self != Self::Outside
+    }
+
+    /// Whether the reviews in the list are your own.
+    pub fn is_yours(self) -> bool {
+        matches!(self, Self::Mine | Self::Returned | Self::Outside)
+    }
 
     pub fn title(self) -> &'static str {
         match self {
@@ -29,6 +49,7 @@ impl InboxList {
             Self::Team => "Requested of your teams",
             Self::Mine => "Yours",
             Self::Returned => "Returned to you",
+            Self::Outside => "Yours outside your organizations",
         }
     }
 }

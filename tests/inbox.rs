@@ -390,3 +390,30 @@ fn a_tour_counts_as_looking_for_the_inbox() {
     std::fs::write(tours.join("seen.json"), r##"{"#6":1791763200}"##).unwrap();
     assert!(!listed(&repo).contains("new"), "{}", listed(&repo));
 }
+
+#[test]
+fn outside_lists_yours_beyond_you_and_your_organizations() {
+    let repo = github_repo();
+    let elsewhere = pull(4, "Fix a typo", "me", "SUCCESS", "REVIEW_REQUIRED", 0).replace(
+        r#""isDraft""#,
+        r#""repository":{"nameWithOwner":"stranger/lib"},"isDraft""#,
+    );
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"owner/repo"}"#)
+        .on(
+            "organizations",
+            r#"{"data":{"viewer":{"login":"me","organizations":{"nodes":[{"login":"acme"},{"login":"widgets"}]}}}}"#,
+        )
+        .on("-user:me -org:acme -org:widgets", &search(1, &[&elsewhere]))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["inbox", "--filter", "outside"])
+        .assert()
+        .success()
+        .stdout(contains("Yours outside your organizations (1)"))
+        .stdout(contains("stranger/lib#4 Fix a typo"))
+        .stdout(contains("me,").not())
+        .stdout(contains("hint:").not());
+}

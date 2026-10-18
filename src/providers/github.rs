@@ -449,13 +449,24 @@ impl ReviewProvider for GitHubProvider {
             let asked: Vec<_> = lists
                 .iter()
                 .map(|&list| {
-                    let query_arg = format!("query={}", inbox_query(&slug, list));
+                    let slug = &slug;
                     scope.spawn(move || {
-                        let listing = super::retry_server_errors(|| {
-                            command_output("gh", &["api", "graphql", "-f", &query_arg])
-                        })
-                        .and_then(|output| parse_github_inbox(&output))
-                        .unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
+                        let graphql = |query: &str| {
+                            let query_arg = format!("query={query}");
+                            super::retry_server_errors(|| {
+                                command_output("gh", &["api", "graphql", "-f", &query_arg])
+                            })
+                        };
+                        let search = match list {
+                            InboxList::Outside => graphql(OUTSIDE_OWNERS_QUERY)
+                                .and_then(|output| parse_github_owners(&output))
+                                .map(|owners| outside_search(&owners)),
+                            _ => Ok(format!("repo:{slug} {}", inbox_search(list))),
+                        };
+                        let listing = search
+                            .and_then(|search| graphql(&inbox_query(&search)))
+                            .and_then(|output| parse_github_inbox(&output, slug))
+                            .unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
                         (list, listing)
                     })
                 })
@@ -962,27 +973,64 @@ fn github_review_request(submission: &Submission) -> serde_json::Value {
     })
 }
 
-/// The search behind each inbox list. A review requested of you both by name
-/// and through a team is only in `incoming`, and one returned to you only in
-/// `returned`.
+/// The search behind each list of this repository's reviews. A review
+/// requested of you both by name and through a team is only in `incoming`,
+/// and one returned to you only in `returned`.
 fn inbox_search(list: InboxList) -> &'static str {
     match list {
         InboxList::Incoming => "user-review-requested:@me",
         InboxList::Team => "team-review-requested-user:@me -user-review-requested:@me",
         InboxList::Mine => "author:@me -review:changes_requested",
         InboxList::Returned => "author:@me review:changes_requested",
+        InboxList::Outside => "author:@me",
     }
 }
 
-/// The GraphQL query searching `slug` for one list.
-fn inbox_query(slug: &str, list: InboxList) -> String {
+/// You and the organizations you belong to, the owners `outside` leaves out.
+const OUTSIDE_OWNERS_QUERY: &str =
+    "query { viewer { login organizations(first: 100) { nodes { login } } } }";
+
+fn parse_github_owners(json: &str) -> Result<Vec<String>> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).context("failed to parse gh organizations JSON")?;
+    let viewer = &value["data"]["viewer"];
+    let me = viewer["login"]
+        .as_str()
+        .context("gh answered without your login")?;
+    Ok(std::iter::once(me)
+        .chain(
+            viewer["organizations"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|org| org["login"].as_str()),
+        )
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Your reviews in every repository not owned by one of `owners`, the first
+/// of which is you. Qualifiers do not count toward GitHub's limit on a
+/// search's length, so any number of organizations fit.
+fn outside_search(owners: &[String]) -> String {
+    let mut search = inbox_search(InboxList::Outside).to_owned();
+    for (index, owner) in owners.iter().enumerate() {
+        let qualifier = if index == 0 { "user" } else { "org" };
+        search.push_str(&format!(" -{qualifier}:{owner}"));
+    }
+    search
+}
+
+/// The GraphQL query for the open pull requests matching `search`.
+fn inbox_query(search: &str) -> String {
     format!(
-        "query {{ viewer {{ login }} search(type: ISSUE, first: {FETCH_LIMIT}, query: \"repo:{slug} is:pr is:open sort:updated-desc {}\") {{ issueCount nodes {{ ...inboxReview }} }} }} fragment inboxReview on PullRequest {{ number state title url isDraft headRefName baseRefName author {{ login }} createdAt updatedAt additions deletions reviewDecision commits(last: 1) {{ nodes {{ commit {{ committedDate statusCheckRollup {{ state }} }} }} }} reviewThreads(first: 100) {{ nodes {{ isResolved }} }} comments(last: 20) {{ nodes {{ author {{ __typename login }} createdAt }} }} reviews(last: 20) {{ nodes {{ author {{ __typename login }} submittedAt }} }} }}",
-        inbox_search(list)
+        "query {{ viewer {{ login }} search(type: ISSUE, first: {FETCH_LIMIT}, query: \"is:pr is:open sort:updated-desc {search}\") {{ issueCount nodes {{ ...inboxReview }} }} }} fragment inboxReview on PullRequest {{ number state title url isDraft headRefName baseRefName repository {{ nameWithOwner }} author {{ login }} createdAt updatedAt additions deletions reviewDecision commits(last: 1) {{ nodes {{ commit {{ committedDate statusCheckRollup {{ state }} }} }} }} reviewThreads(first: 100) {{ nodes {{ isResolved }} }} comments(last: 20) {{ nodes {{ author {{ __typename login }} createdAt }} }} reviews(last: 20) {{ nodes {{ author {{ __typename login }} submittedAt }} }} }}"
     )
 }
 
-fn parse_github_inbox(json: &str) -> Result<Listing> {
+/// The reviews an inbox search found. One outside `slug`, this repository,
+/// is named with its repository: `owner/repo#12`.
+fn parse_github_inbox(json: &str, slug: &str) -> Result<Listing> {
     let value: serde_json::Value =
         serde_json::from_str(json).context("failed to parse gh inbox JSON")?;
     let search = &value["data"]["search"];
@@ -993,16 +1041,22 @@ fn parse_github_inbox(json: &str) -> Result<Listing> {
         .as_array()
         .context("gh answered the inbox search without results")?
         .iter()
-        .map(|node| github_inbox_entry(node, me))
+        .map(|node| github_inbox_entry(node, me, slug))
         .collect::<Result<Vec<_>>>()?;
     let more = search["issueCount"].as_u64().unwrap_or(0) > entries.len() as u64;
     Ok(Listing::Found { entries, more })
 }
 
-fn github_inbox_entry(node: &serde_json::Value, me: &str) -> Result<InboxEntry> {
+fn github_inbox_entry(node: &serde_json::Value, me: &str, slug: &str) -> Result<InboxEntry> {
     let number = node["number"]
         .as_u64()
         .context("an inbox review has no number")?;
+    let repository = node["repository"]["nameWithOwner"].as_str().unwrap_or(slug);
+    let repository = if repository.eq_ignore_ascii_case(slug) {
+        ""
+    } else {
+        repository
+    };
     let text = |key: &str| node[key].as_str().unwrap_or_default().to_owned();
     let rollup = node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"].as_str();
     let unresolved = node["reviewThreads"]["nodes"].as_array().map(|threads| {
@@ -1013,7 +1067,7 @@ fn github_inbox_entry(node: &serde_json::Value, me: &str) -> Result<InboxEntry> 
     });
     Ok(InboxEntry {
         review: ReviewRequest {
-            id: format!("#{number}"),
+            id: format!("{repository}#{number}"),
             branch: text("headRefName"),
             base: text("baseRefName"),
             state: ReviewState::Open,

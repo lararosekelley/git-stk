@@ -15,7 +15,9 @@ use crate::style;
 pub struct Inbox {
     /// Lists to show, comma-separated: incoming (requested of you), team
     /// (requested of a team you are on), returned (yours, with changes
-    /// requested), mine (yours otherwise). Default: all four.
+    /// requested), mine (yours otherwise), outside (yours in repositories
+    /// owned by neither you nor your organizations, on GitHub). Default: all
+    /// but outside.
     #[arg(long, value_delimiter = ',', value_name = "LISTS")]
     filter: Vec<InboxList>,
     /// Reviews shown per list.
@@ -40,7 +42,13 @@ impl Run for Inbox {
     fn run(self) -> Result<()> {
         let lists: Vec<InboxList> = InboxList::ALL
             .into_iter()
-            .filter(|list| self.filter.is_empty() || self.filter.contains(list))
+            .filter(|list| {
+                if self.filter.is_empty() {
+                    list.shown_by_default()
+                } else {
+                    self.filter.contains(list)
+                }
+            })
             .collect();
         let (_, provider) = detect_review_provider()?;
         let now = std::time::SystemTime::now()
@@ -54,8 +62,10 @@ impl Run for Inbox {
                 println!();
             }
             first = false;
-            waiting |= list != InboxList::Mine
-                && matches!(&listing, Listing::Found { entries, .. } if !entries.is_empty());
+            waiting |= matches!(
+                list,
+                InboxList::Incoming | InboxList::Team | InboxList::Returned
+            ) && matches!(&listing, Listing::Found { entries, .. } if !entries.is_empty());
             for line in render(list, listing, self.limit, self.sort, now, &toured) {
                 anstream::println!("{line}");
             }
@@ -169,7 +179,7 @@ fn row(
         details.push(style::paint(style::CURRENT, "new"));
     }
     // Your own reviews need no author.
-    if !matches!(list, InboxList::Mine | InboxList::Returned) {
+    if !list.is_yours() {
         details.push(entry.author.clone());
     }
     let updated = age(&entry.updated_at, now);
