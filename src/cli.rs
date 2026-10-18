@@ -70,6 +70,7 @@ pub enum Command {
     Uninstall(commands::uninstall::Uninstall),
     Cleanup(commands::cleanup::Cleanup),
     Credits(commands::credits::Credits),
+    Donate(commands::donate::Donate),
 }
 
 /// How many branches an `up`/`down` should move. Zero lands where you already

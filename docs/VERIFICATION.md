@@ -20,7 +20,7 @@ Choose the affected integration targets, then expand if shared behavior changed:
 | Provider operations | `provider`, `gitea`, `submit`, `merge`, `reviews`, `comment` |
 | Review inbox | `inbox`, and the providers' unit tests |
 | Review tours | `tour`, `reviews` |
-| CLI presentation | `list_status`, `list_markdown`, `completions`, `credits`, `demo` |
+| CLI presentation | `list_status`, `list_markdown`, `completions`, `credits`, `donate`, `demo` |
 | Shell setup and lifecycle | `setup`, `upgrade`, `run` |
 
 For example:

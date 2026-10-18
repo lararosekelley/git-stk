@@ -18,6 +18,7 @@ pub mod completions;
 pub mod config;
 pub mod credits;
 pub mod detach;
+pub mod donate;
 pub mod down;
 pub mod downgrade;
 pub mod guide;

@@ -242,6 +242,7 @@ git stk upgrade              # move to the latest release
 git stk downgrade            # step back to an earlier one
 git stk uninstall            # reverse setup and the installer
 git stk credits              # the stacked-workflow tools that inspired this one
+git stk donate               # support git-stk on Ko-fi
 ```
 
 Every flag, and the behavior behind each command, lives in

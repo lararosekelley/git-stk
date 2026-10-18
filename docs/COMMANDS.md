@@ -624,3 +624,6 @@ failure or when stderr is not a terminal - and print a one-line nudge when behin
 `update-check` next to the receipt; `git config stk.noUpdateCheck true` turns it off.
 
 `git stk credits` lists the stacked-workflow tools that inspired git-stk, with a link to each.
+
+`git stk donate` opens [git-stk's Ko-fi page](https://ko-fi.com/sayonara_lara) in your browser, to support
+its development.
