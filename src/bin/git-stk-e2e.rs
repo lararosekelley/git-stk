@@ -676,12 +676,26 @@ fn inbox_lists_your_reviews(provider: Provider, slug: &str, work: &Path) -> Resu
         }
         let yours = listed.split("Yours").nth(1).unwrap_or_default();
         if yours.contains(&format!("{number} ")) {
-            return Ok(());
+            return inbox_lists_outside(provider, work);
         }
     }
     Err(format!(
         "inbox did not list {number} among yours:\n{listed}"
     ))
+}
+
+/// GitHub answers the `outside` list's organizations query and its search.
+fn inbox_lists_outside(provider: Provider, work: &Path) -> Result<(), String> {
+    if !matches!(provider, Provider::Github) {
+        return Ok(());
+    }
+    let listed = stk(work, &["inbox", "--filter", "outside"])?;
+    if listed.contains("could not list these")
+        || !listed.contains("Yours outside your organizations")
+    {
+        return Err(format!("inbox could not list outside:\n{listed}"));
+    }
+    Ok(())
 }
 
 /// The tour data a `--output` snapshot of review `number` holds.
