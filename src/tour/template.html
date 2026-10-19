@@ -481,6 +481,8 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
     moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
     keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+    copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
   };
   var layout = readStorage(layoutKey, "unified") === "split" ? "split" : "unified";
   // Which files show: all, those with open findings, or those not viewed yet.
@@ -1107,13 +1109,14 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     });
   }
 
-  // Findings you set aside, per head, so they stop counting as open.
-  function dismissedKey() {
-    return "git-stk-tour:" + chapter.headSha + ":dismissed";
+  // Findings you set aside, per head, so they stop counting as open. Each
+  // takes the review's chapter, the one shown by default.
+  function dismissedKey(of) {
+    return "git-stk-tour:" + (of || chapter).headSha + ":dismissed";
   }
 
-  function isDismissed(finding) {
-    return !!readStorage(dismissedKey(), {})[findingKey(finding)];
+  function isDismissed(finding, of) {
+    return !!readStorage(dismissedKey(of), {})[findingKey(finding)];
   }
 
   function setDismissed(finding, on) {
@@ -1123,8 +1126,12 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     writeStorage(dismissedKey(), all);
   }
 
-  function openFindings(findings) {
-    return findings.filter(function (finding) { return !isDismissed(finding); });
+  function openFindings(findings, of) {
+    return findings.filter(function (finding) { return !isDismissed(finding, of); });
+  }
+
+  function chapterOpenFindings(of) {
+    return of.plan ? openFindings(of.plan.findings || [], of) : [];
   }
 
   function findingCountText(file) {
@@ -1396,19 +1403,37 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   // The open findings as Markdown for the reader's own agent to work from:
   // where each is, what it is, why it was flagged, and any replacement code.
   function findingsForAgent() {
-    var review = chapter.review;
-    var open = openFindings(chapter.plan.findings || []);
-    var lines = [
-      "Findings from an agent review of " + review.id + (review.title ? " (" + review.title + ")" : "")
-        + ", branch `" + review.branch + "` into `" + review.base + "` at " + chapter.headSha.slice(0, 12) + ".",
-      "Each is something the reviewer would ask to change. Check it against the code before changing anything.",
-    ];
+    return ["Findings from an agent review of " + reviewSummary(chapter) + ".", AGENT_CAUTION]
+      .concat(findingLines(chapterOpenFindings(chapter), "##")).join("\n") + "\n";
+  }
+
+  // The same for every review in the stack with open findings, under a
+  // heading per review.
+  function stackFindingsForAgent() {
+    var lines = ["Findings from an agent review of a stack of " + data.chapters.length + " reviews, bottom first.", AGENT_CAUTION];
+    data.chapters.forEach(function (other) {
+      var open = chapterOpenFindings(other);
+      if (open.length) lines = lines.concat("", "## " + reviewSummary(other), findingLines(open, "###"));
+    });
+    return lines.join("\n") + "\n";
+  }
+
+  var AGENT_CAUTION = "Each is something the reviewer would ask to change. Check it against the code before changing anything.";
+
+  function reviewSummary(of) {
+    var review = of.review;
+    return review.id + (review.title ? " (" + review.title + ")" : "")
+      + ", branch `" + review.branch + "` into `" + review.base + "` at " + of.headSha.slice(0, 12);
+  }
+
+  function findingLines(open, heading) {
+    var lines = [];
     open.forEach(function (finding, index) {
       var where = finding.path + ":" + (finding.startLine ? finding.startLine + "-" : "") + finding.line
         + (finding.side === "old" ? " (old side)" : "");
       var kind = [SEVERITIES[finding.severity] || finding.severity, finding.category ? finding.category.replace("-", " ") : null]
         .filter(Boolean).join(", ");
-      lines.push("", "## " + (index + 1) + ". " + (finding.title || "Finding"), "", "`" + where + "` - " + kind
+      lines.push("", heading + " " + (index + 1) + ". " + (finding.title || "Finding"), "", "`" + where + "` - " + kind
         + (finding.preExisting ? ", pre-existing (not introduced by this change)" : ""));
       if (finding.body) lines.push("", finding.body.trim());
       if (finding.evidence) lines.push("", "Why: " + finding.evidence.trim());
@@ -1419,7 +1444,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
         lines.push("", "Suggested replacement:", "", fence, finding.suggestion.replace(/\n$/, ""), fence);
       }
     });
-    return lines.join("\n") + "\n";
+    return lines;
   }
 
   function copyText(text) {
@@ -1857,6 +1882,7 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
     var top = el("div", { class: "header-top" }, [
       navButton(),
       el("h1", { text: review.title || review.id }),
+      stackFindingsButton(),
       viButton(),
       themeButton(),
     ]);
@@ -1893,6 +1919,32 @@ button.primary, .review-button, button[aria-pressed="true"] { box-shadow: 0 2px 
   function currentTheme() {
     return document.documentElement.getAttribute("data-theme")
       || (darkQuery && darkQuery.matches ? "dark" : "light");
+  }
+
+  // Shown when any review in the tour has findings; a click copies the ones
+  // still open.
+  function stackFindingsButton() {
+    var label = "Copy findings across stack for an agent";
+    var hasFindings = data.chapters.some(function (other) { return other.plan && (other.plan.findings || []).length; });
+    if (!hasFindings) return null;
+    var button = iconButton("copy", function () {
+      var count = data.chapters.reduce(function (sum, other) { return sum + chapterOpenFindings(other).length; }, 0);
+      // With every finding dismissed there is nothing to copy over the clipboard.
+      if (!count) button.title = "No open findings to copy";
+      else copyText(stackFindingsForAgent()).then(function () {
+        setIcon(button, "check");
+        button.title = "Copied " + plural(count, "finding", "findings");
+      }, function () {
+        button.title = "Could not copy";
+      });
+      setTimeout(function () {
+        setIcon(button, "copy");
+        button.title = label;
+      }, 2500);
+    });
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    return button;
   }
 
   function themeButton() {

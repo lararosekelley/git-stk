@@ -321,14 +321,15 @@ high, or critical) for what an unfound one would cost, and a question for the au
 unclear, which Ask in your review adds to the review's summary. Findings are listed most severe first,
 pre-existing ones last, counted on each file, and shown on their lines with a collapsible note on why each was
 flagged. Copy for an agent, under the list, copies the open findings as Markdown (where, what, why, and any
-replacement code) to hand to your own agent. Next finding and Previous finding on each one, and Go to the
-findings under the list, step through them in page order. A finding on a line with an open thread is marked as
-also raised there, and Dismiss sets a finding aside, out of the counts, until it is restored. Add to review
-turns a finding into a drafted line comment, with its replacement code as a suggestion on GitHub, to edit or
-submit with the rest of the review. Plans with findings are saved apart from plans without them. When a review
-has moved on to a new head, the agent follows up on its review of the last one: each earlier finding comes
-back fixed, still open, obsolete, or unclear, with a note, under "Since the review of" a commit, and the
-confidence shows its change since then.
+replacement code) to hand to your own agent, and the copy icon in the page header copies them for every review
+in the stack at once, grouped by review. Next finding and Previous finding on each one, and Go to the findings
+under the list, step through them in page order. A finding on a line with an open thread is marked as also
+raised there, and Dismiss sets a finding aside, out of the counts, until it is restored. Add to review turns a
+finding into a drafted line comment, with its replacement code as a suggestion on GitHub, to edit or submit
+with the rest of the review. Plans with findings are saved apart from plans without them. When a review has
+moved on to a new head, the agent follows up on its review of the last one: each earlier finding comes back
+fixed, still open, obsolete, or unclear, with a note, under "Since the review of" a commit, and the confidence
+shows its change since then.
 
 Show, beside the view toggle, narrows the page to the files with open findings (on an agent review) or to the
 files not yet marked viewed, folding steps with none left; it is kept between tours, and a link to a file it
