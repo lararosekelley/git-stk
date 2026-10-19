@@ -4,6 +4,17 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.3
+
+### Added
+
+- **tour:** a copy icon in the page header, beside the Vi mode and theme
+  buttons, copies the open findings of every review in the stack as one
+  Markdown document for your own agent, grouped by review, bottom first.
+  Findings you dismissed are left out, and with all of them dismissed it
+  copies nothing. It shows whenever any review in the tour has an agent
+  review's findings.
+
 ## 0.16.2
 
 ### Added
