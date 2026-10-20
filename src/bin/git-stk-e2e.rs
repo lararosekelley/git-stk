@@ -684,7 +684,6 @@ fn inbox_lists_your_reviews(provider: Provider, slug: &str, work: &Path) -> Resu
     ))
 }
 
-/// GitHub answers the `outside` list's organizations query and its search.
 /// GitHub answers the `outside` and `org` lists' queries, and the org list
 /// holds the review, named with its repository.
 fn inbox_lists_beyond_the_repository(
