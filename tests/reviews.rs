@@ -1740,3 +1740,50 @@ fn merge_wait_stops_on_a_github_check_that_was_cancelled() {
         "merged past a check the dot reports as held"
     );
 }
+
+#[cfg(not(windows))]
+#[test]
+fn view_opens_a_review_in_another_repository_on_the_same_host() {
+    let repo = TestRepo::new();
+    repo.git(["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+    let fake = FakeProvider::new()
+        .commands(&["gh", "xdg-open", "open"])
+        .record("https://github.com/someone/else/pull/53", "opened.txt", "")
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["view", "someone/else#53"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "opening someone/else#53 https://github.com/someone/else/pull/53",
+        ));
+    assert!(repo.path().join("opened.txt").exists());
+}
+
+#[test]
+fn a_review_named_with_this_repository_is_looked_up_here() {
+    let repo = TestRepo::new();
+    repo.git(["remote", "add", "origin", "git@github.com:Owner/Repo.git"]);
+    let fake = FakeProvider::new()
+        .on(
+            "pr view 12 --json",
+            r##"{"number":12,"state":"OPEN","baseRefName":"feature/a","headRefName":"feature/b","url":"https://github.com/owner/repo/pull/12"}"##,
+        )
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["review", "owner/repo#12"])
+        .assert()
+        .success()
+        .stdout("#12 feature/b -> feature/a open https://github.com/owner/repo/pull/12\n");
+    repo.stack_faked(&fake)
+        .args(["review", "someone/else#12"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "someone/else#12 is in another repository; `git stk view someone/else#12` opens it",
+        ));
+}

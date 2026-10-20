@@ -12,6 +12,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   of this repository's owner, and `--org <name>` names another organization
   or user to search instead. `--org` on its own shows only that list. Like
   `outside`, it is GitHub-only and shown only when asked for.
+- **cli:** `view` takes a review named with its repository, such as
+  `owner/repo#53` (`group/repo!53` on GitLab), and opens a review in another
+  repository on the same host in your browser. `review` and `tour` take the
+  same form for this repository's reviews.
 
 ## 0.16.4
 
