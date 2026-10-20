@@ -676,7 +676,7 @@ fn inbox_lists_your_reviews(provider: Provider, slug: &str, work: &Path) -> Resu
         }
         let yours = listed.split("Yours").nth(1).unwrap_or_default();
         if yours.contains(&format!("{number} ")) {
-            return inbox_lists_outside(provider, work);
+            return inbox_lists_beyond_the_repository(provider, slug, &number, work);
         }
     }
     Err(format!(
@@ -685,7 +685,14 @@ fn inbox_lists_your_reviews(provider: Provider, slug: &str, work: &Path) -> Resu
 }
 
 /// GitHub answers the `outside` list's organizations query and its search.
-fn inbox_lists_outside(provider: Provider, work: &Path) -> Result<(), String> {
+/// GitHub answers the `outside` and `org` lists' queries, and the org list
+/// holds the review, named with its repository.
+fn inbox_lists_beyond_the_repository(
+    provider: Provider,
+    slug: &str,
+    number: &str,
+    work: &Path,
+) -> Result<(), String> {
     if !matches!(provider, Provider::Github) {
         return Ok(());
     }
@@ -695,7 +702,21 @@ fn inbox_lists_outside(provider: Provider, work: &Path) -> Result<(), String> {
     {
         return Err(format!("inbox could not list outside:\n{listed}"));
     }
-    Ok(())
+    let named = format!("{slug}{number} ");
+    let mut listed = String::new();
+    for attempt in 0..10 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(3));
+        }
+        listed = stk(work, &["inbox", "--filter", "org"])?;
+        if listed.contains("could not list these") {
+            return Err(format!("inbox could not list org:\n{listed}"));
+        }
+        if listed.contains(&named) {
+            return Ok(());
+        }
+    }
+    Err(format!("inbox did not list {named}in org:\n{listed}"))
 }
 
 /// The tour data a `--output` snapshot of review `number` holds.

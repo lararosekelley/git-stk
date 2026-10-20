@@ -207,7 +207,7 @@ git stk review [branch | number | url]
 git stk view [branch | number | url]
 git stk tour [branch | number | url] [--style standard|agentTour|agentReview] [--agent <command>] [--plan <file>]
              [--refresh-plan] [--no-stack] [--local] [--no-open] [-o <path> | --findings]
-git stk inbox [--filter incoming,returned,team,mine,outside] [--limit <n>] [--sort updated|created|size]
+git stk inbox [--filter incoming,returned,team,mine,org,outside] [--org <name>] [--limit <n>] [--sort updated|created|size]
 git stk comment <message> [--branch <branch>] [--dry-run]
 git stk sync [--dry-run] [--push | --no-push]
 git stk merge [-y] [--auto | --admin | --all [--wait | --no-wait | --admin]] [--dry-run]
@@ -351,7 +351,9 @@ instead writes a read-only snapshot of the page to a file and exits.
 (`incoming`), yours with changes requested (`returned`), requested of a team you are on and not of you by name
 (`team`), and the rest of yours (`mine`). On GitHub, `--filter outside` adds a fifth list, shown only when
 asked for: your open pull requests anywhere on GitHub in repositories owned by neither you nor an organization
-you belong to, each named with its repository, such as `owner/repo#12`. Each review shows its CI status,
+you belong to, each named with its repository, such as `owner/repo#12`. `--filter org`, also GitHub-only and
+shown only when asked for, lists yours in every repository of this repository's owner, or of the organization
+or user `--org <name>` names; `--org` on its own shows only that list. Each review shows its CI status,
 number, title, size, author, last update, approval or requested changes, open threads, and whether it is a
 draft. A review is marked `new` when someone else has commented, reviewed, or pushed since you last looked, on
 the forge or with `git stk tour`, which notes when you toured each review; one you have never looked at is not

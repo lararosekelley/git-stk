@@ -58,9 +58,10 @@ use gitea::GiteaProvider;
 use github::GitHubProvider;
 use gitlab::GitLabProvider;
 pub use inbox::{
-    Activity, Decision, FETCH_LIMIT, InboxEntry, InboxList, Listing, age, epoch_seconds, is_bot,
+    Activity, Decision, FETCH_LIMIT, InboxEntry, InboxList, Listing, age, beyond_the_repository,
+    epoch_seconds, is_bot,
 };
-pub use review_ref::ReviewRef;
+pub use review_ref::{ReviewRef, remote_owner};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ProviderKind {
@@ -718,8 +719,9 @@ pub trait ReviewProvider: Sync {
     fn viewer(&self) -> Result<String>;
 
     /// Each of `lists` for this repository, in the order asked, with up to
-    /// [`FETCH_LIMIT`] reviews each, for `inbox`.
-    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>>;
+    /// [`FETCH_LIMIT`] reviews each, for `inbox`. The org list searches the
+    /// repositories of `org`.
+    fn inbox(&self, lists: &[InboxList], org: &str) -> Result<Vec<(InboxList, Listing)>>;
 }
 
 /// Detect the provider and build its review client together - the pair nearly

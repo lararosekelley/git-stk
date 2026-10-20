@@ -305,7 +305,7 @@ impl ReviewProvider for GiteaProvider {
         required_string(&user, &["login"])
     }
 
-    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
+    fn inbox(&self, lists: &[InboxList], _org: &str) -> Result<Vec<(InboxList, Listing)>> {
         let user: Value = serde_json::from_str(&inbox_read("user")?)
             .context("failed to parse gitea user JSON")?;
         let me = required_string(&user, &["login"])?;
@@ -355,7 +355,9 @@ impl ReviewProvider for GiteaProvider {
                 .filter(|(_, reviews)| match list {
                     InboxList::Returned => latest_decision(reviews) == Decision::ChangesRequested,
                     InboxList::Mine => latest_decision(reviews) != Decision::ChangesRequested,
-                    InboxList::Incoming | InboxList::Team | InboxList::Outside => true,
+                    InboxList::Incoming | InboxList::Team | InboxList::Outside | InboxList::Org => {
+                        true
+                    }
                 })
                 .collect();
             let statuses = gitea_statuses(&slug, kept.iter().map(|(pull, _)| *pull))?;
@@ -380,13 +382,8 @@ impl ReviewProvider for GiteaProvider {
         Ok(lists
             .iter()
             .map(|&list| {
-                if list == InboxList::Outside {
-                    return (
-                        list,
-                        Listing::Unsupported(
-                            "only GitHub lists reviews outside your organizations".to_owned(),
-                        ),
-                    );
+                if let Some(why) = super::beyond_the_repository(list) {
+                    return (list, Listing::Unsupported(why));
                 }
                 let found =
                     listing(list).unwrap_or_else(|error| Listing::Failed(format!("{error:#}")));
@@ -723,7 +720,7 @@ fn in_gitea_list(pull: &Value, list: InboxList, me: &str, teams: &[u64]) -> bool
         InboxList::Incoming => named && !author,
         InboxList::Team => teamed && !named && !author,
         InboxList::Mine | InboxList::Returned => author,
-        InboxList::Outside => false,
+        InboxList::Outside | InboxList::Org => false,
     }
 }
 

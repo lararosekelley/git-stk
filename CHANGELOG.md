@@ -4,6 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.5
+
+### Added
+
+- **inbox:** `--filter org` lists your open pull requests in every repository
+  of this repository's owner, and `--org <name>` names another organization
+  or user to search instead. `--org` on its own shows only that list. Like
+  `outside`, it is GitHub-only and shown only when asked for.
+
 ## 0.16.4
 
 ### Fixed
