@@ -3099,4 +3099,28 @@ mod tests {
             Some(false)
         );
     }
+
+    #[test]
+    fn the_org_list_takes_only_a_github_login() {
+        for name in ["", "acme repo:other", "acme:x", "acme\"", "acme/tools"] {
+            let refused = org_search(name).unwrap_err().to_string();
+            assert!(
+                refused.contains("is not a GitHub organization or user name"),
+                "{name}: {refused}"
+            );
+        }
+        let kind = |typename: &str| {
+            parse_owner_kind(&format!(
+                r#"{{"data":{{"repositoryOwner":{{"__typename":"{typename}"}}}}}}"#
+            ))
+        };
+        assert_eq!(kind("Organization"), Some("org"));
+        assert_eq!(kind("User"), Some("user"));
+        assert_eq!(kind("Enterprise"), None);
+        assert_eq!(
+            parse_owner_kind(r#"{"data":{"repositoryOwner":null}}"#),
+            None
+        );
+        assert_eq!(parse_owner_kind("not json"), None);
+    }
 }
