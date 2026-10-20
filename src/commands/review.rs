@@ -25,6 +25,7 @@ fn print_review(target: Option<&str>) -> Result<()> {
     let (provider, review_provider) = detect_review_provider()?;
     let review = match ReviewRef::parse(target, provider.kind)? {
         ReviewRef::Number(number) => review_provider.review_by_number(number)?,
+        ReviewRef::Elsewhere { id, .. } => return Err(ReviewRef::elsewhere(&id)),
         ReviewRef::Branch(branch) => match review_provider.review_for_branch(&branch)? {
             Some(review) => review,
             None => bail!("no {} review found for {branch}", provider.kind),

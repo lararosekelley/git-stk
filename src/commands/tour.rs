@@ -242,6 +242,7 @@ fn forge_stack(
         let open_reviews = stack.then(|| scope.spawn(|| review_provider.all_open_reviews()));
         let review = match target {
             ReviewRef::Number(number) => review_provider.review_by_number(number).map(Some),
+            ReviewRef::Elsewhere { id, .. } => Err(ReviewRef::elsewhere(&id)),
             ReviewRef::Branch(branch) => {
                 review_provider.review_for_branch_including_closed(&branch)
             }

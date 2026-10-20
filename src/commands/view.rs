@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use clap_complete::engine::ArgValueCompleter;
 
+use crate::browser;
 use crate::commands::Run;
 use crate::completions;
 use crate::providers::{ReviewRef, detect_review_provider};
@@ -9,8 +10,9 @@ use crate::style;
 /// Open a branch's review in the browser.
 #[derive(Debug, clap::Args)]
 pub struct View {
-    /// Branch, review number (12, #12), or review URL (defaults to the current
-    /// branch).
+    /// Branch, review number (12, #12), review URL, or a review in another
+    /// repository on the same host, such as owner/repo#12 (defaults to the
+    /// current branch).
     #[arg(value_name = "TARGET", add = ArgValueCompleter::new(completions::branch_candidates))]
     target: Option<String>,
 }
@@ -25,6 +27,10 @@ fn view(target: Option<&str>) -> Result<()> {
     let (provider, review_provider) = detect_review_provider()?;
     let review = match ReviewRef::parse(target, provider.kind)? {
         ReviewRef::Number(number) => review_provider.review_by_number(number)?,
+        ReviewRef::Elsewhere { id, url } => {
+            anstream::println!("opening {id} {}", style::dim(&url));
+            return browser::open(&url);
+        }
         // Closed-inclusive: opening a merged or closed review is still useful.
         ReviewRef::Branch(branch) => {
             match review_provider.review_for_branch_including_closed(&branch)? {

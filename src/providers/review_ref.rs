@@ -1,5 +1,6 @@
 //! What a command's review argument names: a branch, or a review by number or
-//! URL - so `view` and `review` can reach a review whose branch is not local.
+//! URL - so `view` and `review` can reach a review whose branch is not local,
+//! and `view` one in another repository.
 
 use anyhow::{Context, Result, bail};
 
@@ -10,12 +11,18 @@ use crate::{git, settings};
 pub enum ReviewRef {
     Branch(String),
     Number(u64),
+    /// A review in another repository on the same host, such as
+    /// `owner/repo#53`, with its web address.
+    Elsewhere {
+        id: String,
+        url: String,
+    },
 }
 
 impl ReviewRef {
-    /// Resolve `arg`, defaulting to the current branch. `12` names a review
-    /// unless a local branch has exactly that name; `#12`, `!12`, and review
-    /// URLs always do.
+    /// Resolve `arg`, defaulting to the current branch. `12` and
+    /// `owner/repo#12` (`!12` on GitLab) name a review unless a local branch
+    /// has exactly that name; `#12`, `!12`, and review URLs always do.
     pub fn parse(arg: Option<&str>, kind: ProviderKind) -> Result<Self> {
         let Some(arg) = arg else {
             return Ok(Self::Branch(git::current_branch()?));
@@ -28,6 +35,20 @@ impl ReviewRef {
         {
             return Ok(Self::Number(number));
         }
+        if let Some((repo, number)) = parse_qualified(arg, kind)
+            && !git::local_branches()?.iter().any(|branch| branch == arg)
+        {
+            let remote = settings::remote()?;
+            let remote_url = git::remote_url(&remote)?
+                .with_context(|| format!("cannot find {arg}: remote {remote} does not exist"))?;
+            if repo.eq_ignore_ascii_case(repo_path(&remote_url)) {
+                return Ok(Self::Number(number));
+            }
+            return Ok(Self::Elsewhere {
+                id: arg.to_owned(),
+                url: web_url(kind, &remote_url, repo, number, &ssh_hostname)?,
+            });
+        }
         if arg.starts_with("https://") || arg.starts_with("http://") {
             let remote = settings::remote()?;
             let remote_url = git::remote_url(&remote)?.with_context(|| {
@@ -36,6 +57,14 @@ impl ReviewRef {
             return parse_url(arg, kind, &remote_url, &ssh_hostname).map(Self::Number);
         }
         Ok(Self::Branch(arg.to_owned()))
+    }
+}
+
+impl ReviewRef {
+    /// Why a command that reads reviews from this repository cannot take one
+    /// from another.
+    pub fn elsewhere(id: &str) -> anyhow::Error {
+        anyhow::anyhow!("{id} is in another repository; `git stk view {id}` opens it")
     }
 }
 
@@ -49,6 +78,77 @@ pub fn remote_owner() -> Result<String> {
     path.rsplit_once('/')
         .map(|(owner, _)| owner.to_owned())
         .with_context(|| format!("cannot read an owner from remote {remote} ({remote_url})"))
+}
+
+/// The repository and number of `owner/repo#12`, or `group/repo!12` on
+/// GitLab.
+fn parse_qualified(arg: &str, kind: ProviderKind) -> Option<(&str, u64)> {
+    let separator = if kind == ProviderKind::GitLab {
+        '!'
+    } else {
+        '#'
+    };
+    let (repo, number) = arg.rsplit_once(separator)?;
+    let parts: Vec<&str> = repo.split('/').collect();
+    let nested = kind == ProviderKind::GitLab && parts.len() > 2;
+    if !(parts.len() == 2 || nested) || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    Some((repo, parse_number(number)?))
+}
+
+/// The web address of review `number` in `repo`, on the host of
+/// `remote_url`.
+fn web_url(
+    kind: ProviderKind,
+    remote_url: &str,
+    repo: &str,
+    number: u64,
+    resolve_alias: &dyn Fn(&str) -> Option<String>,
+) -> Result<String> {
+    let marker = match kind {
+        ProviderKind::GitHub => "pull",
+        ProviderKind::GitLab => "-/merge_requests",
+        ProviderKind::Gitea => "pulls",
+        ProviderKind::Demo => bail!("demo reviews have no web URL; pass the review number"),
+    };
+    let scheme = if remote_url.starts_with("http://") {
+        "http"
+    } else {
+        "https"
+    };
+    let host = web_host(remote_url, resolve_alias);
+    Ok(format!("{scheme}://{host}/{repo}/{marker}/{number}"))
+}
+
+/// The web host of a git remote: an HTTP remote's host and port as given, an
+/// SSH alias resolved, and GitHub's and GitLab's SSH-over-443 hosts
+/// (`ssh.github.com`, `altssh.gitlab.com`) read as the sites they serve.
+fn web_host(remote_url: &str, resolve_alias: &dyn Fn(&str) -> Option<String>) -> String {
+    let lowered = remote_url.to_ascii_lowercase();
+    if let Some(rest) = lowered
+        .strip_prefix("https://")
+        .or_else(|| lowered.strip_prefix("http://"))
+    {
+        let authority = rest.split('/').next().unwrap_or(rest);
+        return authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host)
+            .to_owned();
+    }
+    let mut host = host_of(&lowered).to_owned();
+    let ssh_remote = !remote_url.contains("://") || remote_url.starts_with("ssh://");
+    if ssh_remote
+        && !host.contains(['.', ':'])
+        && let Some(resolved) = resolve_alias(&host)
+    {
+        host = resolved.to_ascii_lowercase();
+    }
+    match host.as_str() {
+        "ssh.github.com" => "github.com".to_owned(),
+        "altssh.gitlab.com" => "gitlab.com".to_owned(),
+        _ => host,
+    }
 }
 
 /// A plain review number: ASCII digits only, so `+1` or ` 1` stay branch names.
@@ -150,6 +250,73 @@ mod tests {
 
     fn no_alias(_: &str) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn a_qualified_review_names_its_repository() {
+        use ProviderKind::{GitHub, GitLab};
+        assert_eq!(
+            parse_qualified("owner/repo#53", GitHub),
+            Some(("owner/repo", 53))
+        );
+        assert_eq!(
+            parse_qualified("group/sub/repo!8", GitLab),
+            Some(("group/sub/repo", 8))
+        );
+        // A branch name, not a review.
+        assert_eq!(parse_qualified("feature/a", GitHub), None);
+        assert_eq!(parse_qualified("feature/a#b", GitHub), None);
+        assert_eq!(parse_qualified("a/b/c#1", GitHub), None);
+        assert_eq!(parse_qualified("/repo#1", GitHub), None);
+        assert_eq!(parse_qualified("owner/repo!1", GitHub), None);
+    }
+
+    #[test]
+    fn another_repositorys_review_opens_on_the_remotes_host() {
+        let url = |kind, remote, repo, alias: &dyn Fn(&str) -> Option<String>| {
+            web_url(kind, remote, repo, 5, alias).unwrap()
+        };
+        assert_eq!(
+            url(
+                ProviderKind::GitHub,
+                "git@github.com:me/here.git",
+                "o/r",
+                &no_alias
+            ),
+            "https://github.com/o/r/pull/5"
+        );
+        assert_eq!(
+            url(
+                ProviderKind::GitHub,
+                "ssh://git@ssh.github.com:443/me/here.git",
+                "o/r",
+                &no_alias
+            ),
+            "https://github.com/o/r/pull/5"
+        );
+        assert_eq!(
+            url(
+                ProviderKind::GitLab,
+                "https://gitlab.com/g/here.git",
+                "g/s/r",
+                &no_alias
+            ),
+            "https://gitlab.com/g/s/r/-/merge_requests/5"
+        );
+        assert_eq!(
+            url(
+                ProviderKind::Gitea,
+                "http://git.lan:3000/me/here.git",
+                "o/r",
+                &no_alias
+            ),
+            "http://git.lan:3000/o/r/pulls/5"
+        );
+        let work = |alias: &str| (alias == "work").then(|| "github.example.com".to_owned());
+        assert_eq!(
+            url(ProviderKind::GitHub, "work:me/here.git", "o/r", &work),
+            "https://github.example.com/o/r/pull/5"
+        );
     }
 
     #[test]

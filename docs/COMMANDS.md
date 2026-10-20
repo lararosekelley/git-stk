@@ -203,8 +203,8 @@ than failing the whole command.
 git stk provider
 git stk config
 git stk status [branch]
-git stk review [branch | number | url]
-git stk view [branch | number | url]
+git stk review [branch | number | url | owner/repo#number]
+git stk view [branch | number | url | owner/repo#number]
 git stk tour [branch | number | url] [--style standard|agentTour|agentReview] [--agent <command>] [--plan <file>]
              [--refresh-plan] [--no-stack] [--local] [--no-open] [-o <path> | --findings]
 git stk inbox [--filter incoming,returned,team,mine,org,outside] [--org <name>] [--limit <n>] [--sort updated|created|size]
@@ -222,7 +222,9 @@ merged and closed reviews, and report clearly when none exists yet.
 
 Either command also takes a review by number (`12`, `#12`, `!12`) or by its web URL, so you can reach a
 review whose branch you have not checked out. A bare number names a branch only when a local branch has
-exactly that name. A URL must point at this repository's reviews.
+exactly that name. A URL must point at this repository's reviews. A review named with its repository, such
+as `owner/repo#12` (`group/repo!12` on GitLab), is looked up here when it names this repository; otherwise
+`view` opens it in your browser on the same host, and `review` and `tour` say to use `view`.
 
 `tour` (experimental) writes a self-contained HTML page that walks through a review's changes and opens it
 in your browser. It fetches the review's head from the remote (`refs/pull/N/head`, or
