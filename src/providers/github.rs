@@ -442,7 +442,7 @@ impl ReviewProvider for GitHubProvider {
             .to_owned())
     }
 
-    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
+    fn inbox(&self, lists: &[InboxList], org: &str) -> Result<Vec<(InboxList, Listing)>> {
         let (owner, repo) = repo_owner_name_result()?;
         let slug = format!("{owner}/{repo}");
         // A query per list, side by side: one query searching for all of them
@@ -466,6 +466,7 @@ impl ReviewProvider for GitHubProvider {
                                     .map(|owners| outside_search(&owners)),
                                 None,
                             ),
+                            InboxList::Org => (org_search(org), None),
                             _ => (
                                 Ok(format!("repo:{slug} {}", inbox_search(list))),
                                 Some(slug.as_str()),
@@ -990,7 +991,41 @@ fn inbox_search(list: InboxList) -> &'static str {
         InboxList::Team => "team-review-requested-user:@me -user-review-requested:@me",
         InboxList::Mine => "author:@me -review:changes_requested",
         InboxList::Returned => "author:@me review:changes_requested",
-        InboxList::Outside => "author:@me",
+        InboxList::Outside | InboxList::Org => "author:@me",
+    }
+}
+
+/// Your reviews in every repository `org` owns, an organization or a user.
+fn org_search(org: &str) -> Result<String> {
+    // A GitHub login is letters, digits, and hyphens; anything else would
+    // break out of the search string.
+    if org.is_empty() || !org.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        bail!("{org:?} is not a GitHub organization or user name");
+    }
+    let query = format!("query={OWNER_KIND_QUERY}");
+    let login = format!("login={org}");
+    let output = super::retry_server_errors(|| {
+        command_output("gh", &["api", "graphql", "-f", &query, "-f", &login])
+    })?;
+    let qualifier = parse_owner_kind(&output)
+        .with_context(|| format!("GitHub has no organization or user named {org}"))?;
+    Ok(format!(
+        "{} {qualifier}:{org}",
+        inbox_search(InboxList::Org)
+    ))
+}
+
+/// Whether a login is an organization's or a user's: the search qualifies
+/// each differently.
+const OWNER_KIND_QUERY: &str =
+    "query($login: String!) { repositoryOwner(login: $login) { __typename } }";
+
+fn parse_owner_kind(json: &str) -> Option<&'static str> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    match value["data"]["repositoryOwner"]["__typename"].as_str()? {
+        "Organization" => Some("org"),
+        "User" => Some("user"),
+        _ => None,
     }
 }
 

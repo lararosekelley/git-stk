@@ -644,7 +644,7 @@ impl ReviewProvider for GitLabProvider {
         required_string(&user, &["username"])
     }
 
-    fn inbox(&self, lists: &[InboxList]) -> Result<Vec<(InboxList, Listing)>> {
+    fn inbox(&self, lists: &[InboxList], _org: &str) -> Result<Vec<(InboxList, Listing)>> {
         let user: serde_json::Value = serde_json::from_str(&super::retry_server_errors(|| {
             command_output("glab", &["api", "user"])
         })?)
@@ -842,9 +842,9 @@ fn parse_gitlab_inbox(
                 InboxList::Team => {
                     Listing::Unsupported("GitLab has no team review requests".to_owned())
                 }
-                InboxList::Outside => Listing::Unsupported(
-                    "only GitHub lists reviews outside your organizations".to_owned(),
-                ),
+                InboxList::Outside | InboxList::Org => {
+                    Listing::Unsupported(super::beyond_the_repository(list).unwrap_or_default())
+                }
                 InboxList::Incoming => {
                     let entries = requested
                         .iter()

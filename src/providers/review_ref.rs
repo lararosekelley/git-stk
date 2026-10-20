@@ -39,6 +39,18 @@ impl ReviewRef {
     }
 }
 
+/// Who owns this repository, from its remote: `owner` of `owner/repo`, or
+/// the group path on GitLab.
+pub fn remote_owner() -> Result<String> {
+    let remote = settings::remote()?;
+    let remote_url =
+        git::remote_url(&remote)?.with_context(|| format!("remote {remote} does not exist"))?;
+    let path = repo_path(&remote_url);
+    path.rsplit_once('/')
+        .map(|(owner, _)| owner.to_owned())
+        .with_context(|| format!("cannot read an owner from remote {remote} ({remote_url})"))
+}
+
 /// A plain review number: ASCII digits only, so `+1` or ` 1` stay branch names.
 fn parse_number(text: &str) -> Option<u64> {
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {

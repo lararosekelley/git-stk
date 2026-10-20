@@ -426,3 +426,64 @@ fn outside_lists_yours_beyond_you_and_your_organizations() {
         .stdout(contains("me,").not())
         .stdout(contains("hint:").not());
 }
+
+#[test]
+fn org_lists_yours_across_this_repositorys_owner() {
+    let repo = github_repo();
+    repo.git(["remote", "add", "origin", "git@github.com:acme/repo.git"]);
+    let mine = pull(3, "Shared fix", "me", "SUCCESS", "REVIEW_REQUIRED", 0).replace(
+        r#""isDraft""#,
+        r#""repository":{"nameWithOwner":"acme/tools"},"isDraft""#,
+    );
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"acme/repo"}"#)
+        .on(
+            "repositoryOwner",
+            r#"{"data":{"repositoryOwner":{"__typename":"Organization"}}}"#,
+        )
+        .on("author:@me org:acme", &search(1, &[&mine]))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["inbox", "--filter", "org"])
+        .assert()
+        .success()
+        .stdout(contains("Yours in acme (1)"))
+        .stdout(contains("acme/tools#3 Shared fix"))
+        .stdout(contains("Requested of you").not());
+}
+
+#[test]
+fn org_names_a_user_or_organization_to_search_instead() {
+    let repo = github_repo();
+    let fake = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"acme/repo"}"#)
+        .on(
+            "repositoryOwner",
+            r#"{"data":{"repositoryOwner":{"__typename":"User"}}}"#,
+        )
+        .on("author:@me user:lararosekelley", &search(0, &[]))
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["inbox", "--org", "lararosekelley"])
+        .assert()
+        .success()
+        .stdout(contains("Yours in lararosekelley (0)"))
+        .stdout(contains("Requested of you").not());
+
+    let missing = FakeProvider::new()
+        .on("repo view", r#"{"nameWithOwner":"acme/repo"}"#)
+        .on("repositoryOwner", r#"{"data":{"repositoryOwner":null}}"#)
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    repo.stack_faked(&missing)
+        .args(["inbox", "--org", "nobody-here"])
+        .assert()
+        .success()
+        .stdout(contains(
+            "could not list these: GitHub has no organization or user named nobody-here",
+        ));
+}

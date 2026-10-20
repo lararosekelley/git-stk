@@ -20,27 +20,41 @@ pub enum InboxList {
     /// Your open reviews in repositories owned by neither you nor an
     /// organization you belong to, wherever they are on the forge.
     Outside,
+    /// Your open reviews in every repository of one organization or user.
+    Org,
 }
 
 impl InboxList {
     /// Every list, in the order shown: what waits on you first.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Incoming,
         Self::Returned,
         Self::Team,
         Self::Mine,
+        Self::Org,
         Self::Outside,
     ];
 
-    /// Whether the list is shown without `--filter`. Outside reaches beyond
-    /// this repository, so it is only shown when asked for.
+    /// Whether the list is shown without `--filter`. Org and outside reach
+    /// beyond this repository, so they are only shown when asked for.
     pub fn shown_by_default(self) -> bool {
-        self != Self::Outside
+        !matches!(self, Self::Outside | Self::Org)
     }
 
     /// Whether the reviews in the list are your own.
     pub fn is_yours(self) -> bool {
-        matches!(self, Self::Mine | Self::Returned | Self::Outside)
+        matches!(
+            self,
+            Self::Mine | Self::Returned | Self::Outside | Self::Org
+        )
+    }
+
+    /// The list's heading, naming `org` for the org list.
+    pub fn heading(self, org: &str) -> String {
+        match self {
+            Self::Org => format!("Yours in {org}"),
+            _ => self.title().to_owned(),
+        }
     }
 
     pub fn title(self) -> &'static str {
@@ -50,7 +64,20 @@ impl InboxList {
             Self::Mine => "Yours",
             Self::Returned => "Returned to you",
             Self::Outside => "Yours outside your organizations",
+            Self::Org => "Yours in the organization",
         }
+    }
+}
+
+/// Why a forge other than GitHub has no list reaching beyond this
+/// repository, or None for a list that does not.
+pub fn beyond_the_repository(list: InboxList) -> Option<String> {
+    match list {
+        InboxList::Outside => {
+            Some("only GitHub lists reviews outside your organizations".to_owned())
+        }
+        InboxList::Org => Some("only GitHub lists reviews across an organization".to_owned()),
+        _ => None,
     }
 }
 

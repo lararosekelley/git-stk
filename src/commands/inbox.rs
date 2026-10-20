@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::commands::Run;
 use crate::providers::{
     Decision, FETCH_LIMIT, InboxEntry, InboxList, Listing, age, detect_review_provider,
-    epoch_seconds,
+    epoch_seconds, remote_owner,
 };
 use crate::style;
 
@@ -16,10 +16,15 @@ pub struct Inbox {
     /// Lists to show, comma-separated: incoming (requested of you), team
     /// (requested of a team you are on), returned (yours, with changes
     /// requested), mine (yours otherwise), outside (yours in repositories
-    /// owned by neither you nor your organizations, on GitHub). Default: all
-    /// but outside.
+    /// owned by neither you nor your organizations, on GitHub), org (yours in
+    /// every repository of this repository's owner or `--org`, on GitHub).
+    /// Default: all but outside and org.
     #[arg(long, value_delimiter = ',', value_name = "LISTS")]
     filter: Vec<InboxList>,
+    /// The organization or user the org list searches, instead of this
+    /// repository's owner. Adds the org list.
+    #[arg(long, value_name = "NAME")]
+    org: Option<String>,
     /// Reviews shown per list.
     #[arg(long, default_value_t = 10, value_name = "N")]
     limit: usize,
@@ -42,14 +47,22 @@ impl Run for Inbox {
     fn run(self) -> Result<()> {
         let lists: Vec<InboxList> = InboxList::ALL
             .into_iter()
-            .filter(|list| {
-                if self.filter.is_empty() {
-                    list.shown_by_default()
+            .filter(|&list| {
+                if list == InboxList::Org && self.org.is_some() {
+                    true
+                } else if self.filter.is_empty() {
+                    // `--org` alone asks for its list only.
+                    self.org.is_none() && list.shown_by_default()
                 } else {
-                    self.filter.contains(list)
+                    self.filter.contains(&list)
                 }
             })
             .collect();
+        let org = match self.org {
+            Some(org) => org,
+            None if lists.contains(&InboxList::Org) => remote_owner()?,
+            None => String::new(),
+        };
         let (_, provider) = detect_review_provider()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -57,7 +70,7 @@ impl Run for Inbox {
         let toured = crate::tour::seen::read();
         let mut first = true;
         let mut waiting = false;
-        for (list, listing) in provider.inbox(&lists)? {
+        for (list, listing) in provider.inbox(&lists, &org)? {
             if !first {
                 println!();
             }
@@ -66,7 +79,8 @@ impl Run for Inbox {
                 list,
                 InboxList::Incoming | InboxList::Team | InboxList::Returned
             ) && matches!(&listing, Listing::Found { entries, .. } if !entries.is_empty());
-            for line in render(list, listing, self.limit, self.sort, now, &toured) {
+            let heading = list.heading(&org);
+            for line in render(list, &heading, listing, self.limit, self.sort, now, &toured) {
                 anstream::println!("{line}");
             }
         }
@@ -83,6 +97,7 @@ impl Run for Inbox {
 /// One list's heading and rows.
 fn render(
     list: InboxList,
+    heading: &str,
     listing: Listing,
     limit: usize,
     sort: InboxSort,
@@ -93,13 +108,13 @@ fn render(
         Listing::Found { entries, more } => (entries, more),
         Listing::Unsupported(why) => {
             return vec![
-                style::paint(style::HEADING, list.title()),
+                style::paint(style::HEADING, heading),
                 format!("  {}", style::dim(&why)),
             ];
         }
         Listing::Failed(why) => {
             return vec![
-                style::paint(style::HEADING, list.title()),
+                style::paint(style::HEADING, heading),
                 format!("  {}", style::warn(&format!("could not list these: {why}"))),
             ];
         }
@@ -112,7 +127,7 @@ fn render(
     };
     let mut lines = vec![format!(
         "{} {}",
-        style::paint(style::HEADING, list.title()),
+        style::paint(style::HEADING, heading),
         style::dim(&format!("({count})"))
     )];
     if entries.is_empty() {
@@ -252,7 +267,15 @@ mod tests {
         sort: InboxSort,
         now: i64,
     ) -> Vec<String> {
-        render(list, listing, limit, sort, now, &BTreeMap::new())
+        render(
+            list,
+            list.title(),
+            listing,
+            limit,
+            sort,
+            now,
+            &BTreeMap::new(),
+        )
     }
 
     fn plain(lines: Vec<String>) -> Vec<String> {
