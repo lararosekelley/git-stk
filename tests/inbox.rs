@@ -487,3 +487,15 @@ fn org_names_a_user_or_organization_to_search_instead() {
             "could not list these: GitHub has no organization or user named nobody-here",
         ));
 }
+
+#[test]
+fn org_needs_no_remote_where_the_forge_has_no_such_list() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "demo"]);
+
+    repo.stack()
+        .args(["inbox", "--filter", "org"])
+        .assert()
+        .success()
+        .stdout(contains("Yours in the organization (0)"));
+}

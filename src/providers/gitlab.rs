@@ -644,7 +644,7 @@ impl ReviewProvider for GitLabProvider {
         required_string(&user, &["username"])
     }
 
-    fn inbox(&self, lists: &[InboxList], _org: &str) -> Result<Vec<(InboxList, Listing)>> {
+    fn inbox(&self, lists: &[InboxList], _org: Option<&str>) -> Result<Vec<(InboxList, Listing)>> {
         let user: serde_json::Value = serde_json::from_str(&super::retry_server_errors(|| {
             command_output("glab", &["api", "user"])
         })?)

@@ -49,10 +49,10 @@ impl InboxList {
         )
     }
 
-    /// The list's heading, naming `org` for the org list.
-    pub fn heading(self, org: &str) -> String {
-        match self {
-            Self::Org => format!("Yours in {org}"),
+    /// The list's heading, naming `org` for the org list when it is known.
+    pub fn heading(self, org: Option<&str>) -> String {
+        match (self, org) {
+            (Self::Org, Some(org)) => format!("Yours in {org}"),
             _ => self.title().to_owned(),
         }
     }

@@ -182,7 +182,7 @@ impl ReviewProvider for DemoProvider {
         Ok("you".to_owned())
     }
 
-    fn inbox(&self, lists: &[InboxList], _org: &str) -> Result<Vec<(InboxList, Listing)>> {
+    fn inbox(&self, lists: &[InboxList], _org: Option<&str>) -> Result<Vec<(InboxList, Listing)>> {
         // Every demo review is yours, and nobody else reviews them.
         let mut mine = self
             .open_reviews()?

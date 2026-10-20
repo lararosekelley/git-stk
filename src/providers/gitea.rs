@@ -305,7 +305,7 @@ impl ReviewProvider for GiteaProvider {
         required_string(&user, &["login"])
     }
 
-    fn inbox(&self, lists: &[InboxList], _org: &str) -> Result<Vec<(InboxList, Listing)>> {
+    fn inbox(&self, lists: &[InboxList], _org: Option<&str>) -> Result<Vec<(InboxList, Listing)>> {
         let user: Value = serde_json::from_str(&inbox_read("user")?)
             .context("failed to parse gitea user JSON")?;
         let me = required_string(&user, &["login"])?;

@@ -442,9 +442,10 @@ impl ReviewProvider for GitHubProvider {
             .to_owned())
     }
 
-    fn inbox(&self, lists: &[InboxList], org: &str) -> Result<Vec<(InboxList, Listing)>> {
+    fn inbox(&self, lists: &[InboxList], org: Option<&str>) -> Result<Vec<(InboxList, Listing)>> {
         let (owner, repo) = repo_owner_name_result()?;
         let slug = format!("{owner}/{repo}");
+        let org = org.unwrap_or(&owner);
         // A query per list, side by side: one query searching for all of them
         // can outlast GitHub's timeout on a busy repository.
         std::thread::scope(|scope| {

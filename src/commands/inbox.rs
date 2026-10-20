@@ -58,10 +58,12 @@ impl Run for Inbox {
                 }
             })
             .collect();
-        let org = match self.org {
-            Some(org) => org,
-            None if lists.contains(&InboxList::Org) => remote_owner()?,
-            None => String::new(),
+        // Only for the heading: the provider finds this repository's owner
+        // itself, and a forge without the list says so.
+        let owner = match &self.org {
+            Some(org) => Some(org.clone()),
+            None if lists.contains(&InboxList::Org) => remote_owner().ok(),
+            None => None,
         };
         let (_, provider) = detect_review_provider()?;
         let now = std::time::SystemTime::now()
@@ -70,7 +72,7 @@ impl Run for Inbox {
         let toured = crate::tour::seen::read();
         let mut first = true;
         let mut waiting = false;
-        for (list, listing) in provider.inbox(&lists, &org)? {
+        for (list, listing) in provider.inbox(&lists, self.org.as_deref())? {
             if !first {
                 println!();
             }
@@ -79,7 +81,7 @@ impl Run for Inbox {
                 list,
                 InboxList::Incoming | InboxList::Team | InboxList::Returned
             ) && matches!(&listing, Listing::Found { entries, .. } if !entries.is_empty());
-            let heading = list.heading(&org);
+            let heading = list.heading(owner.as_deref());
             for line in render(list, &heading, listing, self.limit, self.sort, now, &toured) {
                 anstream::println!("{line}");
             }
