@@ -720,8 +720,8 @@ pub trait ReviewProvider: Sync {
 
     /// Each of `lists` for this repository, in the order asked, with up to
     /// [`FETCH_LIMIT`] reviews each, for `inbox`. The org list searches the
-    /// repositories of `org`.
-    fn inbox(&self, lists: &[InboxList], org: &str) -> Result<Vec<(InboxList, Listing)>>;
+    /// repositories of `org`, or of this repository's owner.
+    fn inbox(&self, lists: &[InboxList], org: Option<&str>) -> Result<Vec<(InboxList, Listing)>>;
 }
 
 /// Detect the provider and build its review client together - the pair nearly
