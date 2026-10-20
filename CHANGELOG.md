@@ -4,6 +4,17 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.4
+
+### Fixed
+
+- **merge:** on GitHub, a merge refused as conflicting just after a push or
+  retarget is asked for again once GitHub has recomputed the pull request and
+  says it merges cleanly by the merge strategy. `merge --all` no longer stops
+  partway through a stack on a conflict that is not there, as it could with
+  `--admin`, which does not wait for checks. A real conflict is still
+  reported after one attempt.
+
 ## 0.16.3
 
 ### Added

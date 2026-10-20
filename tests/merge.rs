@@ -1535,6 +1535,74 @@ fn merge_uses_githubs_async_endpoint_for_a_stacked_review() {
     );
 }
 
+/// Just after a push or retarget, GitHub can refuse a merge as conflicting
+/// while it recomputes the pull request. Once it says the branch rebases
+/// cleanly, ask again; a real conflict is reported after one attempt.
+fn stacked_rebase_fake(repo: &TestRepo, pull: &str) -> common::FakeProviderEnv {
+    let stacks = r##"[{"number":3,"open":true,"base":{"ref":"main"},"pull_requests":[
+        {"number":12,"head":{"ref":"feature/a"}}]}]"##;
+    let conflict = r##"{"status":"failed","details":{"message":"Pull request cannot be merged via rebase because it has a rebase conflict."}}"##;
+    FakeProvider::new()
+        .on_after(
+            "pulls/12/merge-async -X PUT",
+            "async.txt",
+            r##"{"status":"merged","details":{"message":"Pull request was merged.","sha":"abc"}}"##,
+        )
+        .record_append("pulls/12/merge-async -X PUT", "async.txt", conflict)
+        .on("repo view", r##"{"nameWithOwner":"owner/repo"}"##)
+        .on("repos/owner/repo/stacks", stacks)
+        .on("api repos/owner/repo/pulls/12", pull)
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .log_all("calls")
+        .install(repo)
+}
+
+/// How many times the merge was asked for.
+fn async_merges(repo: &TestRepo) -> usize {
+    fs::read_to_string(repo.path().join("calls"))
+        .expect("provider calls")
+        .matches("merge-async -X PUT")
+        .count()
+}
+
+fn stacked_rebase_repo() -> TestRepo {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.git(["config", "stk.githubStacks", "true"]);
+    repo.git(["config", "stk.mergeStrategy", "rebase"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo
+}
+
+#[test]
+fn merge_asks_again_when_github_was_still_recomputing_a_conflict() {
+    let repo = stacked_rebase_repo();
+    let fake = stacked_rebase_fake(&repo, r#"{"mergeable":true,"rebaseable":true}"#);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y", "--admin"])
+        .assert()
+        .success();
+
+    assert_eq!(async_merges(&repo), 2);
+}
+
+#[test]
+fn merge_reports_a_conflict_github_still_finds_once_recomputed() {
+    let repo = stacked_rebase_repo();
+    let fake = stacked_rebase_fake(&repo, r#"{"mergeable":true,"rebaseable":false}"#);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "-y", "--admin"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("rebase conflict"));
+
+    assert_eq!(async_merges(&repo), 1);
+}
+
 /// When the stack listing cannot be read, the review looks unstacked and goes
 /// to `gh pr merge` - which GitHub refuses, naming the endpoint to use. Take it.
 #[test]
