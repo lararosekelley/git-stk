@@ -289,7 +289,7 @@ impl ReviewProvider for GitHubProvider {
                 ))
                 .into());
             }
-            return async_merge(review, strategy, admin);
+            return merge_past_recompute(review, strategy, || async_merge(review, strategy, admin));
         }
 
         let mut args = vec!["pr", "merge", review.id_value(), flag];
@@ -299,14 +299,16 @@ impl ReviewProvider for GitHubProvider {
         if admin {
             args.push("--admin");
         }
-        merge_with_retry(|| command_output("gh", &args)).or_else(|error| {
-            // GitHub knows of a stack the listing did not show: take the
-            // endpoint it names.
-            if !auto && needs_async_merge(&error) {
-                forget_stacks_listing();
-                return async_merge(review, strategy, admin);
-            }
-            Err(error)
+        merge_past_recompute(review, strategy, || {
+            merge_with_retry(|| command_output("gh", &args)).or_else(|error| {
+                // GitHub knows of a stack the listing did not show: take the
+                // endpoint it names.
+                if !auto && needs_async_merge(&error) {
+                    forget_stacks_listing();
+                    return async_merge(review, strategy, admin);
+                }
+                Err(error)
+            })
         })
     }
 
@@ -1369,6 +1371,73 @@ fn async_merge(review: &ReviewRequest, strategy: &str, bypass: bool) -> Result<S
         ))
     );
     Ok(outcome)
+}
+
+/// Merges asked for in all when GitHub refuses one as conflicting.
+const RECOMPUTE_MERGE_ATTEMPTS: u32 = 3;
+
+/// Polls for GitHub to finish recomputing a pull request's mergeability.
+const RECOMPUTE_POLLS: u32 = 15;
+
+/// Run `attempt`, asking again when GitHub refuses the merge as conflicting
+/// but then finds that it merges cleanly by `strategy`. Just after a push or a
+/// retarget GitHub can refuse a merge while it recomputes the pull request
+/// against its new base. Nothing merged, so asking again is safe.
+fn merge_past_recompute(
+    review: &ReviewRequest,
+    strategy: &str,
+    mut attempt: impl FnMut() -> Result<String>,
+) -> Result<String> {
+    for _ in 1..RECOMPUTE_MERGE_ATTEMPTS {
+        match attempt() {
+            Err(error) if refused_as_conflict(&error) && settles_clean(review, strategy) => {}
+            result => return result,
+        }
+    }
+    attempt()
+}
+
+/// Whether a refused merge was refused as conflicting, in the wording of the
+/// async endpoint ("has a rebase conflict") or `gh pr merge` ("the merge
+/// commit cannot be cleanly created").
+fn refused_as_conflict(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    text.contains("conflict") || text.contains("cannot be cleanly created")
+}
+
+/// Whether GitHub, once it has recomputed the pull request, says it merges
+/// cleanly by `strategy`. False when it finds a conflict, cannot be asked, or
+/// is still computing after the last poll, so the refusal stands.
+fn settles_clean(review: &ReviewRequest, strategy: &str) -> bool {
+    let Some((owner, repo)) = repo_owner_name() else {
+        return false;
+    };
+    let Some(number) = review_number(&review.id) else {
+        return false;
+    };
+    let path = format!("repos/{owner}/{repo}/pulls/{number}");
+    for _ in 0..RECOMPUTE_POLLS {
+        // Asking straight away can read the verdict from before the push.
+        std::thread::sleep(async_merge_poll_interval());
+        let Ok(output) = command_output("gh", &["api", &path]) else {
+            return false;
+        };
+        if let Some(clean) = parse_mergeable(&output, strategy) {
+            return clean;
+        }
+    }
+    false
+}
+
+/// A pull request's `mergeable`, and `rebaseable` too for a rebase, or None
+/// while GitHub is still computing them.
+fn parse_mergeable(json: &str, strategy: &str) -> Option<bool> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mergeable = value["mergeable"].as_bool()?;
+    if strategy == "rebase" && mergeable {
+        return value["rebaseable"].as_bool();
+    }
+    Some(mergeable)
 }
 
 /// One enqueue-and-wait, with or without a merge method.
@@ -2959,5 +3028,39 @@ mod tests {
         let alone = parse_github_owners(r#"{"data":{"viewer":{"login":"me"}}}"#).unwrap();
         assert_eq!(alone, ["me"]);
         assert!(parse_github_owners(r#"{"data":{"viewer":{}}}"#).is_err());
+    }
+
+    #[test]
+    fn a_merge_is_retried_only_once_github_says_it_merges_cleanly() {
+        assert!(refused_as_conflict(&anyhow::Error::msg(
+            r#"#99 could not be merged: {"status":"failed","details":{"message":"Pull request cannot be merged via rebase because it has a rebase conflict."}}"#
+        )));
+        assert!(refused_as_conflict(&anyhow!(
+            "gh failed: Pull request #12 is not mergeable: the merge commit cannot be cleanly created."
+        )));
+        assert!(!refused_as_conflict(&anyhow!(
+            "gh failed: Pull request #12 is not mergeable: the base branch policy prohibits the merge."
+        )));
+
+        let pull = |mergeable: &str, rebaseable: &str| {
+            format!(r#"{{"mergeable":{mergeable},"rebaseable":{rebaseable}}}"#)
+        };
+        assert_eq!(parse_mergeable(&pull("null", "null"), "squash"), None);
+        assert_eq!(parse_mergeable(&pull("true", "null"), "squash"), Some(true));
+        assert_eq!(
+            parse_mergeable(&pull("false", "null"), "merge"),
+            Some(false)
+        );
+        // A rebase needs its own verdict, computed alongside.
+        assert_eq!(parse_mergeable(&pull("true", "null"), "rebase"), None);
+        assert_eq!(
+            parse_mergeable(&pull("true", "false"), "rebase"),
+            Some(false)
+        );
+        assert_eq!(parse_mergeable(&pull("true", "true"), "rebase"), Some(true));
+        assert_eq!(
+            parse_mergeable(&pull("false", "null"), "rebase"),
+            Some(false)
+        );
     }
 }
