@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   review:
-    uses: lararosekelley/review-bot/.github/workflows/review.yml@v1
+    uses: lararosekelley/review-bot/.github/workflows/review.yml@v2
     with:
       repo-notes-file: .github/review-bot/REPO_NOTES.md
     secrets:
