@@ -1705,6 +1705,40 @@ fn merge_wait_names_an_action_required_check_for_what_it_is() {
     assert!(!repo.path().join("merged.txt").exists());
 }
 
+/// `gh pr checks` lists every run on the head commit, so a failure that only a
+/// superseded run of the workflow has makes it exit non-zero. The rollup counts
+/// the newer, passing run, and the gate follows it.
+#[test]
+fn merge_wait_passes_when_only_a_superseded_github_run_failed() {
+    let repo = TestRepo::new();
+    repo.git(["config", "stk.provider", "github"]);
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+
+    let fake = FakeProvider::new()
+        .record("pr merge", "merged.txt", "")
+        .fail_with_stdout("pr checks 12", "rpm\tfail\t7m\nrpm\tpass\t9m", "")
+        .on(
+            "pr view 12 --json statusCheckRollup",
+            r##"{"statusCheckRollup":[
+                {"name":"rpm","workflowName":"Release","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-11-05T14:04:03Z","detailsUrl":"https://github.com/o/r/actions/runs/100/job/1"},
+                {"name":"rpm","workflowName":"Release","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-11-05T14:04:02Z","detailsUrl":"https://github.com/o/r/actions/runs/101/job/2"}]}"##,
+        )
+        .on("feature/a", r##"[{"number":12,"state":"OPEN","baseRefName":"main","headRefName":"feature/a","url":"https://example.com/12","title":"A work"}]"##)
+        .fallback("[]")
+        .install(&repo);
+
+    repo.stack_faked(&fake)
+        .args(["merge", "--all", "-y", "--wait"])
+        .assert()
+        .stderr(predicates::str::contains("checks failed").not());
+
+    assert!(
+        repo.path().join("merged.txt").exists(),
+        "stopped on a failure only a superseded run had"
+    );
+}
+
 /// GitHub's gate and its dot must agree too. `gh pr checks` has no exit code
 /// for "stopped without a verdict", so a cancelled newest run can land in the
 /// green one - and merging there would contradict the `⚪` the user just read.
