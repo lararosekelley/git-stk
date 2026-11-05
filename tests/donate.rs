@@ -1,8 +1,10 @@
+// The fake opener is a shell script.
+#![cfg(not(windows))]
+
 mod common;
 
 use common::{FakeProvider, TestRepo};
 
-#[cfg(not(windows))]
 #[test]
 fn donate_opens_the_ko_fi_page() {
     let repo = TestRepo::new();

@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::{fs, process::Command};
 mod common;
 
