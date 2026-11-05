@@ -359,9 +359,12 @@ impl ReviewProvider for GitHubProvider {
                         _ => WaitOutcome::Passed,
                     });
                 }
+                // `gh pr checks` also lists superseded runs, so a failure only
+                // a superseded run has lands here while the rollup is green.
                 ChecksState::Failed => {
                     return Ok(match self.check_status(review) {
                         Ok(CheckStatus::Inconclusive) => WaitOutcome::Inconclusive,
+                        Ok(CheckStatus::Passing) => WaitOutcome::Passed,
                         _ => WaitOutcome::Failed,
                     });
                 }
@@ -830,7 +833,7 @@ fn build_annotation_query_with(count: usize, detail: bool, stack_fields: bool) -
         // The cap comes from the constant the truncation guard reads, so the
         // two cannot drift: ask for a different number and the guard fires at
         // the new one.
-        aliases.push_str(&format!("commits(last:1){{nodes{{commit{{statusCheckRollup{{state contexts(last:{ROLLUP_CONTEXTS}){{totalCount nodes{{__typename ... on CheckRun{{name status conclusion startedAt checkSuite{{workflowRun{{workflow{{name}}}} app{{slug}}}}}} ... on StatusContext{{context state createdAt}}}}}}}}}}}}}}}}}}"));
+        aliases.push_str(&format!("commits(last:1){{nodes{{commit{{statusCheckRollup{{state contexts(last:{ROLLUP_CONTEXTS}){{totalCount nodes{{__typename ... on CheckRun{{name status conclusion startedAt checkSuite{{workflowRun{{databaseId workflow{{name}}}} app{{slug}}}}}} ... on StatusContext{{context state createdAt}}}}}}}}}}}}}}}}}}"));
     }
     format!("query({vars}){{repository(owner:$owner,name:$repo){{{aliases}}}}}")
 }
@@ -2035,6 +2038,9 @@ fn rollup_status(value: &serde_json::Value) -> CheckStatus {
 /// of the same check, on the same commit, forever. Aggregating the list as-is
 /// pins the review red for as long as that commit is the head.
 ///
+/// Two events for one push can also start the same workflow twice on the same
+/// commit, and both runs finish. GitHub counts only the newer run.
+///
 /// So: keep only the newest entry per check, which is how GitHub itself
 /// decides whether a required check passed, then aggregate those. Any failure
 /// wins, then anything still in flight, then anything that finished without a
@@ -2055,7 +2061,7 @@ fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
     // A StatusContext has no workflow: its `context` is already the full
     // identity. An entry with neither cannot be grouped, so it stands alone
     // under a key that cannot collide.
-    let mut newest: BTreeMap<String, ((bool, String), &serde_json::Value)> = BTreeMap::new();
+    let mut newest: BTreeMap<String, ((bool, u64, String), &serde_json::Value)> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
         let field = |name| item.get(name).and_then(serde_json::Value::as_str);
         // Two shapes for one fact: GraphQL nests the workflow under
@@ -2082,13 +2088,16 @@ fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
         // A run still in flight wins outright, whatever the stamps say: it
         // cannot have been superseded by one that has already stopped, and a
         // queued run may not have a start time yet.
+        //
+        // Between workflow runs, the newer run wins even when its job started
+        // first. Start times only order re-run attempts, which share a run.
         let in_flight = field("status").is_some_and(|status| status != "COMPLETED")
             || matches!(field("state"), Some("PENDING" | "EXPECTED"));
         let stamp = field("startedAt")
             .or_else(|| field("createdAt"))
             .unwrap_or("")
             .to_owned();
-        let rank = (in_flight, stamp);
+        let rank = (in_flight, workflow_run_id(item), stamp);
         match newest.get(&key) {
             // RFC 3339 stamps from one host sort lexicographically. Ties keep
             // the later entry, which is the order the API returns them in.
@@ -2137,6 +2146,20 @@ fn aggregate_rollup(rollup: &serde_json::Value) -> CheckStatus {
     } else {
         CheckStatus::Passing
     }
+}
+
+/// The Actions run behind a CheckRun, or 0 for a check from another app. GraphQL
+/// returns the run's `databaseId`; `gh pr view --json statusCheckRollup` only
+/// carries it in the job's `detailsUrl`. Run IDs grow with each new run.
+fn workflow_run_id(item: &serde_json::Value) -> u64 {
+    item.pointer("/checkSuite/workflowRun/databaseId")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            let url = item.get("detailsUrl")?.as_str()?;
+            let (_, rest) = url.split_once("/actions/runs/")?;
+            rest.split('/').next()?.parse().ok()
+        })
+        .unwrap_or(0)
 }
 
 /// Tally a `latestReviews` array (the latest review per reviewer) by state.
@@ -2659,6 +2682,46 @@ mod tests {
              "checkSuite": {"workflowRun": {"workflow": {"name": "CI"}}}},
         ]);
         assert_eq!(aggregate_rollup(&same_workflow), CheckStatus::Passing);
+    }
+
+    /// Two events for one push can start a workflow twice on the same commit.
+    /// The newer run is the one GitHub counts, even when the older run's job
+    /// started later and failed.
+    #[test]
+    fn aggregate_rollup_prefers_the_newer_workflow_run_over_a_later_job_start() {
+        let graphql = serde_json::json!([
+            {"name": "rpm", "status": "COMPLETED", "conclusion": "FAILURE",
+             "startedAt": "2026-11-05T14:04:03Z",
+             "checkSuite": {"workflowRun": {"databaseId": 42041375960_u64,
+                                            "workflow": {"name": "Release"}}}},
+            {"name": "rpm", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-11-05T14:04:02Z",
+             "checkSuite": {"workflowRun": {"databaseId": 42041378332_u64,
+                                            "workflow": {"name": "Release"}}}},
+        ]);
+        assert_eq!(aggregate_rollup(&graphql), CheckStatus::Passing);
+
+        // `gh pr view --json statusCheckRollup` carries the run only in the URL.
+        let flattened = serde_json::json!([
+            {"name": "rpm", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-11-05T14:04:02Z", "workflowName": "Release",
+             "detailsUrl": "https://github.com/o/r/actions/runs/42041378332/job/127292878917"},
+            {"name": "rpm", "status": "COMPLETED", "conclusion": "FAILURE",
+             "startedAt": "2026-11-05T14:04:03Z", "workflowName": "Release",
+             "detailsUrl": "https://github.com/o/r/actions/runs/42041375960/job/127292889197"},
+        ]);
+        assert_eq!(aggregate_rollup(&flattened), CheckStatus::Passing);
+
+        // Within one run, a re-run attempt is still ordered by its start.
+        let rerun = serde_json::json!([
+            {"name": "rpm", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "startedAt": "2026-11-05T14:04:02Z", "workflowName": "Release",
+             "detailsUrl": "https://github.com/o/r/actions/runs/7/job/1"},
+            {"name": "rpm", "status": "COMPLETED", "conclusion": "FAILURE",
+             "startedAt": "2026-11-05T14:20:00Z", "workflowName": "Release",
+             "detailsUrl": "https://github.com/o/r/actions/runs/7/job/2"},
+        ]);
+        assert_eq!(aggregate_rollup(&rerun), CheckStatus::Failing);
     }
 
     /// Legacy commit statuses identify and timestamp themselves differently,

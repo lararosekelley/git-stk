@@ -4,6 +4,15 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.6
+
+### Fixed
+
+- **list, merge:** on GitHub, when one push starts the same workflow twice
+  on a commit, only the newer run counts, as on GitHub. A failure in the
+  older run no longer turns the dot red or stops `merge --all` with "checks
+  failed" when the newer run passed.
+
 ## 0.16.5
 
 ### Added
