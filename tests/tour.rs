@@ -1512,6 +1512,8 @@ fn agent_tour_repo(
     repo.git(["config", "stk.provider", "github"]);
     repo.git(["config", "stk.tourAgent", "tour-agent --print"]);
     repo.git(["config", "stk.tourAgentAllowed", "tour-agent --print"]);
+    // One answer serves every agent call here; the check has tests of its own.
+    repo.git(["config", "stk.tourVerify", "false"]);
     let fake = github_tour_fake_after(agent_rule(
         FakeProvider::new().commands(&["gh", "tour-agent"]),
     ))
@@ -1676,6 +1678,86 @@ fn findings_prints_the_agent_review_as_json_and_reuses_it() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("drop --style"));
+}
+
+/// The agent checks a review's findings with a second call before they are
+/// shown, and the checked review is the one saved. The fake answers both
+/// calls alike, so the review carries the check's verdicts too.
+#[test]
+fn an_agent_review_drops_the_findings_its_check_rules_out() {
+    let answer = AGENT_REVIEW.replacen(
+        r#""question""#,
+        r#""verdicts":[{"id":1,"keep":false,"reason":"A test calls it."},{"id":0,"keep":true}],"question""#,
+        1,
+    );
+    let (repo, _origin, fake) =
+        agent_tour_repo(|fake| fake.record_append("--print", "asked", &answer));
+    repo.git(["config", "--unset", "stk.tourVerify"]);
+
+    let output = repo
+        .stack_faked(&fake)
+        .args(["tour", "12", "--findings"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let titles: Vec<&str> = printed["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| finding["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Name the test"]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains(r#"dropped 1 it could rule out: "Unused" (A test calls it.)"#),
+        "{output:?}"
+    );
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(
+        asked.lines().count(),
+        2,
+        "the review and its check: {asked}"
+    );
+
+    let again: Value = serde_json::from_slice(
+        &repo
+            .stack_faked(&fake)
+            .args(["tour", "12", "--findings"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(again["cached"], true);
+    assert_eq!(again["findings"].as_array().unwrap().len(), 1);
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(
+        asked.lines().count(),
+        2,
+        "the checked review is saved: {asked}"
+    );
+}
+
+#[test]
+fn an_agent_review_shows_every_finding_when_its_check_is_unusable() {
+    let (repo, _origin, fake) =
+        agent_tour_repo(|fake| fake.record_append("--print", "asked", AGENT_REVIEW));
+    repo.git(["config", "stk.tourVerify", "true"]);
+
+    let output = repo
+        .stack_faked(&fake)
+        .args(["tour", "12", "--findings"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed["findings"].as_array().unwrap().len(), 2);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("could not check the findings for #12, so all of them are shown"),
+        "{output:?}"
+    );
 }
 
 #[test]
@@ -2447,6 +2529,7 @@ fn a_local_agent_review_is_saved_under_the_branch() {
     let repo = local_stack();
     repo.git(["config", "stk.tourAgent", "tour-agent --print"]);
     repo.git(["config", "stk.tourAgentAllowed", "tour-agent --print"]);
+    repo.git(["config", "stk.tourVerify", "false"]);
     let review = r#"{"version":1,"agent":{"provider":"Fake Labs","model":"fake-1"},
  "overview":"Adds b.","steps":[{"title":"B","summary":"S","files":["b.txt"]}],
  "confidence":90,"risk":{"level":"low","rationale":"Small."},

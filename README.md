@@ -322,6 +322,9 @@ Everything is optional; defaults shown below:
     ; to send its reviews to; recorded in that repository's own config, and
     ; a different command asks again. Default: none.
     tourAgentAllowed = claude -p
+    ; An agent review asks the agent a second time to check its findings,
+    ; and drops those it can rule out. Default: true.
+    tourVerify = false
     ; Machine users your forge reports as people, comma-separated, so their
     ; comments do not mark an inbox review new. Default: none.
     inboxBots = buildbot, deploy-user

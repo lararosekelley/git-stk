@@ -29,6 +29,12 @@ publish-dry-run:
 update-theme ref="main":
     curl -fsSL "https://raw.githubusercontent.com/greylocklabs/themes/{{ref}}/ports/css/callie.css" -o src/tour/vendor/callie.css
 
+# Refresh the tour's copy of review-bot's review rules, at a branch, tag or commit
+update-review-rules ref="v2":
+    for file in FINDINGS KILL_FILTER CONFIDENCE VERIFY; do \
+        curl -fsSL "https://raw.githubusercontent.com/lararosekelley/review-bot/{{ref}}/prompts/rubric/$file.md" -o "src/tour/vendor/review-bot/$file.md"; \
+    done
+
 # Plan release artifacts
 dist-plan:
     dist plan

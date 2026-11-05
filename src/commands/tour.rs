@@ -759,6 +759,7 @@ fn planner(
         plan_file,
         refresh,
         review: style == TourStyle::AgentReview,
+        verify: settings::tour_verify()?,
     }))
 }
 
