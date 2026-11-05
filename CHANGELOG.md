@@ -4,6 +4,24 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.7
+
+### Added
+
+- **tour:** an agent review asks the agent a second time to check each
+  finding against the code, and drops the ones it can rule out, with a
+  warning naming each and why, as review-bot does before posting. It costs
+  one more agent call for each review with findings; set `stk.tourVerify`
+  to false to skip it.
+
+### Changed
+
+- **tour:** an agent review is held to review-bot's full rules for findings,
+  its kill filter, and its confidence score, kept in step with review-bot
+  rather than a shorter copy. Architecture, complexity, and coverage
+  findings must now name what goes wrong. Saved agent reviews are asked
+  again once.
+
 ## 0.16.6
 
 ### Fixed

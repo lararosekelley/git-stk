@@ -309,7 +309,8 @@ explanation, evidence, and replacement code. Pipe it to your own agent, for exam
 saved for the same commits, and prints warnings to stderr; it never asks for consent on its output, so allow
 the agent once in a terminal first. Findings dismissed on the page are not known to it.
 
-An agent review (`--style agentReview`) is an agent tour whose agent also reviews the changes, held to what a
+An agent review (`--style agentReview`) is an agent tour whose agent also reviews the changes, by the rules
+[review-bot](https://github.com/lararosekelley/review-bot) reviews pull requests with, held to what a
 careful maintainer would ask to change: bugs and unhandled failures, safety and security regressions, broken
 boundaries, unexplained escape hatches, error-handling regressions, missing coverage, documentation that no
 longer matches, and complexity that hides bugs; never style, praise, or what CI already checks, and the agent
@@ -317,7 +318,11 @@ is told how CI stands. Each finding sits on a line of the diff with a severity (
 optional), a category (bug, safety, security, architecture, escape-hatch, error-handling, coverage,
 surface-drift, or complexity), an explanation, the evidence behind it (the input, the branch taken, the line
 that misbehaves), optionally replacement code for its lines, and a mark when the changeset did not introduce
-it; findings without evidence, or off the diff, are dropped with a warning. Above them the agent gives its
+it; findings without evidence, or off the diff, are dropped with a warning. The agent is then asked again to
+check each finding against the code and rule out the ones that cannot happen, are deliberate, or would change no
+behavior; those are dropped, with a warning naming each and why, and the confidence is rescored. A check that
+cannot be read keeps every finding. Set `stk.tourVerify` to false to skip the check, which costs one more agent
+call for each review with findings. Above them the agent gives its
 confidence, out of 100, that the changeset reaches production without a defect, a risk level (low, standard,
 high, or critical) for what an unfound one would cost, and a question for the author when the intent is
 unclear, which Ask in your review adds to the review's summary. Findings are listed most severe first,

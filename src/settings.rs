@@ -43,6 +43,8 @@ pub const TOUR_AGENT_KEY: &str = "stk.tourAgent";
 /// The tour agent command the user agreed, in the repository's own config,
 /// to send this repository's reviews to; another command asks again.
 pub const TOUR_AGENT_ALLOWED_KEY: &str = "stk.tourAgentAllowed";
+/// Whether an agent review's findings are checked by a second agent call.
+pub const TOUR_VERIFY_KEY: &str = "stk.tourVerify";
 /// Accounts the inbox treats as bots, comma-separated: machine users the forge
 /// reports as people, whose comments should not mark a review new.
 pub const INBOX_BOTS_KEY: &str = "stk.inboxBots";
@@ -88,6 +90,10 @@ pub const SETTINGS: &[(&str, &str)] = &[
         "none; the first agent tour with a command asks, and records it here",
     ),
     (
+        TOUR_VERIFY_KEY,
+        "true; an agent review checks its findings with a second agent call",
+    ),
+    (
         INBOX_BOTS_KEY,
         "none; GitHub apps and logins ending in -bot, _bot, or [bot] count already",
     ),
@@ -118,6 +124,12 @@ pub fn tour_style() -> Result<TourStyle> {
             bail!("{TOUR_STYLE_KEY} is {other:?}; it takes standard, agentTour, or agentReview")
         }
     }
+}
+
+/// Whether an agent review has the agent check its findings before they are
+/// shown (`stk.tourVerify`), on unless set false.
+pub fn tour_verify() -> Result<bool> {
+    Ok(git::config_get_bool(TOUR_VERIFY_KEY)?.unwrap_or(true))
 }
 
 /// The accounts `stk.inboxBots` names, lowercased.

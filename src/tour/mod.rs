@@ -136,6 +136,9 @@ pub struct Planner {
     pub refresh: bool,
     /// Ask for review findings with the plan (`agentReview`).
     pub review: bool,
+    /// Have the agent check a review's findings before they are shown
+    /// (`stk.tourVerify`).
+    pub verify: bool,
 }
 
 /// Changesets planned at once.
@@ -622,7 +625,7 @@ fn plan_chapters(
                 continue;
             }
             let path = (!planner.refresh)
-                .then(|| plan_cache(chapter, agent, planner.review).ok())
+                .then(|| plan_cache(chapter, agent, planner).ok())
                 .flatten();
             let saved = path
                 .as_ref()
@@ -639,7 +642,7 @@ fn plan_chapters(
                 previous[index] = match (&saved, shown) {
                     (Some(_), Some(path)) => followed_review(path),
                     _ => {
-                        let own = plan_cache(chapter, agent, planner.review)
+                        let own = plan_cache(chapter, agent, planner)
                             .ok()
                             .and_then(|path| first_reviewed(&path));
                         previous_review(chapter, own)
@@ -705,16 +708,59 @@ fn plan_chapters(
                 && plan::parse(answer)
                     .and_then(|parsed| plan::check(&parsed, &chapter.steps))
                     .is_ok();
-            if usable && let Ok(path) = plan_cache(chapter, agent, planner.review) {
+            if usable && let Ok(path) = plan_cache(chapter, agent, planner) {
                 let _ = path
                     .parent()
                     .map(std::fs::create_dir_all)
                     .map(|_| std::fs::write(&path, answer));
             }
         };
-        for (index, result) in ask_in_pool(agent, &prompts, cached, progress, save) {
+        // A review's findings are checked before its answer is saved, so the
+        // saved answer is the one shown.
+        let checked = Mutex::new(Vec::new());
+        let ask = |index: usize, prompt: &str| {
+            let answer = agent.ask(prompt)?;
+            let check = (planner.review && planner.verify)
+                .then(|| plan::verify_prompt(&plan_request(chapters, index), &answer))
+                .flatten();
+            let Some(check) = check else {
+                return Ok(answer);
+            };
+            let review = &chapters[index].review.id;
+            let outcome = agent
+                .ask(&check)
+                .and_then(|reply| plan::apply_check(&answer, &reply));
+            let (answer, note) = match outcome {
+                Ok(checked) if checked.dropped.is_empty() => (checked.answer, None),
+                Ok(checked) => {
+                    let dropped: Vec<String> = checked
+                        .dropped
+                        .iter()
+                        .map(|(title, reason)| format!("{title:?} ({reason})"))
+                        .collect();
+                    let note = format!(
+                        "checking the findings for {review} dropped {} it could rule out: {}",
+                        dropped.len(),
+                        dropped.join("; ")
+                    );
+                    (checked.answer, Some(note))
+                }
+                Err(error) => (
+                    answer,
+                    Some(format!(
+                        "could not check the findings for {review}, so all of them are shown: {error:#}"
+                    )),
+                ),
+            };
+            if let (Some(note), Ok(mut checked)) = (note, checked.lock()) {
+                checked.push(note);
+            }
+            Ok(answer)
+        };
+        for (index, result) in ask_in_pool(&prompts, cached, progress, ask, save) {
             answers[index] = Some((result, false));
         }
+        warnings.extend(checked.into_inner().unwrap_or_default());
     }
 
     for (index, answer) in answers.into_iter().enumerate() {
@@ -755,7 +801,7 @@ fn plan_chapters(
                 if planner.review
                     && !from_file
                     && let Some(agent) = &planner.agent
-                    && let Ok(path) = plan_cache(chapter, agent, planner.review)
+                    && let Ok(path) = plan_cache(chapter, agent, planner)
                     && (!cached || !path.with_extension(SHOWN_EXTENSION).exists())
                 {
                     let mut shown =
@@ -797,15 +843,15 @@ fn plan_chapters(
     }
 }
 
-/// Ask `agent` each of `prompts`, a few at a time: each worker takes the next
-/// as soon as it is free, so one slow changeset holds up no others. The
+/// `ask` each of `prompts`, a few at a time: each worker takes the next as
+/// soon as it is free, so one slow changeset holds up no others. The
 /// terminal counts them off as they come back, along with the `cached`
 /// changesets whose saved plans need no asking.
 fn ask_in_pool(
-    agent: &Agent,
     prompts: &[(usize, String)],
     cached: usize,
     progress: &Progress,
+    ask: impl Fn(usize, &str) -> Result<String> + Sync,
     on_answer: impl Fn(usize, &str) + Sync,
 ) -> Vec<(usize, Result<String>)> {
     let total = prompts.len() + cached;
@@ -834,7 +880,7 @@ fn ask_in_pool(
                     let Some((index, prompt)) = prompts.get(taken) else {
                         break;
                     };
-                    let answer = agent.ask(prompt);
+                    let answer = ask(*index, prompt);
                     if let Ok(text) = &answer {
                         on_answer(*index, text);
                     }
@@ -1015,7 +1061,7 @@ fn within_guidance_budget(found: Vec<(String, String)>) -> Vec<(String, String)>
 /// Where a chapter's plan from `agent` is saved: per review, head, agent
 /// command, and the instructions and plan version it was asked with, so any
 /// of those changing asks again.
-fn plan_cache(chapter: &Chapter, agent: &Agent, review: bool) -> Result<std::path::PathBuf> {
+fn plan_cache(chapter: &Chapter, agent: &Agent, planner: &Planner) -> Result<std::path::PathBuf> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     // The base too: a retargeted review keeps its head but changes its diff.
@@ -1023,7 +1069,8 @@ fn plan_cache(chapter: &Chapter, agent: &Agent, review: bool) -> Result<std::pat
         &chapter.base_sha,
         agent.display(),
         plan::VERSION,
-        plan::instructions(review),
+        plan::instructions(planner.review),
+        (planner.review && planner.verify).then(plan::verify_instructions),
     )
         .hash(&mut hasher);
     let short = chapter.head_sha.get(..12).unwrap_or(&chapter.head_sha);
