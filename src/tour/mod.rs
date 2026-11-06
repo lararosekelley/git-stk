@@ -700,11 +700,17 @@ fn plan_chapters(
             .iter()
             .filter(|answer| matches!(answer, Some((_, true))))
             .count();
+        // A review whose check failed is shown unchecked but not saved, so the
+        // next tour checks it again.
+        let unchecked = Mutex::new(Vec::new());
         // Each usable answer is saved as it arrives, so an interrupted tour
         // keeps the plans it already has.
         let save = |index: usize, answer: &str| {
             let chapter = &chapters[index];
             let usable = !unsaved.contains(&index)
+                && !unchecked
+                    .lock()
+                    .is_ok_and(|unchecked| unchecked.contains(&index))
                 && plan::parse(answer)
                     .and_then(|parsed| plan::check(&parsed, &chapter.steps))
                     .is_ok();
@@ -745,12 +751,17 @@ fn plan_chapters(
                     );
                     (checked.answer, Some(note))
                 }
-                Err(error) => (
-                    answer,
-                    Some(format!(
-                        "could not check the findings for {review}, so all of them are shown: {error:#}"
-                    )),
-                ),
+                Err(error) => {
+                    if let Ok(mut unchecked) = unchecked.lock() {
+                        unchecked.push(index);
+                    }
+                    (
+                        answer,
+                        Some(format!(
+                            "could not check the findings for {review}, so all of them are shown: {error:#}"
+                        )),
+                    )
+                }
             };
             if let (Some(note), Ok(mut checked)) = (note, checked.lock()) {
                 checked.push(note);
