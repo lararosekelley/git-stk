@@ -111,8 +111,8 @@ with links and states, ready to paste into a tracking issue or PR comment:
 2. [Top change (#10)](https://github.com/owner/repo/pull/10) - open
 ```
 
-For anywhere that does not render pasted markdown links (Slack, say), `--format plain` emits plain text
-with bare URLs (which chat apps auto-link) instead:
+For anywhere that does not render pasted markdown links, `--format plain` emits plain text with bare URLs
+(which chat apps auto-link) instead:
 
 ```text
 2 PRs, base main, 1 open / 1 merged
