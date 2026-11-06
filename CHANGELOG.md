@@ -26,6 +26,12 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   several branches are behind, one hint counts them instead of a hint line
   per branch.
 
+### Fixed
+
+- **list:** `--format plain` puts each review's URL on its entry's line, so
+  pasting into Slack no longer runs the URL into the state and breaks the
+  link.
+
 ## 0.16.6
 
 ### Fixed
