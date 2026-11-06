@@ -35,7 +35,7 @@ pub enum Format {
     /// Markdown links - perfect in tracking issues and PR comments.
     Markdown,
     /// Plain text with bare URLs, for anywhere that does not render markdown
-    /// links from a paste (e.g. Slack).
+    /// links from a paste.
     Plain,
 }
 
