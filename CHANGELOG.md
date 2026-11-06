@@ -21,6 +21,10 @@ published into that release's GitHub notes by `dist`, so the headings must stay
   rather than a shorter copy. Architecture, complexity, and coverage
   findings must now name what goes wrong. Saved agent reviews are asked
   again once.
+- **list:** a branch behind its parent is marked on its own tree line, e.g.
+  `(+12/-3, 4 behind)`, and a kept landed branch is marked `landed`. When
+  several branches are behind, one hint counts them instead of a hint line
+  per branch.
 
 ## 0.16.6
 
