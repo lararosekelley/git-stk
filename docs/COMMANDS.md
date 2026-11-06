@@ -117,10 +117,8 @@ with bare URLs (which chat apps auto-link) instead:
 ```text
 2 PRs, base main, 1 open / 1 merged
 
-1. Bottom change (#9) - merged
-   https://github.com/owner/repo/pull/9
-2. Top change (#10) - open
-   https://github.com/owner/repo/pull/10
+1. Bottom change (#9) - merged - https://github.com/owner/repo/pull/9
+2. Top change (#10) - open - https://github.com/owner/repo/pull/10
 ```
 
 Branches without reviews degrade to plain names, so both work before submitting too.

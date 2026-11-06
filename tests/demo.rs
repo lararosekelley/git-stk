@@ -97,12 +97,11 @@ fn list_plain_format_uses_plain_text_and_bare_urls() {
         .args(["list", "--format", "plain"])
         .assert()
         .success()
-        // Unquoted base; bare URL on its own line for chat apps to auto-link.
+        // Unquoted base; a bare URL on the entry's line for chat apps to auto-link.
         .stdout(predicates::str::contains("1 PR, base main"))
         .stdout(predicates::str::contains(
-            "1. add feature a (#1, +1/-0) - open",
+            "1. add feature a (#1, +1/-0) - open - demo://review/1\n",
         ))
-        .stdout(predicates::str::contains("   demo://review/1"))
         // No markdown link syntax.
         .stdout(predicates::str::contains("](").not());
 }

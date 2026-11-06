@@ -125,14 +125,15 @@ pub fn list_formatted(format: Format) -> Result<()> {
                 );
             }
             (Format::Markdown, None) => println!("{number}. `{branch}` (no review)"),
-            // The bare URL on its own line is what chat apps auto-link.
+            // The bare URL stays on the entry's line, where chat apps auto-link
+            // it; a continuation line can be folded into the state on paste.
             (Format::Plain, Some(review)) => {
                 println!(
-                    "{number}. {} - {}",
+                    "{number}. {} - {} - {}",
                     labeled_with_size(review, branch),
-                    review.state
+                    review.state,
+                    review.url
                 );
-                println!("   {}", review.url);
             }
             (Format::Plain, None) => println!("{number}. {branch} (no review)"),
         }
