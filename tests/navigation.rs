@@ -509,6 +509,33 @@ fn list_hints_restack_when_a_branch_is_behind() {
 }
 
 #[test]
+fn list_marks_each_branch_behind_and_sums_up_the_hints() {
+    let repo = TestRepo::new();
+
+    repo.stack().args(["new", "feature/a"]).assert().success();
+    repo.commit_file("a.txt", "a\n", "a work");
+    repo.stack().args(["new", "feature/b"]).assert().success();
+    repo.commit_file("b.txt", "b\n", "b work");
+    repo.git(["switch", "main"]);
+    repo.commit_file("m.txt", "m\n", "trunk moves on");
+    repo.git(["switch", "feature/a"]);
+    repo.commit_file("a.txt", "a\nmore\n", "a moves on");
+    repo.commit_file("a.txt", "a\nmore\nagain\n", "a moves on again");
+
+    repo.stack()
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("feature/b (+1/-0, 2 behind)"))
+        .stdout(predicates::str::contains("feature/a (+3/-0, 1 behind)"))
+        .stdout(predicates::str::contains(
+            "hint: 2 branches are behind their parent - run `git stk restack`",
+        ))
+        .stdout(predicates::str::contains("commits behind").not())
+        .stdout(predicates::str::contains("commit behind").not());
+}
+
+#[test]
 fn list_prints_leaf_first_without_trunk_label_for_fragments() {
     let repo = TestRepo::new();
 

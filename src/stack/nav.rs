@@ -264,6 +264,7 @@ pub fn print_stack(reviews: &BTreeMap<String, ReviewAnnotation>, commits: bool) 
         .collect();
 
     let sizes = diff_sizes(stack.iter().cloned(), &parents);
+    let drifts = drift_map(stack.iter().cloned(), &parents);
     let worktrees = worktree_map();
     let ctx = TreeCtx {
         current: &current,
@@ -272,6 +273,7 @@ pub fn print_stack(reviews: &BTreeMap<String, ReviewAnnotation>, commits: bool) 
         parents: &parents,
         reviews,
         sizes: &sizes,
+        drifts: &drifts,
         worktrees: &worktrees,
         commits,
         width: term_width(),
@@ -285,13 +287,7 @@ pub fn print_stack(reviews: &BTreeMap<String, ReviewAnnotation>, commits: bool) 
         anstream::println!("{line}");
     }
 
-    for branch in &stack {
-        if let Some(parent) = parents.get(branch)
-            && let Some(hint) = behind_parent_hint(branch, parent)
-        {
-            anstream::println!("{} {hint}", style::paint(style::HINT, "hint:"));
-        }
-    }
+    print_drift_hints(&drifts, &parents);
     Ok(())
 }
 
@@ -338,6 +334,7 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, ReviewAnnotation>, commits: b
     }
 
     let sizes = diff_sizes(parents.keys().cloned(), &parents);
+    let drifts = drift_map(parents.keys().cloned(), &parents);
     let worktrees = worktree_map();
     let width = term_width();
     let mut first = true;
@@ -353,6 +350,7 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, ReviewAnnotation>, commits: b
             parents: &parents,
             reviews,
             sizes: &sizes,
+            drifts: &drifts,
             worktrees: &worktrees,
             commits,
             width,
@@ -380,28 +378,90 @@ pub fn print_all_stacks(reviews: &BTreeMap<String, ReviewAnnotation>, commits: b
     }
 
     // Behind-parent hints span every stack.
-    for (branch, parent) in &parents {
-        if let Some(hint) = behind_parent_hint(branch, parent) {
-            anstream::println!("{} {hint}", style::paint(style::HINT, "hint:"));
-        }
-    }
+    print_drift_hints(&drifts, &parents);
     Ok(())
+}
+
+/// How a branch has fallen behind its parent's tip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drift {
+    /// Missing this many of the parent's commits: a restack picks them up.
+    Behind(usize),
+    /// Behind, but already landed: nothing to rebase, only `cleanup` left.
+    Landed,
+}
+
+/// Local-only; a missing parent, or one the branch already contains, yields
+/// nothing.
+fn drift(branch: &str, parent: &str) -> Option<Drift> {
+    let behind = git::commits_behind(branch, parent)
+        .ok()
+        .filter(|count| *count > 0)?;
+    Some(if super::is_landed(branch) {
+        Drift::Landed
+    } else {
+        Drift::Behind(behind)
+    })
+}
+
+/// The drift of each branch that has a parent, for marking the tree.
+fn drift_map(
+    branches: impl IntoIterator<Item = String>,
+    parents: &BTreeMap<String, String>,
+) -> BTreeMap<String, Drift> {
+    branches
+        .into_iter()
+        .filter_map(|branch| {
+            let drift = drift(&branch, parents.get(&branch)?)?;
+            Some((branch, drift))
+        })
+        .collect()
+}
+
+/// The hints under a tree, whose lines already mark each drifted branch: a
+/// lone branch gets the full nudge, several get one summary per kind so a
+/// long list does not end in a wall of hints.
+fn print_drift_hints(drifts: &BTreeMap<String, Drift>, parents: &BTreeMap<String, String>) {
+    let (landed, behind): (Vec<_>, Vec<_>) = drifts
+        .iter()
+        .partition(|(_, drift)| **drift == Drift::Landed);
+    let mut hints = Vec::new();
+    match behind.as_slice() {
+        [] => {}
+        [(branch, drift)] => hints.push(drift_hint(branch, &parents[*branch], **drift)),
+        many => hints.push(format!(
+            "{} branches are behind their parent - run `git stk restack`",
+            many.len()
+        )),
+    }
+    match landed.as_slice() {
+        [] => {}
+        [(branch, drift)] => hints.push(drift_hint(branch, &parents[*branch], **drift)),
+        many => hints.push(format!(
+            "{} branches have landed - `git stk cleanup <branch>` finishes each",
+            many.len()
+        )),
+    }
+    for hint in hints {
+        anstream::println!("{} {hint}", style::paint(style::HINT, "hint:"));
+    }
+}
+
+fn drift_hint(branch: &str, parent: &str, drift: Drift) -> String {
+    match drift {
+        Drift::Landed => format!("{branch} has landed - {}", landed_cleanup(branch)),
+        Drift::Behind(behind) => format!(
+            "{branch} is {behind} commit{} behind {parent} - run `git stk restack`",
+            if behind == 1 { "" } else { "s" }
+        ),
+    }
 }
 
 /// A restack nudge when `branch` is missing commits from its parent's tip.
 /// Local-only; a missing parent yields nothing. A landed branch has nothing to
 /// rebase, so it is pointed at `cleanup` instead.
 pub fn behind_parent_hint(branch: &str, parent: &str) -> Option<String> {
-    let behind = git::commits_behind(branch, parent)
-        .ok()
-        .filter(|count| *count > 0)?;
-    if super::is_landed(branch) {
-        return Some(format!("{branch} has landed - {}", landed_cleanup(branch)));
-    }
-    Some(format!(
-        "{branch} is {behind} commit{} behind {parent} - run `git stk restack`",
-        if behind == 1 { "" } else { "s" }
-    ))
+    Some(drift_hint(branch, parent, drift(branch, parent)?))
 }
 
 /// How `cleanup` finishes a landed branch it had to keep, given what holds it.
@@ -436,6 +496,7 @@ struct TreeCtx<'a> {
     parents: &'a BTreeMap<String, String>,
     reviews: &'a BTreeMap<String, ReviewAnnotation>,
     sizes: &'a BTreeMap<String, (usize, usize)>,
+    drifts: &'a BTreeMap<String, Drift>,
     /// Branches checked out in other worktrees, and where. Answers "where does
     /// this branch actually live" - the one thing a multi-worktree user cannot
     /// get from the tree otherwise.
@@ -499,8 +560,8 @@ fn collect_tree_lines(
         line.push_str(&style::paint(style::DIM, " (trunk)"));
     }
     // Optional annotations in one paren group: the CI dot and dimmed open
-    // review number, then the diff size against the parent in faded green/red,
-    // like a diff.
+    // review number, the diff size against the parent in faded green/red,
+    // like a diff, then how far the branch is behind its parent.
     let mut tags: Vec<String> = Vec::new();
     if let Some(review) = ctx.reviews.get(branch) {
         // A queued review shows just the clock - it is waiting to land, so its
@@ -536,6 +597,13 @@ fn collect_tree_lines(
             style::paint(style::DIM, "/"),
             style::paint(style::REMOVED, &format!("-{deleted}")),
         ));
+    }
+    match ctx.drifts.get(branch) {
+        Some(Drift::Behind(behind)) => {
+            tags.push(style::paint(style::WARN, &format!("{behind} behind")));
+        }
+        Some(Drift::Landed) => tags.push(style::paint(style::MERGED, "landed")),
+        None => {}
     }
     if !tags.is_empty() {
         let separator = style::paint(style::DIM, ", ");

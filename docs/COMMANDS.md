@@ -92,6 +92,10 @@ merged. A stack's base gets none of those - nothing rebases, submits, or lands i
 the base and points at `git stk detach` instead; a base whose own review landed, and a layer sitting on
 one, are told that finishing it is theirs to do rather than sent to a command that would skip it.
 
+In the `list` tree, a branch behind its parent is marked on its own line, e.g. `(+12/-3, 4 behind)`, and a
+landed one kept around is marked `landed`. With one such branch the hint below the tree names it; with
+several, a single hint counts them instead.
+
 `list --reviews` adds each review's approvals, comments, and requested changes beneath its branch, so the
 tree doubles as a "what is waiting on whom" view. `list --local` goes the other way: it skips every provider
 lookup and draws the tree from local metadata alone - no review numbers, CI dots, or queue markers, and no
