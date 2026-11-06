@@ -1758,6 +1758,24 @@ fn an_agent_review_shows_every_finding_when_its_check_is_unusable() {
             .contains("could not check the findings for #12, so all of them are shown"),
         "{output:?}"
     );
+
+    // Unchecked findings are not saved, so the next tour asks and checks again.
+    let again: Value = serde_json::from_slice(
+        &repo
+            .stack_faked(&fake)
+            .args(["tour", "12", "--findings"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(again["cached"], false);
+    let asked = fs::read_to_string(repo.path().join("asked")).unwrap();
+    assert_eq!(
+        asked.lines().count(),
+        4,
+        "each tour asks for the review and its check: {asked}"
+    );
 }
 
 #[test]
