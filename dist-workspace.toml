@@ -46,6 +46,11 @@ install-updater = false
 # would be command-substituted (i.e. actually run) at install time.
 install-success-msg = "git-stk installed! Run 'git stk setup' to install the man page and shell completions."
 
+# dist's default runner for this target, macos-14, is no longer offered by
+# GitHub.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
 [dist.binaries]
 aarch64-apple-darwin = ["git-stk"]
 aarch64-unknown-linux-musl = ["git-stk"]
