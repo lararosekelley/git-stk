@@ -887,21 +887,29 @@ pub struct Request<'a> {
     pub ci: &'a str,
     /// A review of an earlier head, for the agent to follow up on.
     pub previous: Option<&'a Previous>,
+    /// The repository root, when the agent runs in a checkout of exactly this
+    /// review's head and so can read the code around the change.
+    pub checkout: Option<&'a str>,
 }
 
 impl Request<'_> {
     /// The prompt for the agent: what to write - with review findings when
     /// `review` - then the changeset as JSON.
     pub fn prompt(&self, review: bool) -> String {
+        let checkout = match self.checkout {
+            Some(root) if review => format!("\n\n{}", CHECKOUT_REVIEW.replace("{root}", root)),
+            _ => String::new(),
+        };
         format!(
-            "{}\n\nThe changeset:\n\n{}\n",
+            "{}{checkout}\n\nThe changeset:\n\n{}\n\n{ANSWER_LAST}\n",
             instructions(review),
-            self.changeset()
+            self.changeset(true)
         )
     }
 
-    /// The changeset as the agent reads it.
-    fn changeset(&self) -> Value {
+    /// The changeset as the agent reads it, with the whole text of its
+    /// smaller files when `texts`.
+    fn changeset(&self, texts: bool) -> Value {
         let mut budget = MAX_REQUEST_DIFF_BYTES;
         let changed: Vec<(StepKind, &FileDiff)> = self
             .steps
@@ -935,7 +943,7 @@ impl Request<'_> {
             })
             .collect();
         let mut text_budget = MAX_REQUEST_TEXT_BYTES;
-        for (entry, (_, file)) in files.iter_mut().zip(&changed) {
+        for (entry, (_, file)) in files.iter_mut().zip(&changed).filter(|_| texts) {
             let Some(text) = &file.new_text else {
                 continue;
             };
@@ -1045,11 +1053,16 @@ pub fn verify_prompt(request: &Request<'_>, answer: &str) -> Option<String> {
         ),
         None => "Return \"confidence\" as null.".to_owned(),
     };
+    // A checkout lets the agent read the files, so they are not sent twice.
+    let checkout = request
+        .checkout
+        .map(|root| format!("\n\n{}", CHECKOUT_VERIFY.replace("{root}", root)))
+        .unwrap_or_default();
     Some(format!(
-        "{}\n\n{scored}\n\nThe findings:\n\n{}\n\nThe changeset:\n\n{}\n",
+        "{}{checkout}\n\n{scored}\n\nThe findings:\n\n{}\n\nThe changeset:\n\n{}\n\n{ANSWER_LAST}\n",
         verify_instructions(),
         Value::from(listed),
-        request.changeset()
+        request.changeset(request.checkout.is_none())
     ))
 }
 
@@ -1122,7 +1135,15 @@ pub fn apply_check(answer: &str, check: &str) -> Result<Checked> {
     })
 }
 
-const VERIFY_INTRO: &str = r#"Another reviewer wrote the findings below about the changeset that follows, and they are about to be shown to the person reviewing it. The changeset's diff, the whole text of its smaller files, and the repository's guidance are given, and "id" numbers the findings."#;
+const VERIFY_INTRO: &str = r#"Another reviewer wrote the findings below about the changeset that follows, and they are about to be shown to the person reviewing it. The changeset's diff and the repository's guidance are given, and "id" numbers the findings."#;
+
+// Repeated after the changeset: an agent that reads files for several turns
+// can lose the answer format given before it.
+const ANSWER_LAST: &str = "Answer with only the JSON object described at the top, no other text.";
+
+const CHECKOUT_REVIEW: &str = r#"The repository is checked out at this changeset's head in {root}, the directory you run in. If you can read files, read what a finding depends on before you report it: its callers, the definitions it relies on, and any comment or doc saying the behavior is intended. Leave out what they rule out. Findings still go on lines in the diff."#;
+
+const CHECKOUT_VERIFY: &str = r#"The repository is checked out at this changeset's head in {root}, the directory you run in, so the changeset gives diffs without the files' whole text. If you can read files, read the code each finding depends on before you keep it."#;
 
 const VERIFY_ANSWER: &str = r#"Answer for every id with only a JSON object, no other text, shaped like this:
 
@@ -1154,7 +1175,7 @@ const REVIEW_INSTRUCTIONS: &str = r#"Add these to the same JSON object:
 {"path": "path/of/a/changed/file", "side": "new", "line": 42, "startLine": 40, "severity": "required", "category": "bug", "title": "A short title", "body": "Markdown: the failure and the smallest fix.", "evidence": "The input, the branch it takes, and the line that misbehaves.", "preExisting": false, "suggestion": "Replacement text for lines startLine through line, or empty"}
 
 Answer rules:
-- "evidence" walks the path to the failure in the code you were given: the input, the branch taken, the line that misbehaves. A finding without it is left out.
+- "evidence" walks the path to the failure in the code you were given or read: the input, the branch taken, the line that misbehaves. A finding without it is left out.
 - "ci" says how CI stands. Do not guess why a check failed.
 - Set "preExisting" to true for a problem the changeset did not introduce or worsen.
 - "severity" is one of: "required" (should block merging: a bug, a security hole, data loss, a broken build), "recommended" (worth fixing before merging, without blocking it), or "optional" (take it or leave it).
@@ -1569,6 +1590,7 @@ diff --git a/Cargo.lock b/Cargo.lock
             discussion: &Value::Null,
             ci: "passing",
             previous: None,
+            checkout: None,
         };
         assert!(verify_prompt(&request, r#"{"steps":[],"findings":[]}"#).is_none());
         let prompt = verify_prompt(
@@ -1583,6 +1605,59 @@ diff --git a/Cargo.lock b/Cargo.lock
             prompt.contains(r#""title":"Rename b""#),
             "the changeset goes with it"
         );
+    }
+
+    #[test]
+    fn a_checkout_of_the_head_is_offered_to_read_and_spares_the_check_its_files() {
+        let mut steps = steps_for(PATCH);
+        for file in steps.iter_mut().flat_map(|step| step.files.iter_mut()) {
+            file.new_text = Some("fn a() {}\n".to_owned());
+        }
+        let review = ReviewRequest {
+            id: "#7".into(),
+            branch: "b".into(),
+            base: "main".into(),
+            state: crate::providers::ReviewState::Open,
+            url: String::new(),
+            title: "Rename b".into(),
+            draft: false,
+        };
+        let request = |checkout| Request {
+            review: &review,
+            body: "Why",
+            commits: &[],
+            steps: &steps,
+            below: Vec::new(),
+            guidance: &[],
+            discussion: &Value::Null,
+            ci: "passing",
+            previous: None,
+            checkout,
+        };
+        let answer = r#"{"steps":[],"findings":[{"path":"src/a.rs","line":1,"title":"T","body":"B","evidence":"E"}]}"#;
+
+        let away = request(None);
+        assert!(!away.prompt(true).contains("checked out"));
+        let check = verify_prompt(&away, answer).unwrap();
+        assert!(!check.contains("checked out"));
+        assert!(check.contains(r#""text":"fn a() {}\n""#));
+
+        let here = request(Some("/work/repo"));
+        assert!(
+            here.prompt(true)
+                .contains("checked out at this changeset's head in /work/repo")
+        );
+        assert!(
+            !here.prompt(false).contains("checked out"),
+            "only a review reads it"
+        );
+        let check = verify_prompt(&here, answer).unwrap();
+        assert!(check.contains("checked out at this changeset's head in /work/repo"));
+        assert!(
+            !check.contains(r#""text":"#),
+            "the agent reads the files itself"
+        );
+        assert!(check.contains(r#""diff":"#));
     }
 
     #[test]
@@ -1614,11 +1689,18 @@ diff --git a/Cargo.lock b/Cargo.lock
             discussion: &Value::Null,
             ci: "failing",
             previous: None,
+            checkout: None,
         }
         .prompt(false);
         assert!(prompt.starts_with(INSTRUCTIONS));
+        let changeset = prompt.rsplit_once("The changeset:").unwrap().1;
+        assert!(
+            prompt.trim_end().ends_with(ANSWER_LAST),
+            "the format comes last too"
+        );
         let review: Value =
-            serde_json::from_str(prompt.rsplit_once("The changeset:").unwrap().1.trim()).unwrap();
+            serde_json::from_str(changeset.trim().strip_suffix(ANSWER_LAST).unwrap().trim())
+                .unwrap();
         assert_eq!(review["stackedOn"][0], "Base work (#6)");
         assert_eq!(review["ci"], "failing");
         let files = review["files"].as_array().unwrap();

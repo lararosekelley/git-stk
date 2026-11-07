@@ -8,8 +8,8 @@
 //! with a code, and may record the arguments to a file (truncating or
 //! appending, for invocation assertions). A rule can also require a marker
 //! file to exist (`if_file`), which models a provider whose answers change
-//! after a side effect like a merge. An optional spec-level `log` records
-//! every invocation. Built only under the `test-fakes` feature, so it never
+//! after a side effect like a merge, and can save what it read on stdin
+//! (`stdin`). An optional spec-level `log` records every invocation. Built only under the `test-fakes` feature, so it never
 //! ships.
 
 use std::io::Write;
@@ -62,6 +62,11 @@ fn main() -> std::process::ExitCode {
 
         if let Some(file) = rule["record"].as_str() {
             append_line(file, &args, rule["append"].as_bool().unwrap_or(false));
+        }
+        if let Some(file) = rule["stdin"].as_str() {
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).expect("read stdin");
+            append_line(file, &input, false);
         }
         if let Some(out) = rule["stdout"].as_str()
             && !out.is_empty()
