@@ -692,9 +692,13 @@ fn plan_chapters(
                 }
             }
         }
+        let checkout = checked_out_head();
         let prompts: Vec<(usize, String)> = to_ask
             .iter()
-            .map(|&index| (index, plan_request(chapters, index).prompt(planner.review)))
+            .map(|&index| {
+                let request = plan_request(chapters, index, checkout.as_ref());
+                (index, request.prompt(planner.review))
+            })
             .collect();
         let cached = answers
             .iter()
@@ -727,7 +731,10 @@ fn plan_chapters(
         let ask = |index: usize, prompt: &str| {
             let answer = agent.ask(prompt)?;
             let check = (planner.review && planner.verify)
-                .then(|| plan::verify_prompt(&plan_request(chapters, index), &answer))
+                .then(|| {
+                    let request = plan_request(chapters, index, checkout.as_ref());
+                    plan::verify_prompt(&request, &answer)
+                })
                 .flatten();
             let Some(check) = check else {
                 return Ok(answer);
@@ -906,8 +913,24 @@ fn ask_in_pool(
     answers.into_inner().unwrap_or_default()
 }
 
-/// What chapter `index` offers its planner.
-fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
+/// The commit checked out here and the repository root, when no tracked file
+/// differs from it. The agent runs here, so this is the code it can read.
+fn checked_out_head() -> Option<(String, String)> {
+    if !git::tracked_is_clean().ok()? {
+        return None;
+    }
+    let head = git::rev_parse("HEAD").ok()?;
+    let root = git::repo_root().ok()?;
+    Some((head, root.to_string_lossy().into_owned()))
+}
+
+/// What chapter `index` offers its planner. `checkout` is what
+/// [`checked_out_head`] found, offered only to the chapter whose head it is.
+fn plan_request<'a>(
+    chapters: &'a [Chapter],
+    index: usize,
+    checkout: Option<&'a (String, String)>,
+) -> plan::Request<'a> {
     let chapter = &chapters[index];
     let mut below = Vec::new();
     let mut parent = chapter.parent;
@@ -926,6 +949,9 @@ fn plan_request(chapters: &[Chapter], index: usize) -> plan::Request<'_> {
         discussion: &chapter.discussion,
         ci: chapter.ci,
         previous: chapter.previous.as_ref(),
+        checkout: checkout
+            .filter(|(head, _)| *head == chapter.head_sha)
+            .map(|(_, root)| root.as_str()),
     }
 }
 

@@ -1033,6 +1033,12 @@ pub fn worktree_is_clean() -> Result<bool> {
     Ok(output(&["status", "--porcelain"])?.is_empty())
 }
 
+/// Whether no tracked file differs from HEAD, in the worktree or the index.
+/// Untracked files do not count.
+pub fn tracked_is_clean() -> Result<bool> {
+    Ok(output(&["status", "--porcelain", "--untracked-files=no"])?.is_empty())
+}
+
 /// Default branch of `remote` (from its locally-known HEAD symref), if any.
 pub fn remote_default_branch(remote: &str) -> Option<String> {
     let reference = format!("refs/remotes/{remote}/HEAD");

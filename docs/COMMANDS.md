@@ -324,7 +324,10 @@ it; findings without evidence, or off the diff, are dropped with a warning. The 
 check each finding against the code and rule out the ones that cannot happen, are deliberate, or would change no
 behavior; those are dropped, with a warning naming each and why, and the confidence is rescored. A check that
 cannot be read keeps every finding. Set `stk.tourVerify` to false to skip the check, which costs one more agent
-call for each review with findings. Above them the agent gives its
+call for each review with findings. When the checkout you run the tour from holds exactly the review's head,
+with no tracked file changed, the agent is told so: an agent that can read files then checks a finding's
+callers and the comments around it before reporting it, and the check reads the files instead of being sent
+them again. Above them the agent gives its
 confidence, out of 100, that the changeset reaches production without a defect, a risk level (low, standard,
 high, or critical) for what an unfound one would cost, and a question for the author when the intent is
 unclear, which Ask in your review adds to the review's summary. Findings are listed most severe first,

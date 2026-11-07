@@ -4,6 +4,16 @@ Notable changes per release. The section matching the version being tagged is
 published into that release's GitHub notes by `dist`, so the headings must stay
 `## <version>`.
 
+## 0.16.8
+
+### Changed
+
+- **tour:** when the checkout you tour from holds exactly a review's head,
+  with no tracked file changed, the agent review is told it can read the
+  code there, so it checks a finding's callers and the comments around it
+  before reporting it. Its check of the findings reads the files instead of
+  being sent them again. Saved agent reviews are asked again once.
+
 ## 0.16.7
 
 ### Added

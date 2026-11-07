@@ -1503,6 +1503,20 @@ const AGENT_PLAN: &str = r#"Here is the plan:
  "notes":[{"path":"src/lib.rs","side":"new","line":2,"body":"The new function."}]}
 ```"#;
 
+/// The changeset JSON in an agent prompt: what follows "The changeset:", up
+/// to the reminder after it.
+fn prompt_changeset(prompt: &str) -> Value {
+    let after = prompt
+        .split_once("The changeset:\n\n")
+        .expect("the changeset follows the instructions")
+        .1;
+    serde_json::Deserializer::from_str(after)
+        .into_iter::<Value>()
+        .next()
+        .expect("a changeset")
+        .unwrap()
+}
+
 /// A GitHub repo with PR #12 and a fake `tour-agent` command, allowed to
 /// plan tours here.
 fn agent_tour_repo(
@@ -2275,8 +2289,7 @@ fn an_agent_review_hears_ci_is_unknown_when_it_cannot_be_read() {
         .assert()
         .success();
     let prompt = fs::read_to_string(prompt).unwrap();
-    let changeset: Value =
-        serde_json::from_str(prompt.split_once("The changeset:\n\n").unwrap().1).unwrap();
+    let changeset = prompt_changeset(&prompt);
     assert_eq!(changeset["ci"], "unknown");
 }
 
@@ -2344,13 +2357,7 @@ fn an_agent_tour_tells_the_agent_the_repos_guidance_and_discussion() {
         .success();
 
     let prompt = fs::read_to_string(prompt).unwrap();
-    let changeset: Value = serde_json::from_str(
-        prompt
-            .split_once("The changeset:\n\n")
-            .expect("the changeset follows the instructions")
-            .1,
-    )
-    .unwrap();
+    let changeset = prompt_changeset(&prompt);
     let guidance: Vec<(&str, &str)> = changeset["guidance"]
         .as_array()
         .unwrap()
@@ -2540,6 +2547,36 @@ fn local_tours_a_reviewed_branch_from_local_branches_without_the_forge() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("main is the trunk"));
+}
+
+#[test]
+fn an_agent_review_is_pointed_at_the_checkout_only_when_it_holds_the_head() {
+    let repo = local_stack();
+    repo.git(["config", "stk.tourAgent", "tour-agent --print"]);
+    repo.git(["config", "stk.tourAgentAllowed", "tour-agent --print"]);
+    repo.git(["config", "stk.tourVerify", "false"]);
+    let review = r#"{"version":1,"overview":"Adds b.","steps":[{"title":"B","summary":"S","files":["b.txt"]}],
+ "confidence":90,"findings":[]}"#;
+    let fake = FakeProvider::new()
+        .commands(&["gh", "tour-agent"])
+        .record_stdin("--print", "prompt", review)
+        .fallback_fail("unexpected provider call")
+        .install(&repo);
+    // The answer only fits feature/b; the prompt is what is checked here.
+    let told = |branch: &str| {
+        repo.stack_faked(&fake)
+            .args(["tour", branch, "--local", "--findings", "--refresh-plan"])
+            .output()
+            .unwrap();
+        fs::read_to_string(repo.path().join("prompt"))
+            .unwrap()
+            .contains("is checked out at this changeset's head in")
+    };
+
+    assert!(told("feature/b"), "the branch checked out here");
+    assert!(!told("feature/a"), "a branch that is not");
+    repo.write("a.txt", "edited\n");
+    assert!(!told("feature/b"), "a checkout with tracked edits");
 }
 
 #[test]

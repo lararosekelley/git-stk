@@ -198,6 +198,15 @@ impl FakeProvider {
         self
     }
 
+    /// Respond with `stdout` and overwrite `stdin_file` with what this
+    /// invocation read on stdin - an agent's prompt, say.
+    pub fn record_stdin(mut self, needle: &str, stdin_file: &str, stdout: &str) -> Self {
+        self.rules.push(serde_json::json!({
+            "contains": needle, "stdout": stdout, "stdin": stdin_file,
+        }));
+        self
+    }
+
     /// Respond with `stdout` and append this invocation to `record_file`
     /// (every call kept, like `>> file`).
     pub fn record_append(mut self, needle: &str, record_file: &str, stdout: &str) -> Self {
